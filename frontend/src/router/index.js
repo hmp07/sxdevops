@@ -34,7 +34,7 @@ const routes = [
             {
                 path: 'containers/k8s',
                 name: 'ContainerManageK8s',
-                component: () => import('@/views/ContainerManage.vue'),
+                component: () => import('@/views/K8sManage.vue'),
                 meta: { title: 'K8s 集群', icon: 'Connection' },
             },
             {
