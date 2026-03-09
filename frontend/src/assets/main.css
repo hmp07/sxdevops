@@ -1101,7 +1101,7 @@ body {
   align-items: center;
   gap: 20px;
   background: #326ce5;
-  padding: 12px 24px;
+  padding: 6px 20px;
   border-radius: 6px;
   border: none;
   box-shadow: 0 4px 15px -3px rgba(50, 108, 229, 0.4);
@@ -1135,11 +1135,11 @@ body {
 }
 
 .industrial-select.cluster-select .el-input__wrapper {
-  width: 360px;
+  width: 450px;
 }
 
 .industrial-select.ns-select .el-input__wrapper {
-  width: 240px;
+  width: 280px;
 }
 
 .industrial-select .el-input__inner {
@@ -1147,6 +1147,9 @@ body {
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   font-weight: 600;
   font-size: 14px;
+  white-space: nowrap;
+  overflow: visible !important;
+  text-overflow: clip !important;
 }
 
 .industrial-select:hover .el-input__wrapper {
