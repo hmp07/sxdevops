@@ -32,16 +32,16 @@ const routes = [
                 meta: { title: '工具市场', icon: 'Shop' },
             },
             {
-                path: 'containers/docker',
-                name: 'ContainerManageDocker',
-                component: () => import('@/views/ContainerManage.vue'),
-                meta: { title: 'Docker 容器', icon: 'Box' },
-            },
-            {
                 path: 'containers/k8s',
                 name: 'ContainerManageK8s',
                 component: () => import('@/views/ContainerManage.vue'),
-                meta: { title: 'K8s 集群', icon: 'Box' },
+                meta: { title: 'K8s 集群', icon: 'Connection' },
+            },
+            {
+                path: 'containers/docker',
+                name: 'ContainerManageDocker',
+                component: () => import('@/views/ContainerManage.vue'),
+                meta: { title: 'Docker 环境', icon: 'Platform' },
             },
             {
                 path: 'logs',

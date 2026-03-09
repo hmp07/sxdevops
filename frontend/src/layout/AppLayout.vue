@@ -106,8 +106,8 @@ const menuItems = [
     title: '容器管理',
     icon: 'Box',
     children: [
-      { path: '/containers/docker', title: 'Docker 容器' },
-      { path: '/containers/k8s',    title: 'K8s 集群' },
+      { path: '/containers/k8s',    title: 'K8s 集群', icon: 'Connection' },
+      { path: '/containers/docker', title: 'Docker 环境', icon: 'Platform' },
     ]
   },
   { path: '/logs',        title: '日志中心', icon: 'Document' },

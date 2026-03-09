@@ -2,7 +2,7 @@
   <div class="fade-in">
     <!-- 页头 -->
     <div class="page-header">
-      <h2 v-if="activeTab === 'docker'"> Docker 容器</h2>
+      <h2 v-if="activeTab === 'docker'"> Docker 环境</h2>
       <h2 v-if="activeTab === 'k8s'"> K8s 集群</h2>
     </div>
 
