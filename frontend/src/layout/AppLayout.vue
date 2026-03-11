@@ -110,6 +110,7 @@ const menuItems = [
       { path: '/containers/docker', title: 'Docker 环境', icon: 'Platform' },
     ]
   },
+  { path: '/nginx',       title: 'Nginx 管理', icon: 'Location' },
   { path: '/logs',        title: '日志中心', icon: 'Document' },
   { path: '/alerts',      title: '告警中心', icon: 'Bell' },
   { path: '/users',       title: '用户管理', icon: 'User' },

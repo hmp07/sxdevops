@@ -43,3 +43,7 @@ export const getK8sPVCs = (id, ns = 'default') => request.get(`/k8s/clusters/${i
 export const getK8sStorageClasses = (id) => request.get(`/k8s/clusters/${id}/storageclasses/`)
 export const getK8sConfigMaps = (id, ns = 'default') => request.get(`/k8s/clusters/${id}/configmaps/`, { params: { namespace: ns } })
 export const getK8sSecrets = (id, ns = 'default') => request.get(`/k8s/clusters/${id}/secrets/`, { params: { namespace: ns } })
+export const getK8sResourceYaml = (id, type, name, ns = 'default') => request.get(`/k8s/clusters/${id}/resource_yaml/`, { params: { type, name, namespace: ns } })
+export const getK8sWorkloadPods = (id, workloadType, name, ns = 'default') => request.get(`/k8s/clusters/${id}/workload_pods/`, { params: { workload_type: workloadType, name, namespace: ns } })
+export const getK8sPodLogs = (id, podName, ns = 'default', container = '', tailLines = 200) => request.get(`/k8s/clusters/${id}/pod_logs/`, { params: { pod_name: podName, namespace: ns, container, tail_lines: tailLines } })
+export const getK8sResourceEvents = (id, type, name, ns = 'default') => request.get(`/k8s/clusters/${id}/resource_events/`, { params: { type, name, namespace: ns } })

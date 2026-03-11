@@ -4,7 +4,7 @@ from . import views
 from . import loki_views
 from . import docker_views
 from . import k8s_views
-
+from . import nginx_views
 router = DefaultRouter()
 router.register(r'hosts', views.HostViewSet)
 router.register(r'deployments', views.DeploymentViewSet)
@@ -12,7 +12,9 @@ router.register(r'alerts', views.AlertViewSet)
 router.register(r'logs', views.LogEntryViewSet)
 router.register(r'k8s/clusters', k8s_views.K8sClusterViewSet)
 router.register(r'docker/hosts', docker_views.DockerHostViewSet)
-
+router.register(r'nginx/envs', nginx_views.NginxEnvironmentViewSet)
+router.register(r'nginx/domains', nginx_views.NginxDomainViewSet)
+router.register(r'nginx/routes', nginx_views.NginxRouteViewSet)
 urlpatterns = [
     path('dashboard/stats/', views.dashboard_stats, name='dashboard-stats'),
     # Loki 代理

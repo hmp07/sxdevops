@@ -82,8 +82,8 @@ python manage.py migrate
 # （可选）生成演示数据
 python manage.py seed_data
 
-# 启动开发服务器
-python manage.py runserver 0.0.0.0:8000
+# 启动 ASGI 开发服务器 (支持 WebSockets 等全双工通信)
+python -m daphne -b 0.0.0.0 -p 8000 agdevops.asgi:application
 ```
 
 ### 2. 启动前端

@@ -1100,11 +1100,11 @@ body {
   display: flex;
   align-items: center;
   gap: 20px;
-  background: #326ce5;
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
   padding: 6px 20px;
   border-radius: 6px;
   border: none;
-  box-shadow: 0 4px 15px -3px rgba(50, 108, 229, 0.4);
+  box-shadow: 0 4px 15px -3px rgba(59, 130, 246, 0.4);
   flex-wrap: wrap;
 }
 
@@ -1271,4 +1271,233 @@ body {
 
 .tab-content {
   animation: fadeIn 0.2s ease;
+}
+
+/* ====== YAML 查看器 ====== */
+.yaml-viewer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.yaml-viewer-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 12px;
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: #fff;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 4px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.yaml-viewer-container {
+  min-height: 200px;
+  max-height: 65vh;
+  overflow: auto;
+  background: #0f172a;
+  border-radius: 8px;
+  border: 1px solid #1e293b;
+}
+
+.yaml-viewer-code {
+  margin: 0;
+  padding: 20px;
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #e2e8f0;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.yaml-viewer-code code {
+  font-family: inherit;
+  color: inherit;
+}
+
+.yaml-viewer-container::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.yaml-viewer-container::-webkit-scrollbar-track {
+  background: #1e293b;
+  border-radius: 4px;
+}
+
+.yaml-viewer-container::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+
+.yaml-viewer-container::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* ====== Pod 操作圆形按钮 ====== */
+.pod-op-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  color: #fff;
+}
+
+.pod-op-btn:hover {
+  transform: scale(1.15);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+}
+
+.pod-op-log {
+  background: linear-gradient(135deg, #10b981, #059669);
+}
+
+.pod-op-yaml {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+}
+
+.pod-op-event {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+}
+
+/* ====== 日志查看器 ====== */
+.log-viewer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.log-viewer-container {
+  min-height: 200px;
+  max-height: 60vh;
+  overflow: auto;
+  background: #0f172a;
+  border-radius: 8px;
+  border: 1px solid #1e293b;
+}
+
+.log-viewer-code {
+  margin: 0;
+  padding: 16px 20px;
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #10b981;
+  white-space: pre-wrap;
+  word-break: break-all;
+  tab-size: 2;
+}
+
+.log-viewer-container::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.log-viewer-container::-webkit-scrollbar-track {
+  background: #1e293b;
+}
+
+.log-viewer-container::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+
+/* ====== 事件时间线 ====== */
+.events-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.event-item {
+  display: flex;
+  gap: 14px;
+  padding: 14px 0;
+  border-bottom: 1px solid #f1f5f9;
+  position: relative;
+}
+
+.event-item:last-child {
+  border-bottom: none;
+}
+
+.event-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 5px;
+}
+
+.event-normal .event-indicator {
+  background: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
+}
+
+.event-warning .event-indicator {
+  background: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245,158,11,0.15);
+  animation: pulse-state 2s infinite;
+}
+
+.event-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.event-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.event-reason {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text-primary);
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+}
+
+.event-count {
+  font-size: 11px;
+  font-weight: 700;
+  color: #f59e0b;
+  background: rgba(245,158,11,0.1);
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+
+.event-time {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-left: auto;
+}
+
+.event-message {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.event-source {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 4px;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
 }

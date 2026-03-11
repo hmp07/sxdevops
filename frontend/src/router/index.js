@@ -44,6 +44,12 @@ const routes = [
                 meta: { title: 'Docker 环境', icon: 'Platform' },
             },
             {
+                path: 'nginx',
+                name: 'NginxManage',
+                component: () => import('@/views/NginxManage.vue'),
+                meta: { title: 'Nginx 管理', icon: 'Location' },
+            },
+            {
                 path: 'logs',
                 name: 'Logs',
                 component: () => import('@/views/Logs.vue'),
