@@ -83,7 +83,8 @@
 
     <!-- ============ 域名管理 ============ -->
     <div v-if="activeTab === 'domains'" class="tab-content">
-      <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <el-alert title="提示：修改配置和调整启用状态后，请点击【发布配置】实际生效" type="info" :closable="false" show-icon style="padding:4px 12px; width:auto; background:var(--bg-main);" />
         <el-button type="primary" size="small" @click="openDomainDialog()" :disabled="!filterEnvId"><el-icon><Plus /></el-icon> 添加域名</el-button>
       </div>
       <el-table :data="filteredDomains" stripe v-loading="loading" style="width:100%">
@@ -93,13 +94,18 @@
           </template>
         </el-table-column>
         <el-table-column prop="listen_port" label="端口" width="80">
+          <template #default="{ row }"><span style="color:#0ea5e9; font-weight:600">{{ row.listen_port }}</span></template>
+        </el-table-column>
+        <el-table-column label="SSL" width="100">
           <template #default="{ row }">
-            <span style="color:#0ea5e9; font-weight:600">{{ row.listen_port }}</span>
+            <el-tag v-if="row.ssl_enabled" type="success" size="small">✓ :{{ row.ssl_port }}</el-tag>
+            <el-tag v-else type="info" size="small">未关联</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="SSL" width="90">
+        <el-table-column label="关联证书" min-width="160">
           <template #default="{ row }">
-            <el-tag :type="row.ssl_enabled?'success':'info'" size="small">{{ row.ssl_enabled ? `✓ :${row.ssl_port}` : '关闭' }}</el-tag>
+            <span v-if="row.certificate_domain" style="font-size:13px;color:#0ea5e9;">{{ row.certificate_domain }}</span>
+            <span v-else style="color:#cbd5e1;font-size:12px;">—</span>
           </template>
         </el-table-column>
         <el-table-column prop="enabled" label="状态" width="80">
@@ -107,16 +113,9 @@
             <el-tag :type="row.enabled?'success':'info'" size="small">{{ row.enabled?'启用':'禁用' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="cert_path" label="证书路径" min-width="200" show-overflow-tooltip>
-          <template #default="{ row }">
-            <code v-if="row.cert_path" style="font-size:12px;color:#64748b;">{{ row.cert_path }}</code>
-            <span v-else style="color:#cbd5e1;font-size:12px;">未部署</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="300" fixed="right">
+        <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
             <el-button link type="info" size="small" @click="openDomainDialog(row)">编辑</el-button>
-            <el-button link type="primary" size="small" @click="handleToggleSSL(row)">{{ row.ssl_enabled ? '关闭SSL' : '开启SSL' }}</el-button>
             <el-button link type="warning" size="small" @click="handlePreviewConf(row)">预览</el-button>
             <el-button link type="success" size="small" @click="handleDeployConf(row)">发布配置</el-button>
             <el-popconfirm title="确定删除该域名？" @confirm="delDomain(row.id)">
@@ -138,9 +137,7 @@
       </div>
       <el-table v-else :data="routes" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="location" label="Location" min-width="120">
-          <template #default="{ row }">
-            <code style="font-weight:600;font-size:13px;">{{ row.location }}</code>
-          </template>
+          <template #default="{ row }"><code style="font-weight:600;font-size:13px;">{{ row.location }}</code></template>
         </el-table-column>
         <el-table-column prop="upstream_servers" label="后端地址" min-width="220">
           <template #default="{ row }">
@@ -156,14 +153,50 @@
           </template>
         </el-table-column>
         <el-table-column prop="enabled" label="启用" width="80">
-          <template #default="{ row }">
-            <el-tag :type="row.enabled?'success':'info'" size="small">{{ row.enabled?'是':'否' }}</el-tag>
-          </template>
+          <template #default="{ row }"><el-tag :type="row.enabled?'success':'info'" size="small">{{ row.enabled?'是':'否' }}</el-tag></template>
         </el-table-column>
         <el-table-column label="操作" width="130" fixed="right">
           <template #default="{ row }">
             <el-button link type="info" size="small" @click="openRouteDialog(row)">编辑</el-button>
             <el-popconfirm title="确定删除该路由？" @confirm="delRoute(row.id)">
+              <template #reference><el-button link type="danger" size="small">删除</el-button></template>
+            </el-popconfirm>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <!-- ============ 证书管理 ============ -->
+    <div v-if="activeTab === 'certs'" class="tab-content">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <el-alert title="提示：关联环境后证书会自动推送到对应环境的 ssl 目录下，取消关联后删除远程证书" type="info" :closable="false" show-icon style="padding:4px 12px; width:auto; background:var(--bg-main);" />
+        <el-button type="primary" size="small" @click="openCertDialog()"><el-icon><Plus /></el-icon> 添加证书</el-button>
+      </div>
+      <el-table :data="certs" stripe v-loading="loading" style="width:100%">
+        <el-table-column prop="domain" label="证书域名" min-width="180">
+          <template #default="{ row }">
+            <div style="font-weight:600;font-family:'Cascadia Code','Consolas',monospace;font-size:13px;">{{ row.domain }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="关联环境" min-width="200">
+          <template #default="{ row }">
+            <el-tag v-for="env in (row.environment_names || [])" :key="env.id" size="small" type="success" style="margin-right:4px;margin-bottom:2px;" closable @close="handleUnlinkEnv(row, env.id)">{{ env.name }}</el-tag>
+            <span v-if="!row.environment_names || row.environment_names.length === 0" style="color:#cbd5e1;font-size:12px;">未关联</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="过期时间" width="170">
+          <template #default="{ row }">
+            <span v-if="row.expires_at" :style="isExpired(row.expires_at) ? 'color:#ef4444;font-weight:600' : ''">{{ formatDate(row.expires_at) }}</span>
+            <span v-else style="color:#cbd5e1;font-size:12px;">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="description" label="描述" min-width="150" show-overflow-tooltip />
+        <el-table-column label="操作" width="260" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="info" size="small" @click="openCertDialog(row)">编辑</el-button>
+            <el-button link type="primary" size="small" @click="openLinkEnvDialog(row)">关联环境</el-button>
+            <el-button link type="warning" size="small" @click="handlePushAll(row)">重新推送</el-button>
+            <el-popconfirm title="确定删除该证书？" @confirm="delCert(row.id)">
               <template #reference><el-button link type="danger" size="small">删除</el-button></template>
             </el-popconfirm>
           </template>
@@ -201,15 +234,14 @@
           <el-form-item label="HTTP 端口" style="flex:1"><el-input v-model.number="domainForm.listen_port" type="number" /></el-form-item>
           <el-form-item label="SSL 端口" style="flex:1" label-width="80px"><el-input v-model.number="domainForm.ssl_port" type="number" /></el-form-item>
         </div>
+        <el-form-item label="关联证书">
+          <el-select v-model="domainForm.certificate" placeholder="不关联证书（无SSL）" clearable style="width:100%">
+            <el-option v-for="c in certs" :key="c.id" :label="c.domain" :value="c.id" />
+          </el-select>
+          <div style="font-size:12px;color:#94a3b8;margin-top:4px;">关联证书后自动开启 SSL，不关联则不启用 SSL</div>
+        </el-form-item>
         <el-form-item label="是否启用此域名">
           <el-switch v-model="domainForm.enabled" />
-        </el-form-item>
-        <el-divider content-position="left">SSL 证书（可选）</el-divider>
-        <el-form-item label="证书 (PEM)">
-          <el-input v-model="domainForm.cert_content" type="textarea" :rows="4" placeholder="粘贴 PEM 证书内容（-----BEGIN CERTIFICATE-----）" />
-        </el-form-item>
-        <el-form-item label="私钥 (KEY)">
-          <el-input v-model="domainForm.key_content" type="textarea" :rows="4" placeholder="粘贴私钥内容（-----BEGIN PRIVATE KEY-----）" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -262,6 +294,43 @@
       </template>
     </el-dialog>
 
+    <!-- 证书弹窗 -->
+    <el-dialog v-model="certDialog" :title="certForm.id ? '编辑证书' : '添加证书'" width="90%" style="max-width:650px;" top="5vh" append-to-body destroy-on-close>
+      <el-form :model="certForm" label-width="110px">
+        <el-form-item label="证书 (PEM)" required>
+          <el-input v-model="certForm.cert_content" type="textarea" :rows="4" placeholder="粘贴完整的包含公约的 PEM 证书内容，比如 -----BEGIN CERTIFICATE-----" />
+          <div style="font-size:12px;color:#94a3b8;margin-top:4px;">系统会自动解析证书绑定的域名和过期时间</div>
+        </el-form-item>
+        <el-form-item label="私钥 (KEY)" required>
+          <el-input v-model="certForm.key_content" type="textarea" :rows="4" placeholder="粘贴私钥内容（-----BEGIN PRIVATE KEY-----）" />
+        </el-form-item>
+        <el-form-item label="描述"><el-input v-model="certForm.description" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="certDialog = false">取消</el-button>
+        <el-button type="primary" @click="saveCert" :loading="saving">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 关联环境弹窗 -->
+    <el-dialog v-model="linkEnvDialog" title="关联环境" width="90%" style="max-width:450px;" top="10vh" append-to-body destroy-on-close>
+      <el-form label-width="80px">
+        <el-form-item label="选择环境">
+          <el-select v-model="linkEnvId" placeholder="选择要关联的环境" style="width:100%">
+            <el-option v-for="e in envs" :key="e.id" :label="e.name" :value="e.id">
+              <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
+                <span class="state-pulse" :class="e.status==='connected'?'running':'exited'"></span> {{ e.name }}
+              </div>
+            </el-option>
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="linkEnvDialog = false">取消</el-button>
+        <el-button type="primary" @click="handleLinkEnv" :loading="saving">关联并推送</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 配置预览弹窗 -->
     <el-dialog v-model="previewDialog" title="Nginx 配置预览" width="90%" style="max-width:750px;" top="5vh" append-to-body>
       <div class="yaml-viewer-toolbar">
@@ -272,7 +341,6 @@
         <pre class="yaml-viewer-code"><code>{{ previewContent }}</code></pre>
       </div>
     </el-dialog>
-
   </div>
 </template>
 
@@ -283,12 +351,14 @@ import { Location, Connection, Plus, Monitor, Lock, FolderOpened } from '@elemen
 import dayjs from 'dayjs'
 import {
   getNginxEnvironments, createNginxEnvironment, updateNginxEnvironment, deleteNginxEnvironment, testNginxConnection,
-  getNginxDomains, createNginxDomain, updateNginxDomain, deleteNginxDomain, toggleDomainSSL, deployDomainConf, previewDomainConf,
+  getNginxCerts, createNginxCert, updateNginxCert, deleteNginxCert, linkCertEnv, unlinkCertEnv, pushCertAll,
+  getNginxDomains, createNginxDomain, updateNginxDomain, deleteNginxDomain, deployDomainConf, previewDomainConf,
   getNginxRoutes, createNginxRoute, updateNginxRoute, deleteNginxRoute
 } from '@/api/modules/nginx'
 
 const mainTabs = [
   { key: 'envs', label: '环境管理', icon: 'Monitor' },
+  { key: 'certs', label: '证书管理', icon: 'Lock' },
   { key: 'domains', label: '域名管理', icon: 'Connection' },
   { key: 'routes', label: '路由配置', icon: 'FolderOpened' }
 ]
@@ -300,6 +370,7 @@ const saving = ref(false)
 const envs = ref([])
 const domains = ref([])
 const routes = ref([])
+const certs = ref([])
 const filterEnvId = ref(localStorage.getItem('lastNginxEnvId') ? Number(localStorage.getItem('lastNginxEnvId')) : '')
 const filterDomainId = ref(localStorage.getItem('lastNginxDomainId') ? Number(localStorage.getItem('lastNginxDomainId')) : '')
 
@@ -308,22 +379,24 @@ const filteredDomains = computed(() => {
   return domains.value.filter(d => d.environment === filterEnvId.value)
 })
 
-// DIALOGS
 const envDialog = ref(false)
 const domainDialog = ref(false)
 const routeDialog = ref(false)
+const certDialog = ref(false)
+const linkEnvDialog = ref(false)
 const previewDialog = ref(false)
 
 const envForm = ref({})
 const domainForm = ref({})
 const routeForm = ref({})
+const certForm = ref({})
+const linkEnvId = ref('')
+const linkCertId = ref('')
 const previewContent = ref('')
 const previewFilename = ref('')
 
-function formatDate(ds) {
-  if (!ds) return '-'
-  return dayjs(ds).format('YYYY-MM-DD HH:mm:ss')
-}
+function formatDate(ds) { return ds ? dayjs(ds).format('YYYY-MM-DD HH:mm') : '-' }
+function isExpired(ds) { return ds && dayjs(ds).isBefore(dayjs()) }
 
 // ====== DATA FETCH ======
 async function fetchEnvs() {
@@ -331,8 +404,6 @@ async function fetchEnvs() {
   try {
     const res = await getNginxEnvironments()
     envs.value = res.results || res
-    
-    // 如果没有选中的环境，或者之前选中的环境不复存在，则默认选择第一个
     if (envs.value.length > 0 && !envs.value.some(e => e.id === filterEnvId.value)) {
       filterEnvId.value = envs.value[0].id
       localStorage.setItem('lastNginxEnvId', filterEnvId.value)
@@ -347,13 +418,11 @@ async function fetchDomains() {
     const params = filterEnvId.value ? { environment: filterEnvId.value } : {}
     const res = await getNginxDomains(params)
     domains.value = res.results || res
-    
-    // Default select first available domain
-    const availableDomains = filteredDomains.value
-    if (availableDomains.length > 0 && !availableDomains.some(d => d.id === filterDomainId.value)) {
-      filterDomainId.value = availableDomains[0].id
+    const available = filteredDomains.value
+    if (available.length > 0 && !available.some(d => d.id === filterDomainId.value)) {
+      filterDomainId.value = available[0].id
       localStorage.setItem('lastNginxDomainId', filterDomainId.value)
-    } else if (availableDomains.length === 0) {
+    } else if (available.length === 0) {
       filterDomainId.value = ''
       localStorage.removeItem('lastNginxDomainId')
     }
@@ -371,6 +440,15 @@ async function fetchRoutes() {
   loading.value = false
 }
 
+async function fetchCerts() {
+  loading.value = true
+  try {
+    const res = await getNginxCerts()
+    certs.value = res.results || res
+  } catch (e) { ElMessage.error('获取证书失败') }
+  loading.value = false
+}
+
 function onEnvChange() {
   localStorage.setItem('lastNginxEnvId', filterEnvId.value)
   filterDomainId.value = ''
@@ -378,7 +456,6 @@ function onEnvChange() {
   routes.value = []
   fetchDomains()
 }
-
 function onDomainChange() {
   localStorage.setItem('lastNginxDomainId', filterDomainId.value)
   fetchRoutes()
@@ -389,59 +466,41 @@ function switchTab(t) {
   if (t === 'envs') fetchEnvs()
   if (t === 'domains') { if (filterEnvId.value) fetchDomains(); else if (envs.value.length) { filterEnvId.value = envs.value[0].id; fetchDomains() } }
   if (t === 'routes') { if (filterDomainId.value) fetchRoutes() }
+  if (t === 'certs') fetchCerts()
 }
 
 onMounted(() => {
   fetchEnvs().then(() => {
-    // 也预加载所有域名用于路由 tab
     getNginxDomains().then(res => { domains.value = res.results || res }).catch(() => {})
+    fetchCerts()
   })
 })
 
 // ====== ENV CRUD ======
 function openEnvDialog(row) {
-  if (row) {
-    envForm.value = { ...row, ssh_password: '' }
-  } else {
-    envForm.value = { ssh_port: 22, ssh_user: 'root', nginx_path: '/etc/nginx', status: 'disconnected' }
-  }
+  envForm.value = row ? { ...row, ssh_password: '' } : { ssh_port: 22, ssh_user: 'root', nginx_path: '/etc/nginx', status: 'disconnected' }
   envDialog.value = true
 }
 async function saveEnv() {
   saving.value = true
   try {
     if (envForm.value.id) {
-      const payload = { ...envForm.value }
-      if (!payload.ssh_password) delete payload.ssh_password
+      const payload = { ...envForm.value }; if (!payload.ssh_password) delete payload.ssh_password
       await updateNginxEnvironment(payload.id, payload)
-    } else {
-      await createNginxEnvironment(envForm.value)
-    }
-    ElMessage.success('保存成功')
-    envDialog.value = false
-    fetchEnvs()
+    } else { await createNginxEnvironment(envForm.value) }
+    ElMessage.success('保存成功'); envDialog.value = false; fetchEnvs()
   } catch (e) { }
   saving.value = false
 }
-async function delEnv(id) {
-  try { await deleteNginxEnvironment(id); ElMessage.success('删除成功'); fetchEnvs() } catch (e) { }
-}
+async function delEnv(id) { try { await deleteNginxEnvironment(id); ElMessage.success('删除成功'); fetchEnvs() } catch (e) { } }
 async function testEnv(id) {
   ElMessage.info('测试连接中...')
-  try {
-    const res = await testNginxConnection(id)
-    if (res.success) ElMessage.success(res.message); else ElMessage.error(res.message)
-    fetchEnvs()
-  } catch (e) { ElMessage.error('连接失败') }
+  try { const res = await testNginxConnection(id); res.success ? ElMessage.success(res.message) : ElMessage.error(res.message); fetchEnvs() } catch (e) { ElMessage.error('连接失败') }
 }
 
 // ====== DOMAIN CRUD ======
 function openDomainDialog(row) {
-  if (row) {
-    domainForm.value = { ...row, cert_content: '', key_content: '' }
-  } else {
-    domainForm.value = { environment: filterEnvId.value, listen_port: 80, ssl_port: 443, ssl_enabled: false, enabled: true, cert_content: '', key_content: '' }
-  }
+  domainForm.value = row ? { ...row } : { environment: filterEnvId.value, listen_port: 80, ssl_port: 443, certificate: null, enabled: true }
   domainDialog.value = true
 }
 async function saveDomain() {
@@ -449,70 +508,24 @@ async function saveDomain() {
   saving.value = true
   try {
     const payload = { ...domainForm.value }
-    if (!payload.cert_content) delete payload.cert_content
-    if (!payload.key_content) delete payload.key_content
-    if (payload.id) {
-      await updateNginxDomain(payload.id, payload)
-    } else {
-      await createNginxDomain(payload)
-    }
-    ElMessage.success('保存成功')
-    domainDialog.value = false
-    fetchDomains()
+    if (payload.id) { await updateNginxDomain(payload.id, payload) } else { await createNginxDomain(payload) }
+    ElMessage.success('保存成功'); domainDialog.value = false; fetchDomains()
   } catch (e) { }
   saving.value = false
 }
-async function delDomain(id) {
-  try { await deleteNginxDomain(id); ElMessage.success('删除成功'); fetchDomains() } catch (e) { }
-}
-async function handleToggleSSL(row) {
-  const enable = !row.ssl_enabled
-  if (enable && !row.cert_path) {
-    return ElMessage.warning('请先在编辑中上传证书内容，保存后再启用 SSL')
-  }
-  try {
-    const res = await toggleDomainSSL(row.id, enable)
-    if (res.success) ElMessage.success(res.message); else ElMessage.error(res.message)
-    fetchDomains()
-  } catch (e) { ElMessage.error('操作失败') }
-}
+async function delDomain(id) { try { await deleteNginxDomain(id); ElMessage.success('删除成功'); fetchDomains() } catch (e) { } }
 async function handleDeployConf(row) {
   ElMessage.info('正在发布配置...')
-  try {
-    const res = await deployDomainConf(row.id)
-    if (res.success) ElMessage.success(res.message); else ElMessage.error(res.message)
-  } catch (e) { ElMessage.error('发布失败') }
+  try { const res = await deployDomainConf(row.id); res.success ? ElMessage.success(res.message) : ElMessage.error(res.message) } catch (e) { ElMessage.error('发布失败') }
 }
 async function handlePreviewConf(row) {
-  try {
-    const res = await previewDomainConf(row.id)
-    previewContent.value = res.conf
-    previewFilename.value = res.filename
-    previewDialog.value = true
-  } catch (e) { ElMessage.error('预览失败') }
+  try { const res = await previewDomainConf(row.id); previewContent.value = res.conf; previewFilename.value = res.filename; previewDialog.value = true } catch (e) { ElMessage.error('预览失败') }
 }
-function copyConf() {
-  navigator.clipboard.writeText(previewContent.value).then(() => ElMessage.success('已复制')).catch(() => ElMessage.error('复制失败'))
-}
+function copyConf() { navigator.clipboard.writeText(previewContent.value).then(() => ElMessage.success('已复制')).catch(() => ElMessage.error('复制失败')) }
 
 // ====== ROUTE CRUD ======
 function openRouteDialog(row) {
-  if (row) {
-    routeForm.value = { ...row }
-  } else {
-    routeForm.value = {
-      nginx_domain: filterDomainId.value,
-      location: '/',
-      upstream_servers: '',
-      enabled: true,
-      redirect_url: '',
-      redirect_code: 301,
-      custom_headers: '',
-      proxy_set_headers: '',
-      client_max_body_size: '10m',
-      extra_directives: ''
-    }
-  }
+  routeForm.value = row ? { ...row } : { nginx_domain: filterDomainId.value, location: '/', upstream_servers: '', enabled: true, redirect_url: '', redirect_code: 301, custom_headers: '', proxy_set_headers: '', client_max_body_size: '10m', extra_directives: '' }
   routeDialog.value = true
 }
 async function saveRoute() {
@@ -520,24 +533,73 @@ async function saveRoute() {
   if (!routeForm.value.upstream_servers && !routeForm.value.redirect_url) return ElMessage.warning('请填写后端地址或重定向地址')
   saving.value = true
   try {
-    if (routeForm.value.id) {
-      await updateNginxRoute(routeForm.value.id, routeForm.value)
-    } else {
-      await createNginxRoute(routeForm.value)
-    }
-    ElMessage.success('保存成功')
-    routeDialog.value = false
-    fetchRoutes()
+    if (routeForm.value.id) { await updateNginxRoute(routeForm.value.id, routeForm.value) } else { await createNginxRoute(routeForm.value) }
+    ElMessage.success('保存成功'); routeDialog.value = false; fetchRoutes()
   } catch (e) { }
   saving.value = false
 }
-async function delRoute(id) {
-  try { await deleteNginxRoute(id); ElMessage.success('删除成功'); fetchRoutes() } catch (e) { }
+async function delRoute(id) { try { await deleteNginxRoute(id); ElMessage.success('删除成功'); fetchRoutes() } catch (e) { } }
+
+// ====== CERT CRUD ======
+function openCertDialog(row) {
+  certForm.value = row ? { ...row, cert_content: '', key_content: '' } : { cert_content: '', key_content: '', description: '' }
+  certDialog.value = true
+}
+async function saveCert() {
+  if (!certForm.value.id && !certForm.value.cert_content) return ElMessage.warning('请填写证书(PEM)内容')
+  if (!certForm.value.id && !certForm.value.key_content) return ElMessage.warning('请填写私钥(KEY)内容')
+  saving.value = true
+  try {
+    const payload = { ...certForm.value }
+    if (!payload.cert_content) delete payload.cert_content
+    if (!payload.key_content) delete payload.key_content
+    if (payload.id) {
+      await updateNginxCert(payload.id, payload)
+      // 如果更新了证书内容，自动推送到所有关联环境
+      if (certForm.value.cert_content && certForm.value.key_content) {
+        try { await pushCertAll(payload.id) } catch (e) {}
+      }
+    } else { await createNginxCert(payload) }
+    ElMessage.success('保存成功'); certDialog.value = false; fetchCerts()
+  } catch (e) { }
+  saving.value = false
+}
+async function delCert(id) { try { await deleteNginxCert(id); ElMessage.success('删除成功'); fetchCerts() } catch (e) { } }
+
+function openLinkEnvDialog(row) {
+  linkCertId.value = row.id
+  linkEnvId.value = ''
+  linkEnvDialog.value = true
+}
+async function handleLinkEnv() {
+  if (!linkEnvId.value) return ElMessage.warning('请选择环境')
+  saving.value = true
+  try {
+    const res = await linkCertEnv(linkCertId.value, linkEnvId.value)
+    res.success ? ElMessage.success(res.message) : ElMessage.error(res.message)
+    linkEnvDialog.value = false; fetchCerts()
+  } catch (e) { ElMessage.error('操作失败') }
+  saving.value = false
+}
+async function handleUnlinkEnv(row, envId) {
+  try {
+    const res = await unlinkCertEnv(row.id, envId)
+    res.success ? ElMessage.success(res.message) : ElMessage.error(res.message)
+    fetchCerts()
+  } catch (e) { ElMessage.error('操作失败') }
+}
+async function handlePushAll(row) {
+  ElMessage.info('正在推送证书到所有关联环境...')
+  try {
+    const res = await pushCertAll(row.id)
+    if (res.success) {
+      const msgs = (res.results || []).map(r => `${r.env}: ${r.success ? '✓' : '✗ ' + r.message}`).join('\n')
+      ElMessage.success({ message: msgs || '推送完成', duration: 5000 })
+    } else { ElMessage.error(res.message) }
+  } catch (e) { ElMessage.error('推送失败') }
 }
 </script>
 
 <style scoped>
-.w-full {
-  width: 100%;
-}
+.w-full { width: 100%; }
 </style>

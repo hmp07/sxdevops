@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Host, Deployment, Alert, LogEntry, K8sCluster, DockerHost, NginxEnvironment, NginxDomain, NginxRoute
+from .models import Host, Deployment, Alert, LogEntry, K8sCluster, DockerHost, NginxEnvironment, NginxCertificate, NginxDomain, NginxRoute
 
 
 class HostSerializer(serializers.ModelSerializer):
@@ -69,18 +69,30 @@ class NginxEnvironmentSerializer(serializers.ModelSerializer):
             'ssh_password': {'write_only': True},
         }
 
+class NginxCertificateSerializer(serializers.ModelSerializer):
+    environment_names = serializers.SerializerMethodField()
+
+    class Meta:
+        model = NginxCertificate
+        fields = '__all__'
+        extra_kwargs = {
+            'domain': {'read_only': True},
+            'expires_at': {'read_only': True},
+            'cert_content': {'write_only': True},
+            'key_content': {'write_only': True},
+        }
+
+    def get_environment_names(self, obj):
+        return [{'id': e.id, 'name': e.name} for e in obj.environments.all()]
+
 class NginxDomainSerializer(serializers.ModelSerializer):
     environment_name = serializers.CharField(source='environment.name', read_only=True)
+    ssl_enabled = serializers.BooleanField(read_only=True)
+    certificate_domain = serializers.CharField(source='certificate.domain', read_only=True, default=None)
 
     class Meta:
         model = NginxDomain
         fields = '__all__'
-        extra_kwargs = {
-            'cert_content': {'write_only': True},
-            'key_content': {'write_only': True},
-            'cert_path': {'read_only': True},
-            'key_path': {'read_only': True},
-        }
 
 class NginxRouteSerializer(serializers.ModelSerializer):
     domain_name = serializers.CharField(source='nginx_domain.domain', read_only=True)
@@ -89,4 +101,5 @@ class NginxRouteSerializer(serializers.ModelSerializer):
     class Meta:
         model = NginxRoute
         fields = '__all__'
+
 

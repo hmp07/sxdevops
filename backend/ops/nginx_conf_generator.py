@@ -143,14 +143,19 @@ def generate_domain_conf(domain_obj):
     server_lines.append('}')
     parts.append('\n'.join(server_lines))
 
-    # SSL server block (如果启用)
-    if domain_obj.ssl_enabled and domain_obj.cert_path and domain_obj.key_path:
+    # SSL server block (如果关联了证书)
+    cert = domain_obj.certificate
+    if cert and domain_obj.ssl_enabled:
+        nginx_path = domain_obj.environment.nginx_path or '/etc/nginx'
+        cert_path = f'{nginx_path}/ssl/{cert.cert_filename}'
+        key_path = f'{nginx_path}/ssl/{cert.key_filename}'
+
         ssl_lines = ['', 'server {']
         ssl_lines.append(f'    listen {domain_obj.ssl_port} ssl;')
         ssl_lines.append(f'    server_name {domain_obj.domain};')
         ssl_lines.append('')
-        ssl_lines.append(f'    ssl_certificate {domain_obj.cert_path};')
-        ssl_lines.append(f'    ssl_certificate_key {domain_obj.key_path};')
+        ssl_lines.append(f'    ssl_certificate {cert_path};')
+        ssl_lines.append(f'    ssl_certificate_key {key_path};')
         ssl_lines.append('    ssl_protocols TLSv1.2 TLSv1.3;')
         ssl_lines.append('    ssl_ciphers HIGH:!aNULL:!MD5;')
         ssl_lines.append('')
@@ -163,3 +168,4 @@ def generate_domain_conf(domain_obj):
         parts.append('\n'.join(ssl_lines))
 
     return '\n'.join(parts) + '\n'
+

@@ -189,17 +189,43 @@ class NginxEnvironment(models.Model):
         return f'{self.name} ({self.ip_address})'
 
 
+class NginxCertificate(models.Model):
+    """独立证书管理 — 证书可关联多个环境，推送到对应环境的 ssl 目录"""
+    domain = models.CharField('证书域名', max_length=256, help_text='证书对应的域名')
+    cert_content = models.TextField('证书内容 (PEM)', blank=True, default='')
+    key_content = models.TextField('私钥内容 (KEY)', blank=True, default='')
+    environments = models.ManyToManyField(NginxEnvironment, blank=True, verbose_name='关联环境', related_name='certificates')
+    expires_at = models.DateTimeField('过期时间', null=True, blank=True)
+    description = models.CharField('描述', max_length=256, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = 'Nginx 证书'
+        verbose_name_plural = 'Nginx 证书'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.domain}'
+
+    @property
+    def cert_filename(self):
+        safe = self.domain.replace('*', '_wc_').replace('.', '_')
+        return f'{safe}.pem'
+
+    @property
+    def key_filename(self):
+        safe = self.domain.replace('*', '_wc_').replace('.', '_')
+        return f'{safe}.key'
+
+
 class NginxDomain(models.Model):
-    """域名管理 — 一个域名对应一个 server block，证书也绑在域名上"""
+    """域名管理 — 一个域名对应一个 server block，可选关联证书"""
     environment = models.ForeignKey(NginxEnvironment, on_delete=models.CASCADE, verbose_name='所属环境', related_name='domains')
     domain = models.CharField('域名/IP', max_length=256, help_text='填写域名或 IP 地址')
     listen_port = models.IntegerField('监听端口', default=80)
-    ssl_enabled = models.BooleanField('启用 SSL', default=False)
     ssl_port = models.IntegerField('SSL 端口', default=443)
-    cert_content = models.TextField('证书内容 (PEM)', blank=True, default='')
-    key_content = models.TextField('私钥内容 (KEY)', blank=True, default='')
-    cert_path = models.CharField('证书路径', max_length=256, blank=True, default='')
-    key_path = models.CharField('私钥路径', max_length=256, blank=True, default='')
+    certificate = models.ForeignKey(NginxCertificate, on_delete=models.SET_NULL, null=True, blank=True, verbose_name='关联证书', related_name='linked_domains')
     enabled = models.BooleanField('启用', default=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
@@ -214,8 +240,11 @@ class NginxDomain(models.Model):
         return f'{self.domain}:{self.listen_port} ({self.environment.name})'
 
     @property
+    def ssl_enabled(self):
+        return self.certificate is not None and self.certificate_id is not None
+
+    @property
     def conf_filename(self):
-        """生成 conf 文件名"""
         safe = self.domain.replace('*', '_wc_').replace('.', '_')
         return f'{safe}_{self.listen_port}.conf'
 
@@ -242,3 +271,4 @@ class NginxRoute(models.Model):
 
     def __str__(self):
         return f'{self.nginx_domain.domain}{self.location}'
+

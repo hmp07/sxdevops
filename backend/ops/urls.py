@@ -13,6 +13,7 @@ router.register(r'logs', views.LogEntryViewSet)
 router.register(r'k8s/clusters', k8s_views.K8sClusterViewSet)
 router.register(r'docker/hosts', docker_views.DockerHostViewSet)
 router.register(r'nginx/envs', nginx_views.NginxEnvironmentViewSet)
+router.register(r'nginx/certs', nginx_views.NginxCertificateViewSet)
 router.register(r'nginx/domains', nginx_views.NginxDomainViewSet)
 router.register(r'nginx/routes', nginx_views.NginxRouteViewSet)
 urlpatterns = [

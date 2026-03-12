@@ -17,6 +17,29 @@ export function testNginxConnection(id) {
   return request({ url: `/nginx/envs/${id}/test_connection/`, method: 'post' })
 }
 
+// ========== Nginx 证书 ==========
+export function getNginxCerts() {
+  return request({ url: '/nginx/certs/', method: 'get' })
+}
+export function createNginxCert(data) {
+  return request({ url: '/nginx/certs/', method: 'post', data })
+}
+export function updateNginxCert(id, data) {
+  return request({ url: `/nginx/certs/${id}/`, method: 'put', data })
+}
+export function deleteNginxCert(id) {
+  return request({ url: `/nginx/certs/${id}/`, method: 'delete' })
+}
+export function linkCertEnv(id, environmentId) {
+  return request({ url: `/nginx/certs/${id}/link_env/`, method: 'post', data: { environment_id: environmentId } })
+}
+export function unlinkCertEnv(id, environmentId) {
+  return request({ url: `/nginx/certs/${id}/unlink_env/`, method: 'post', data: { environment_id: environmentId } })
+}
+export function pushCertAll(id) {
+  return request({ url: `/nginx/certs/${id}/push_all/`, method: 'post' })
+}
+
 // ========== Nginx 域名 ==========
 export function getNginxDomains(params) {
   return request({ url: '/nginx/domains/', method: 'get', params })
@@ -29,12 +52,6 @@ export function updateNginxDomain(id, data) {
 }
 export function deleteNginxDomain(id) {
   return request({ url: `/nginx/domains/${id}/`, method: 'delete' })
-}
-export function toggleDomainSSL(id, enable) {
-  return request({ url: `/nginx/domains/${id}/toggle_ssl/`, method: 'post', data: { enable } })
-}
-export function deployCert(id, data) {
-  return request({ url: `/nginx/domains/${id}/deploy_cert/`, method: 'post', data })
 }
 export function deployDomainConf(id) {
   return request({ url: `/nginx/domains/${id}/deploy_conf/`, method: 'post' })

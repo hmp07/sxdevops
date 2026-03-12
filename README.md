@@ -86,6 +86,8 @@ python manage.py seed_data
 python -m daphne -b 0.0.0.0 -p 8000 agdevops.asgi:application
 ```
 
+> ⚠️ **开发注意**：与 Django 自带的 `runserver` 不同，基于 Daphne 启动的 ASGI 服务**不支持代码热更新**。当您修改了后端的 Python 代码（如 `views.py`、`serializers.py` 等）后，必须手动 `Ctrl+C` 停止当前进程并**重新运行上述启动命令**，否则新代码不会生效。
+
 ### 2. 启动前端
 
 ```bash
