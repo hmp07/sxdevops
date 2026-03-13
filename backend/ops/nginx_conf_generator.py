@@ -130,15 +130,23 @@ def generate_domain_conf(domain_obj):
         parts.append('\n\n'.join(upstream_blocks))
         parts.append('')
 
+    cert = domain_obj.certificate
+
     # HTTP server block
     server_lines = ['server {']
     server_lines.append(f'    listen {domain_obj.listen_port};')
     server_lines.append(f'    server_name {domain_obj.domain};')
     server_lines.append('')
 
-    for loc in location_blocks:
-        server_lines.append(loc)
-        server_lines.append('')
+    if cert and domain_obj.ssl_enabled:
+        # 如果启用了 SSL，HTTP 默认执行 301 跳转
+        server_lines.append('    location / {')
+        server_lines.append('        return 301 https://$host$request_uri;')
+        server_lines.append('    }')
+    else:
+        for loc in location_blocks:
+            server_lines.append(loc)
+            server_lines.append('')
 
     server_lines.append('}')
     parts.append('\n'.join(server_lines))

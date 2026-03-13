@@ -1,4 +1,4 @@
-from rest_framework import viewsets
+from rest_framework import viewsets, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from .models import NginxEnvironment, NginxCertificate, NginxDomain, NginxRoute
@@ -9,6 +9,7 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from django.utils.timezone import make_aware, is_naive
 from rest_framework.exceptions import ValidationError
+from django_filters.rest_framework import DjangoFilterBackend
 
 def _parse_certificate(cert_data):
     if not cert_data:
@@ -237,6 +238,7 @@ class NginxDomainViewSet(viewsets.ModelViewSet):
     """Nginx 域名管理"""
     queryset = NginxDomain.objects.select_related('environment', 'certificate').all()
     serializer_class = NginxDomainSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     search_fields = ['domain']
     filterset_fields = ['environment']
 
@@ -259,5 +261,6 @@ class NginxRouteViewSet(viewsets.ModelViewSet):
     """Nginx 路由管理"""
     queryset = NginxRoute.objects.select_related('nginx_domain', 'nginx_domain__environment').all()
     serializer_class = NginxRouteSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     search_fields = ['location', 'upstream_servers']
     filterset_fields = ['nginx_domain']

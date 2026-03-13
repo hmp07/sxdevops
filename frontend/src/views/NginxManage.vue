@@ -169,7 +169,15 @@
     <!-- ============ 证书管理 ============ -->
     <div v-if="activeTab === 'certs'" class="tab-content">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-        <el-alert title="提示：关联环境后证书会自动推送到对应环境的 ssl 目录下，取消关联后删除远程证书" type="info" :closable="false" show-icon style="padding:4px 12px; width:auto; background:var(--bg-main);" />
+        <el-alert class="cert-alert" type="info" :closable="false" show-icon style="padding:4px 12px; width:auto; background:var(--bg-main);">
+          <template #title>
+            <span style="line-height:1.6; display:inline-block;">
+              提示：<br>
+              1. 关联环境后证书会自动推送到对应环境的 ssl 目录下，取消关联后删除远程证书<br>
+              2. 如更新证书请编辑后点击【重新推送】
+            </span>
+          </template>
+        </el-alert>
         <el-button type="primary" size="small" @click="openCertDialog()"><el-icon><Plus /></el-icon> 添加证书</el-button>
       </div>
       <el-table :data="certs" stripe v-loading="loading" style="width:100%">
@@ -489,7 +497,10 @@ async function saveEnv() {
       await updateNginxEnvironment(payload.id, payload)
     } else { await createNginxEnvironment(envForm.value) }
     ElMessage.success('保存成功'); envDialog.value = false; fetchEnvs()
-  } catch (e) { }
+  } catch (e) { 
+    const msg = e.response?.data ? JSON.stringify(e.response.data) : '保存环境失败'
+    ElMessage.error(msg)
+  }
   saving.value = false
 }
 async function delEnv(id) { try { await deleteNginxEnvironment(id); ElMessage.success('删除成功'); fetchEnvs() } catch (e) { } }
@@ -510,7 +521,10 @@ async function saveDomain() {
     const payload = { ...domainForm.value }
     if (payload.id) { await updateNginxDomain(payload.id, payload) } else { await createNginxDomain(payload) }
     ElMessage.success('保存成功'); domainDialog.value = false; fetchDomains()
-  } catch (e) { }
+  } catch (e) {
+    const msg = e.response?.data ? JSON.stringify(e.response.data) : '保存域名失败'
+    ElMessage.error(msg)
+  }
   saving.value = false
 }
 async function delDomain(id) { try { await deleteNginxDomain(id); ElMessage.success('删除成功'); fetchDomains() } catch (e) { } }
@@ -535,7 +549,10 @@ async function saveRoute() {
   try {
     if (routeForm.value.id) { await updateNginxRoute(routeForm.value.id, routeForm.value) } else { await createNginxRoute(routeForm.value) }
     ElMessage.success('保存成功'); routeDialog.value = false; fetchRoutes()
-  } catch (e) { }
+  } catch (e) {
+    const msg = e.response?.data ? JSON.stringify(e.response.data) : '保存路由失败'
+    ElMessage.error(msg)
+  }
   saving.value = false
 }
 async function delRoute(id) { try { await deleteNginxRoute(id); ElMessage.success('删除成功'); fetchRoutes() } catch (e) { } }
@@ -561,7 +578,10 @@ async function saveCert() {
       }
     } else { await createNginxCert(payload) }
     ElMessage.success('保存成功'); certDialog.value = false; fetchCerts()
-  } catch (e) { }
+  } catch (e) {
+    const msg = e.response?.data ? JSON.stringify(e.response.data) : '保存证书失败'
+    ElMessage.error(msg)
+  }
   saving.value = false
 }
 async function delCert(id) { try { await deleteNginxCert(id); ElMessage.success('删除成功'); fetchCerts() } catch (e) { } }
@@ -602,4 +622,12 @@ async function handlePushAll(row) {
 
 <style scoped>
 .w-full { width: 100%; }
+
+/* 多行 alert 的 icon 顶部对齐微调 */
+:deep(.cert-alert) {
+  align-items: flex-start;
+}
+:deep(.cert-alert .el-alert__icon) {
+  margin-top: 3px;
+}
 </style>

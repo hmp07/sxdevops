@@ -252,7 +252,7 @@ class NginxDomain(models.Model):
 class NginxRoute(models.Model):
     nginx_domain = models.ForeignKey(NginxDomain, on_delete=models.CASCADE, verbose_name='所属域名', related_name='routes')
     location = models.CharField('Location 路径', max_length=256, default='/')
-    upstream_servers = models.TextField('后端地址', default='', help_text='每行一个后端地址，如 http://127.0.0.1:8080')
+    upstream_servers = models.TextField('后端地址', blank=True, default='', help_text='每行一个后端地址，如 http://127.0.0.1:8080')
     redirect_url = models.CharField('重定向地址', max_length=512, blank=True, default='')
     redirect_code = models.IntegerField('重定向状态码', default=301)
     custom_headers = models.TextField('自定义 Header (JSON)', blank=True, default='', help_text='[{"name":"X-Custom","value":"val"}]')
