@@ -22,4 +22,5 @@ urlpatterns = [
     path('api/', include('ops.urls')),
     path('api/sqlaudit/', include('sqlaudit.urls')),
     path('api/marketplace/', include('marketplace.urls')),
+    path('api/cmdb/', include('cmdb.urls')),
 ]

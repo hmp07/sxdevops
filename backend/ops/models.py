@@ -271,4 +271,3 @@ class NginxRoute(models.Model):
 
     def __str__(self):
         return f'{self.nginx_domain.domain}{self.location}'
-

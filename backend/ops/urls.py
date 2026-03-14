@@ -16,6 +16,9 @@ router.register(r'nginx/envs', nginx_views.NginxEnvironmentViewSet)
 router.register(r'nginx/certs', nginx_views.NginxCertificateViewSet)
 router.register(r'nginx/domains', nginx_views.NginxDomainViewSet)
 router.register(r'nginx/routes', nginx_views.NginxRouteViewSet)
+
+
+
 urlpatterns = [
     path('dashboard/stats/', views.dashboard_stats, name='dashboard-stats'),
     # Loki 代理
@@ -30,5 +33,7 @@ urlpatterns = [
     path('docker/containers/<str:container_id>/remove/', docker_views.container_remove, name='docker-container-remove'),
     path('docker/containers/<str:container_id>/logs/', docker_views.container_logs, name='docker-container-logs'),
     path('docker/containers/<str:container_id>/inspect/', docker_views.container_inspect, name='docker-container-inspect'),
+
     path('', include(router.urls)),
 ]
+

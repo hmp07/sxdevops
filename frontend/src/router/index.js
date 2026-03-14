@@ -20,6 +20,12 @@ const routes = [
                 meta: { title: '主机管理', icon: 'Monitor' },
             },
             {
+                path: 'cmdb',
+                name: 'CmdbManage',
+                component: () => import('@/views/CmdbManage.vue'),
+                meta: { title: 'CMDB', icon: 'Files' },
+            },
+            {
                 path: 'deployments',
                 name: 'Deployments',
                 component: () => import('@/views/Deployments.vue'),

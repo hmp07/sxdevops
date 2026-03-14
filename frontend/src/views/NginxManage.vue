@@ -35,9 +35,9 @@
       </div>
     </div>
 
-    <!-- 主 Tab 栏 -->
-    <div class="k8s-main-tabs">
-      <button v-for="tab in mainTabs" :key="tab.key" class="k8s-tab-btn" :class="{ active: activeTab === tab.key }" @click="switchTab(tab.key)">
+    <!-- 主 Tab 栏 (Pill Tab Theme: Green) -->
+    <div class="neo-tabs theme-green">
+      <button v-for="tab in mainTabs" :key="tab.key" class="neo-tab-btn" :class="{ active: activeTab === tab.key }" @click="switchTab(tab.key)">
         <el-icon style="margin-right:4px;"><component :is="tab.icon" /></el-icon>
         {{ tab.label }}
       </button>

@@ -24,9 +24,9 @@
       </div>
     </div>
 
-    <!-- 主 Tab 栏 -->
-    <div class="k8s-main-tabs">
-      <button v-for="tab in mainTabs" :key="tab.key" class="k8s-tab-btn" :class="{ active: activeTab === tab.key }" @click="switchTab(tab.key)">
+    <!-- 主 Tab 栏 (Pill Tab Theme: Blue) -->
+    <div class="neo-tabs theme-blue">
+      <button v-for="tab in mainTabs" :key="tab.key" class="neo-tab-btn" :class="{ active: activeTab === tab.key }" @click="switchTab(tab.key)">
         <el-icon style="margin-right:4px;"><component :is="tab.icon" /></el-icon>
         {{ tab.label }}
       </button>
@@ -135,8 +135,8 @@
 
     <!-- ============ 工作负载 ============ -->
     <div v-if="activeTab === 'workloads'" class="tab-content">
-      <div class="k8s-sub-tabs">
-        <button v-for="st in workloadSubTabs" :key="st" class="k8s-sub-tab" :class="{ active: workloadSub === st }" @click="workloadSub = st; fetchCurrentTab()">{{ st }}</button>
+      <div class="neo-sub-tabs theme-blue">
+        <button v-for="st in workloadSubTabs" :key="st" class="neo-sub-tab-btn" :class="{ active: workloadSub === st }" @click="workloadSub = st; fetchCurrentTab()">{{ st }}</button>
       </div>
       <!-- Deployment -->
       <el-table v-if="workloadSub==='Deployment'" :data="deployments" stripe v-loading="loading" style="width:100%">
@@ -288,8 +288,8 @@
     </div>
     <!-- ============ 网络管理 ============ -->
     <div v-if="activeTab === 'network'" class="tab-content">
-      <div class="k8s-sub-tabs">
-        <button v-for="st in ['Service','Ingress']" :key="st" class="k8s-sub-tab" :class="{ active: networkSub === st }" @click="networkSub = st; fetchCurrentTab()">{{ st }}</button>
+      <div class="neo-sub-tabs theme-blue">
+        <button v-for="st in ['Service','Ingress']" :key="st" class="neo-sub-tab-btn" :class="{ active: networkSub === st }" @click="networkSub = st; fetchCurrentTab()">{{ st }}</button>
       </div>
       <el-table v-if="networkSub==='Service'" :data="services" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="名称" min-width="200">
@@ -348,8 +348,8 @@
 
     <!-- ============ 存储管理 ============ -->
     <div v-if="activeTab === 'storage'" class="tab-content">
-      <div class="k8s-sub-tabs">
-        <button v-for="st in ['PV','PVC','StorageClass']" :key="st" class="k8s-sub-tab" :class="{ active: storageSub === st }" @click="storageSub = st; fetchCurrentTab()">{{ st }}</button>
+      <div class="neo-sub-tabs theme-blue">
+        <button v-for="st in ['PV','PVC','StorageClass']" :key="st" class="neo-sub-tab-btn" :class="{ active: storageSub === st }" @click="storageSub = st; fetchCurrentTab()">{{ st }}</button>
       </div>
       <el-table v-if="storageSub==='PV'" :data="pvs" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="名称" min-width="200">
@@ -432,8 +432,8 @@
 
     <!-- ============ 配置管理 ============ -->
     <div v-if="activeTab === 'config'" class="tab-content">
-      <div class="k8s-sub-tabs">
-        <button v-for="st in ['ConfigMap','Secret']" :key="st" class="k8s-sub-tab" :class="{ active: configSub === st }" @click="configSub = st; fetchCurrentTab()">{{ st }}</button>
+      <div class="neo-sub-tabs theme-blue">
+        <button v-for="st in ['ConfigMap','Secret']" :key="st" class="neo-sub-tab-btn" :class="{ active: configSub === st }" @click="configSub = st; fetchCurrentTab()">{{ st }}</button>
       </div>
       <el-table v-if="configSub==='ConfigMap'" :data="configmaps" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="名称" min-width="250">

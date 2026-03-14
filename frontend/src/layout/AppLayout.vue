@@ -99,6 +99,7 @@ const appStore = useAppStore()
 const menuItems = [
   { path: '/dashboard',   title: '仪表盘',   icon: 'Odometer' },
   { path: '/hosts',       title: '主机管理', icon: 'Monitor' },
+  { path: '/cmdb',        title: 'CMDB',     icon: 'Files' },
   { path: '/deployments', title: '部署管理', icon: 'Promotion' },
   { path: '/marketplace', title: '工具市场', icon: 'Shop' },
   {

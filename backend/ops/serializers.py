@@ -1,5 +1,8 @@
 from rest_framework import serializers
-from .models import Host, Deployment, Alert, LogEntry, K8sCluster, DockerHost, NginxEnvironment, NginxCertificate, NginxDomain, NginxRoute
+from .models import (
+    Host, Deployment, Alert, LogEntry, K8sCluster, DockerHost,
+    NginxEnvironment, NginxCertificate, NginxDomain, NginxRoute,
+)
 
 
 class HostSerializer(serializers.ModelSerializer):
@@ -101,5 +104,6 @@ class NginxRouteSerializer(serializers.ModelSerializer):
     class Meta:
         model = NginxRoute
         fields = '__all__'
+
 
 
