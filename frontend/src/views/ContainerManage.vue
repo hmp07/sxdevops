@@ -27,7 +27,7 @@
     <!-- ============ 环境管理 ============ -->
     <div v-if="activeTab === 'hosts'" class="tab-content">
       <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
-        <el-button type="primary" size="small" @click="openHostDialog()"><el-icon><Plus /></el-icon> 添加环境</el-button>
+        <el-button v-if="canManageDocker" type="primary" size="small" @click="openHostDialog()"><el-icon><Plus /></el-icon> 添加环境</el-button>
       </div>
       <el-table :data="dockerHosts" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="环境名称" min-width="160">
@@ -48,7 +48,7 @@
         </el-table-column>
         <el-table-column prop="docker_api_version" label="Docker 版本" width="120" />
         <el-table-column prop="description" label="描述" min-width="160" show-overflow-tooltip />
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column v-if="canManageDocker" label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="testHost(row)">测试连接</el-button>
             <el-button link type="info" size="small" @click="openHostDialog(row)">编辑</el-button>
@@ -84,12 +84,12 @@
         <el-table-column prop="ports" label="端口映射" min-width="200" show-overflow-tooltip />
         <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
-            <el-button v-if="row.state !== 'running'" link type="success" size="small" @click="doAction(row, 'start')">启动</el-button>
-            <el-button v-if="row.state === 'running'" link type="warning" size="small" @click="doAction(row, 'stop')">停止</el-button>
-            <el-button v-if="row.state === 'running'" link type="primary" size="small" @click="doAction(row, 'restart')">重启</el-button>
+            <el-button v-if="canManageDocker && row.state !== 'running'" link type="success" size="small" @click="doAction(row, 'start')">启动</el-button>
+            <el-button v-if="canManageDocker && row.state === 'running'" link type="warning" size="small" @click="doAction(row, 'stop')">停止</el-button>
+            <el-button v-if="canManageDocker && row.state === 'running'" link type="primary" size="small" @click="doAction(row, 'restart')">重启</el-button>
             <el-button link type="info" size="small" @click="viewContainerLogs(row)">日志</el-button>
             <el-button link type="info" size="small" @click="inspectContainer(row)">详情</el-button>
-            <el-popconfirm title="确定删除该容器？" @confirm="removeContainer(row)">
+            <el-popconfirm v-if="canManageDocker" title="确定删除该容器？" @confirm="removeContainer(row)">
               <template #reference>
                 <el-button link type="danger" size="small">删除</el-button>
               </template>
@@ -147,14 +147,18 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import { useAuthStore } from '@/stores/auth'
 import {
   getDockerHosts, createDockerHost, updateDockerHost, deleteDockerHost, testDockerConnection,
   getDockerContainers, getDockerImages,
   dockerContainerAction, dockerContainerRemove,
   getDockerContainerLogs, getDockerContainerInspect,
 } from '@/api/modules/container'
+
+const authStore = useAuthStore()
+const canManageDocker = computed(() => authStore.hasPermission('ops.docker.manage'))
 
 const mainTabs = [
   { key: 'hosts',      label: '环境管理', icon: 'OfficeBuilding' },
@@ -224,6 +228,7 @@ function containerStateType(state) {
 
 // ====== 容器操作 ======
 async function doAction(row, action) {
+  if (!canManageDocker.value) return
   try {
     const res = await dockerContainerAction(row.id, selectedHostId.value, action)
     ElMessage.success(res.message || `${action} 成功`)
@@ -234,6 +239,7 @@ async function doAction(row, action) {
 }
 
 async function removeContainer(row) {
+  if (!canManageDocker.value) return
   try {
     await dockerContainerRemove(row.id, selectedHostId.value)
     ElMessage.success('容器已删除')
@@ -282,6 +288,7 @@ const savingHost = ref(false)
 const hostForm = ref({ name: '', ip_address: '', ssh_port: 22, ssh_user: 'root', ssh_password: '', description: '' })
 
 function openHostDialog(host) {
+  if (!canManageDocker.value) return
   if (host) {
     editingHostId.value = host.id
     hostForm.value = { name: host.name, ip_address: host.ip_address, ssh_port: host.ssh_port, ssh_user: host.ssh_user, ssh_password: '', description: host.description }
@@ -293,6 +300,7 @@ function openHostDialog(host) {
 }
 
 async function saveHost() {
+  if (!canManageDocker.value) return
   if (!hostForm.value.name) return ElMessage.warning('请填写环境名称')
   if (!hostForm.value.ip_address) return ElMessage.warning('请填写 IP 地址')
   savingHost.value = true
@@ -313,6 +321,7 @@ async function saveHost() {
 }
 
 async function testHost(row) {
+  if (!canManageDocker.value) return
   try {
     const res = await testDockerConnection(row.id)
     if (res.success) ElMessage.success(res.message)
@@ -322,6 +331,7 @@ async function testHost(row) {
 }
 
 async function delHost(row) {
+  if (!canManageDocker.value) return
   try {
     await deleteDockerHost(row.id)
     ElMessage.success('环境已删除')

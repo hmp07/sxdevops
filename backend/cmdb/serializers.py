@@ -30,6 +30,27 @@ class CIRelationSerializer(serializers.ModelSerializer):
         model = CIRelation
         fields = '__all__'
 
+    def validate(self, attrs):
+        source = attrs.get('source') or getattr(self.instance, 'source', None)
+        target = attrs.get('target') or getattr(self.instance, 'target', None)
+        relation_type = attrs.get('relation_type') or getattr(self.instance, 'relation_type', None)
+
+        if source and target and source.id == target.id:
+            raise serializers.ValidationError('Source and target must be different CIs.')
+
+        if source and target and relation_type:
+            duplicate_qs = CIRelation.objects.filter(
+                source=source,
+                target=target,
+                relation_type=relation_type,
+            )
+            if self.instance is not None:
+                duplicate_qs = duplicate_qs.exclude(pk=self.instance.pk)
+            if duplicate_qs.exists():
+                raise serializers.ValidationError('This CI relation already exists.')
+
+        return attrs
+
 class CostRecordSerializer(serializers.ModelSerializer):
     ci_name = serializers.CharField(source='ci.name', read_only=True)
     business_line = serializers.CharField(source='ci.business_line', read_only=True)

@@ -23,6 +23,7 @@ export const getConfigItemStats = (params) => request.get('/cmdb/config-items/st
 // CI 关系
 export const getCIRelations = (params) => request.get('/cmdb/ci-relations/', { params })
 export const createCIRelation = (data) => request.post('/cmdb/ci-relations/', data)
+export const updateCIRelation = (id, data) => request.put(`/cmdb/ci-relations/${id}/`, data)
 export const deleteCIRelation = (id) => request.delete(`/cmdb/ci-relations/${id}/`)
 
 // 成本记录
@@ -39,5 +40,5 @@ export const completeRequest = (id) => request.post(`/cmdb/resource-requests/${i
 // 聚合 API
 export const getCmdbDashboard = () => request.get('/cmdb/dashboard/stats/')
 export const getCmdbTopology = (params) => request.get('/cmdb/topology/data/', { params })
-export const getCmdbCostReport = () => request.get('/cmdb/cost/report/')
-export const getCmdbOptimization = () => request.get('/cmdb/optimization/suggestions/')
+export const getCmdbCostReport = (params) => request.get('/cmdb/cost/report/', { params })
+export const getCmdbOptimization = (params) => request.get('/cmdb/optimization/suggestions/', { params })

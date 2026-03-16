@@ -27,8 +27,24 @@ class ConfigItem(models.Model):
 class CIRelation(models.Model):
     source = models.ForeignKey(ConfigItem, on_delete=models.CASCADE, related_name='outgoing_relations')
     target = models.ForeignKey(ConfigItem, on_delete=models.CASCADE, related_name='incoming_relations')
-    relation_type = models.CharField("关系类型", max_length=50, choices=[('depends_on', '依赖'), ('runs_on', '运行在'), ('connects_to', '连接')])
+    relation_type = models.CharField(
+        "关系类型",
+        max_length=50,
+        choices=[
+            ('depends_on', '业务依赖'),
+            ('runs_on', '部署在'),
+            ('connects_to', '连接到'),
+        ],
+    )
     description = models.CharField("描述", max_length=200, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['source', 'target', 'relation_type'],
+                name='cmdb_cirelation_unique_relation',
+            )
+        ]
 
 class CostRecord(models.Model):
     ci = models.ForeignKey(ConfigItem, on_delete=models.CASCADE, related_name='costs')

@@ -18,7 +18,7 @@
       <div style="width:240px;border-right:1px solid rgba(139,92,246,0.15);padding-right:12px;display:flex;flex-direction:column;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
           <span style="font-weight:600;color:var(--text-primary,#e2e8f0);font-size:14px;cursor:pointer;" @click="clearTreeFilter" title="点击查看全部"><el-icon style="margin-right:4px;vertical-align:-2px;"><Connection /></el-icon>业务资源树</span>
-          <el-button link type="primary" size="small" @click="openNodeDialog()">
+          <el-button v-if="canManageCi" link type="primary" size="small" @click="openNodeDialog()">
             <el-icon><Plus /></el-icon>
           </el-button>
         </div>
@@ -31,9 +31,9 @@
                 {{ node.label }}
               </span>
               <span class="tree-actions" @click.stop v-show="node.isCurrent || true">
-                <el-button v-if="data.node_type === 'biz'" link type="success" style="padding:0;height:auto;" @click="openNodeDialog(null, data.id)"><el-icon><Plus /></el-icon></el-button>
-                <el-button link type="primary" style="padding:0;margin-left:8px;height:auto;" @click="openNodeDialog(data)"><el-icon><Edit /></el-icon></el-button>
-                <el-popconfirm title="确定删除?" @confirm="delNode(data)">
+                <el-button v-if="canManageCi && data.node_type === 'biz'" link type="success" style="padding:0;height:auto;" @click="openNodeDialog(null, data.id)"><el-icon><Plus /></el-icon></el-button>
+                <el-button v-if="canManageCi" link type="primary" style="padding:0;margin-left:8px;height:auto;" @click="openNodeDialog(data)"><el-icon><Edit /></el-icon></el-button>
+                <el-popconfirm v-if="canManageCi" title="确定删除?" @confirm="delNode(data)">
                   <template #reference><el-button link type="danger" style="padding:0;margin-left:8px;height:auto;"><el-icon><Delete /></el-icon></el-button></template>
                 </el-popconfirm>
               </span>
@@ -65,8 +65,8 @@
           </el-input>
         </div>
         <div style="display:flex;gap:8px;">
-          <el-button size="small" @click="openTypeDialog">管理类型</el-button>
-          <el-button type="primary" size="small" @click="openItemDialog()"><el-icon><Plus /></el-icon> 新增配置项</el-button>
+          <el-button v-if="canManageCi" size="small" @click="openTypeDialog">管理类型</el-button>
+          <el-button v-if="canManageCi" type="primary" size="small" @click="openItemDialog()"><el-icon><Plus /></el-icon> 新增配置项</el-button>
         </div>
       </div>
 
@@ -117,7 +117,7 @@
         <el-table-column prop="status_display" label="状态" width="80">
           <template #default="{ row }"><el-tag size="small" :type="row.status==='active'?'success':row.status==='maintenance'?'warning':'danger'">{{ row.status_display }}</el-tag></template>
         </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column v-if="canManageCi" label="操作" width="150" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openItemDialog(row)">编辑</el-button>
             <el-popconfirm title="确定删除此配置项？" @confirm="delItem(row)">
@@ -127,60 +127,35 @@
         </el-table-column>
       </el-table>
       <div style="display:flex;justify-content:flex-end;margin-top:12px;">
-        <el-pagination small background layout="prev,pager,next" :total="itemsTotal" :page-size="20" v-model:current-page="itemsPage" @current-change="fetchItems" />
+        <el-pagination size="small" background layout="prev,pager,next" :total="itemsTotal" :page-size="20" v-model:current-page="itemsPage" @current-change="fetchItems" />
       </div>
       </div>
     </div>
 
-    <!-- ============ Tab 2: 资源地图 ============ -->
+    <!-- ============ Tab 2: ???? ============ -->
     <div v-if="activeTab === 'topology'" class="tab-content">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-        <div style="display:flex;gap:8px;align-items:center;">
-          <el-select v-model="topoFilterBiz" placeholder="按业务线筛选" clearable style="width:150px" size="small" @change="fetchTopology">
-            <el-option v-for="b in bizLines" :key="b" :label="b" :value="b" />
-          </el-select>
-          <el-select v-model="topoFilterEnv" placeholder="按环境筛选" clearable style="width:120px" size="small" @change="fetchTopology">
-            <el-option label="生产" value="prod" /><el-option label="测试" value="test" /><el-option label="开发" value="dev" />
-          </el-select>
-          <el-select v-model="topoFilterType" placeholder="全部类型" style="width:140px" size="small" @change="fetchTopology">
-            <el-option label="全部类型" value="" />
-            <el-option v-for="t in ciTypes" :key="t.id" :label="t.name" :value="t.id" />
-          </el-select>
-        </div>
-        <div style="display:flex;gap:8px;">
-          <el-button size="small" @click="openRelationDialog"><el-icon><Link /></el-icon> 添加关系</el-button>
-        </div>
-      </div>
-
-      <div class="topo-container" v-loading="topoLoading">
-        <div v-if="topoNodes.length === 0 && !topoLoading" style="position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;z-index:10;background:rgba(30,41,59,0.5);">
-          <el-empty description="暂无符合条件的资源拓扑，请尝试更换筛选规则"></el-empty>
-        </div>
-        <canvas ref="topoCanvas" class="topo-canvas" @mousedown="onCanvasMouseDown" @mousemove="onCanvasMouseMove" @mouseup="onCanvasMouseUp" @click="onCanvasClick"></canvas>
-        <!-- 拓扑图例 -->
-        <div class="topo-legend">
-          <div class="legend-title">图例</div>
-          <div v-for="t in ciTypes" :key="t.id" class="legend-item">
-            <span class="legend-dot" :style="{background: t.color}"></span>
-            <span>{{ t.name }}</span>
-          </div>
-          <div class="legend-divider"></div>
-          <div class="legend-item"><span class="legend-line" style="border-style:solid"></span> 依赖</div>
-          <div class="legend-item"><span class="legend-line" style="border-style:dashed"></span> 部署/连接</div>
-        </div>
-        <!-- 节点详情浮层 -->
-        <div v-if="hoveredNode" class="topo-tooltip" :style="{left: tooltipPos.x + 'px', top: tooltipPos.y + 'px'}">
-          <div style="font-weight:700;margin-bottom:4px;">{{ hoveredNode.name }}</div>
-          <div style="font-size:12px;color:#94a3b8;">类型: {{ hoveredNode.type }}</div>
-          <div style="font-size:12px;color:#94a3b8;">IP: {{ hoveredNode.ip || '-' }}</div>
-          <div style="font-size:12px;color:#94a3b8;">环境: {{ hoveredNode.env }}</div>
-          <div style="font-size:12px;color:#94a3b8;">业务线: {{ hoveredNode.business_line || '-' }}</div>
-        </div>
-      </div>
+      <CmdbTopologyPanel
+        :ci-types="ciTypes"
+        :resource-tree="resourceTree"
+        :can-manage="canManageCi"
+        @edit-ci="openTopologyItemEditor"
+      />
     </div>
 
     <!-- ============ Tab 3: 成本分析 ============ -->
     <div v-if="activeTab === 'cost'" class="tab-content">
+      <div class="cost-toolbar">
+        <el-date-picker
+          v-model="costMonth"
+          type="month"
+          value-format="YYYY-MM"
+          placeholder="选择月份"
+          style="width:160px"
+          @change="fetchCostReport"
+        />
+        <el-button size="small" @click="fetchCostReport">刷新</el-button>
+      </div>
+
       <div class="cost-summary-row">
         <div class="cost-card cost-card-total">
           <div class="cost-card-icon">💰</div>
@@ -213,37 +188,47 @@
       </div>
 
       <div class="cost-charts-row">
-        <!-- 按业务线分布 -->
         <div class="cost-chart-box">
           <div class="chart-title">💼 业务线成本分布</div>
           <div class="chart-bars">
             <div v-for="b in (costReport.by_business || [])" :key="b.business_line" class="bar-item">
               <div class="bar-label">{{ b.business_line }}</div>
               <div class="bar-track">
-                <div class="bar-fill bar-fill-biz" :style="{width: barWidth(b.total_cost, maxBizCost) + '%'}"></div>
+                <div class="bar-fill bar-fill-biz" :style="{ width: barWidth(b.total_cost, maxBizCost) + '%' }"></div>
               </div>
               <div class="bar-value">¥{{ formatCost(b.total_cost) }}</div>
             </div>
-            <div v-if="!(costReport.by_business||[]).length" class="empty-chart">暂无数据</div>
+            <div v-if="!(costReport.by_business || []).length" class="empty-chart">暂无数据</div>
           </div>
         </div>
-        <!-- 按环境分布 -->
         <div class="cost-chart-box">
           <div class="chart-title">🌐 环境成本分布</div>
           <div class="chart-bars">
             <div v-for="e in (costReport.by_environment || [])" :key="e.environment" class="bar-item">
               <div class="bar-label">{{ envLabel(e.environment) }}</div>
               <div class="bar-track">
-                <div class="bar-fill bar-fill-env" :style="{width: barWidth(e.total_cost, maxEnvCost) + '%'}"></div>
+                <div class="bar-fill bar-fill-env" :style="{ width: barWidth(e.total_cost, maxEnvCost) + '%' }"></div>
               </div>
               <div class="bar-value">¥{{ formatCost(e.total_cost) }}</div>
             </div>
-            <div v-if="!(costReport.by_environment||[]).length" class="empty-chart">暂无数据</div>
+            <div v-if="!(costReport.by_environment || []).length" class="empty-chart">暂无数据</div>
           </div>
         </div>
       </div>
 
-      <!-- 成本 Top 10 -->
+      <div class="cost-chart-box" style="margin-top:16px;">
+        <div class="chart-title">📈 近 6 月成本趋势</div>
+        <div class="trend-grid">
+          <div v-for="point in (costReport.cost_trend || [])" :key="point.period" class="trend-item">
+            <div class="trend-bar">
+              <div class="trend-fill" :style="{ height: trendHeight(point.total, maxTrendCost) + '%' }"></div>
+            </div>
+            <div class="trend-label">{{ point.period }}</div>
+            <div class="trend-value">¥{{ formatCost(point.total) }}</div>
+          </div>
+        </div>
+      </div>
+
       <div class="cost-chart-box" style="margin-top:16px;">
         <div class="chart-title">🏆 成本 Top 10 资源</div>
         <el-table :data="costReport.top_cost_items || []" stripe size="small" style="width:100%">
@@ -251,8 +236,13 @@
           <el-table-column prop="type_name" label="类型" width="100" />
           <el-table-column prop="business_line" label="业务线" width="120" />
           <el-table-column prop="environment" label="环境" width="80">
-            <template #default="{ row }"><el-tag size="small" :type="row.environment==='production'?'danger':'info'">{{ envLabel(row.environment) }}</el-tag></template>
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.environment === 'prod' ? 'danger' : row.environment === 'test' ? 'warning' : 'info'">
+                {{ envLabel(row.environment) }}
+              </el-tag>
+            </template>
           </el-table-column>
+          <el-table-column prop="provider" label="供应商" width="120" />
           <el-table-column prop="monthly_cost" label="月成本" width="120">
             <template #default="{ row }"><span style="font-weight:700;color:#f59e0b;">¥{{ formatCost(row.monthly_cost) }}</span></template>
           </el-table-column>
@@ -309,7 +299,7 @@
           <el-option label="待审批" value="pending" /><el-option label="已批准" value="approved" />
           <el-option label="已拒绝" value="rejected" /><el-option label="已完成" value="completed" />
         </el-select>
-        <el-button type="primary" size="small" @click="openRequestDialog"><el-icon><Plus /></el-icon> 新建申请</el-button>
+        <el-button v-if="canSubmitRequests" type="primary" size="small" @click="openRequestDialog"><el-icon><Plus /></el-icon> 新建申请</el-button>
       </div>
       <el-table :data="requests" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="title" label="申请标题" min-width="200">
@@ -335,20 +325,20 @@
         <el-table-column prop="created_at" label="申请时间" width="160">
           <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column v-if="canApproveRequests" label="操作" width="180" fixed="right">
           <template #default="{ row }">
-            <template v-if="row.status==='pending'">
+            <template v-if="canApproveRequests && row.status==='pending'">
               <el-button link type="success" size="small" @click="doApprove(row)">批准</el-button>
               <el-button link type="danger" size="small" @click="doReject(row)">拒绝</el-button>
             </template>
-            <el-button v-if="row.status==='approved'" link type="primary" size="small" @click="doComplete(row)">标记完成</el-button>
+            <el-button v-if="canApproveRequests && row.status==='approved'" link type="primary" size="small" @click="doComplete(row)">标记完成</el-button>
           </template>
         </el-table-column>
       </el-table>
     </div>
 
     <!-- ============ 配置项新增/编辑弹窗 ============ -->
-    <el-dialog v-model="itemDialogVisible" :title="editingItemId ? '编辑配置项' : '新增配置项'" width="90%" style="max-width:640px;" top="5vh" append-to-body destroy-on-close>
+    <el-dialog v-if="canManageCi" v-model="itemDialogVisible" :title="editingItemId ? '编辑配置项' : '新增配置项'" width="90%" style="max-width:640px;" top="5vh" append-to-body destroy-on-close>
       <el-form :model="itemForm" label-width="90px">
         <el-form-item label="名称"><el-input v-model="itemForm.name" placeholder="如 order-service-01" /></el-form-item>
         <el-form-item label="CI 类型">
@@ -400,7 +390,7 @@
     </el-dialog>
 
     <!-- ============ 业务资源树节点管理的弹窗 ============ -->
-    <el-dialog v-model="nodeDialogVisible" :title="editingNodeId ? '编辑节点' : '新增节点'" width="400px" top="15vh" append-to-body destroy-on-close>
+    <el-dialog v-if="canManageCi" v-model="nodeDialogVisible" :title="editingNodeId ? '编辑节点' : '新增节点'" width="400px" top="15vh" append-to-body destroy-on-close>
       <el-form :model="nodeForm" label-width="80px">
         <el-form-item label="名称">
           <el-input v-model="nodeForm.name" placeholder="节点名称" />
@@ -422,7 +412,7 @@
     </el-dialog>
 
     <!-- ============ CI 类型管理弹窗 ============ -->
-    <el-dialog v-model="typeDialogVisible" title="管理 CI 类型" width="90%" style="max-width:500px;" top="5vh" append-to-body destroy-on-close>
+    <el-dialog v-if="canManageCi" v-model="typeDialogVisible" title="管理 CI 类型" width="90%" style="max-width:500px;" top="5vh" append-to-body destroy-on-close>
       <div style="display:flex;gap:8px;margin-bottom:12px;">
         <el-input v-model="newTypeName" placeholder="新类型名称" size="small" style="flex:1" />
         <el-button type="primary" size="small" @click="addType" :disabled="!newTypeName">添加</el-button>
@@ -430,7 +420,7 @@
       <el-table :data="ciTypes" stripe size="small">
         <el-table-column prop="name" label="名称" />
         <el-table-column prop="ci_count" label="CI 数" width="70" />
-        <el-table-column label="操作" width="80">
+        <el-table-column v-if="canManageCi" label="操作" width="80">
           <template #default="{ row }">
             <el-popconfirm title="确定删除?" @confirm="delType(row)" v-if="!row.built_in">
               <template #reference><el-button link type="danger" size="small">删除</el-button></template>
@@ -442,38 +432,7 @@
     </el-dialog>
 
     <!-- ============ 关系管理弹窗 ============ -->
-    <el-dialog v-model="relationDialogVisible" title="添加 CI 关系" width="90%" style="max-width:500px;" top="5vh" append-to-body destroy-on-close>
-      <el-form :model="relationForm" label-width="80px">
-        <el-form-item label="源 CI">
-          <el-select v-model="relationForm.source" filterable placeholder="选择源资源" style="width:100%">
-            <el-option v-for="ci in allCiList" :key="ci.id" :label="ci.name" :value="ci.id">
-              <span style="float: left">{{ ci.name }}</span>
-              <span style="float: right; color: #8492a6; font-size: 13px">{{ ci.ci_type_name }}</span>
-            </el-option>
-          </el-select>
-        </el-form-item>
-        <el-form-item label="关系类型">
-          <el-select v-model="relationForm.relation_type" style="width:100%">
-            <el-option label="依赖" value="depends_on" /><el-option label="部署在" value="runs_on" /><el-option label="连接到" value="connects_to" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="目标 CI">
-          <el-select v-model="relationForm.target" filterable placeholder="选择目标资源" style="width:100%">
-            <el-option v-for="ci in allCiList" :key="ci.id" :label="ci.name" :value="ci.id">
-              <span style="float: left">{{ ci.name }}</span>
-              <span style="float: right; color: #8492a6; font-size: 13px">{{ ci.ci_type_name }}</span>
-            </el-option>
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="relationDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveRelation" :loading="saving">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- ============ 资源申请弹窗 ============ -->
-    <el-dialog v-model="requestDialogVisible" title="新建资源申请" width="90%" style="max-width:560px;" top="5vh" append-to-body destroy-on-close>
+    <el-dialog v-if="canSubmitRequests" v-model="requestDialogVisible" title="新建资源申请" width="90%" style="max-width:560px;" top="5vh" append-to-body destroy-on-close>
       <el-form :model="requestForm" label-width="80px">
         <el-form-item label="标题"><el-input v-model="requestForm.title" placeholder="申请标题" /></el-form-item>
         <div style="display:flex;gap:12px;">
@@ -500,25 +459,34 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Plus, Search, Link, CircleCheck, Files, Monitor, Edit, Delete, Connection } from '@element-plus/icons-vue'
+import { Plus, Search, CircleCheck, Files, Monitor, Edit, Delete, Connection } from '@element-plus/icons-vue'
+import CmdbTopologyPanel from '@/components/cmdb/CmdbTopologyPanel.vue'
+import { useAuthStore } from '@/stores/auth'
 import {
   getCITypes, createCIType, deleteCIType,
   getConfigItems, createConfigItem, updateConfigItem, deleteConfigItem, getConfigItemStats,
-  getCIRelations, createCIRelation,
   getResourceRequests, createResourceRequest, approveRequest, rejectRequest, completeRequest,
-  getCmdbDashboard, getCmdbTopology, getCmdbCostReport, getCmdbOptimization,
+  getCmdbCostReport, getCmdbOptimization,
   getResourceNodeTree, createResourceNode, updateResourceNode, deleteResourceNode
 } from '@/api/modules/cmdb'
 
-const mainTabs = [
-  { key: 'items',    label: '配置项管理', icon: 'Grid' },
-  { key: 'topology', label: '资源地图',   icon: 'Share' },
-  { key: 'cost',     label: '成本分析',   icon: 'TrendCharts' },
-  { key: 'optimize', label: '资源优化',   icon: 'Lightning' },
-  { key: 'requests', label: '资源申请',   icon: 'Ticket' },
-]
+const authStore = useAuthStore()
+const canViewCi = computed(() => authStore.hasPermission('cmdb.ci.view'))
+const canManageCi = computed(() => authStore.hasPermission('cmdb.ci.manage'))
+const canViewTopology = computed(() => authStore.hasPermission('cmdb.topology.view'))
+const canViewCost = computed(() => authStore.hasPermission('cmdb.cost.view'))
+const canSubmitRequests = computed(() => authStore.hasPermission('cmdb.request.submit'))
+const canApproveRequests = computed(() => authStore.hasPermission('cmdb.request.approve'))
+
+const mainTabs = computed(() => [
+  canViewCi.value && { key: 'items', label: '配置项管理', icon: 'Grid' },
+  canViewTopology.value && { key: 'topology', label: '资源地图', icon: 'Share' },
+  canViewCost.value && { key: 'cost', label: '成本分析', icon: 'TrendCharts' },
+  canViewCost.value && { key: 'optimize', label: '资源优化', icon: 'Lightning' },
+  canViewCi.value && { key: 'requests', label: '资源申请', icon: 'Ticket' },
+].filter(Boolean))
 
 const activeTab = ref('items')
 const loading = ref(false)
@@ -533,6 +501,9 @@ async function fetchTypes() {
 // ====== 资源树 ======
 const treeRef = ref(null)
 const resourceTree = ref([])
+const bizLines = computed(() => resourceTree.value
+  .filter(node => node.node_type === 'biz')
+  .map(node => node.name))
 const nodeDialogVisible = ref(false)
 const nodeForm = ref({})
 const editingNodeId = ref(null)
@@ -549,6 +520,7 @@ async function fetchResourceTree() {
 }
 
 function openNodeDialog(nodeData = null, parentId = null) {
+  if (!canManageCi.value) return
   if (nodeData) {
     editingNodeId.value = nodeData.id
     nodeForm.value = { ...nodeData }
@@ -560,6 +532,7 @@ function openNodeDialog(nodeData = null, parentId = null) {
 }
 
 async function saveNode() {
+  if (!canManageCi.value) return
   if (!nodeForm.value.name) return ElMessage.warning('请填写名称')
   saving.value = true
   try {
@@ -576,6 +549,7 @@ async function saveNode() {
 }
 
 async function delNode(data) {
+  if (!canManageCi.value) return
   try { await deleteResourceNode(data.id); ElMessage.success('已删除'); fetchResourceTree() } catch(e) { ElMessage.error('删除失败') }
 }
 
@@ -641,6 +615,7 @@ function getEnvOptionsForItemForm() {
 }
 
 function openItemDialog(item) {
+  if (!canManageCi.value) return
   if (item) {
     editingItemId.value = item.id
     itemForm.value = { ...item, attributes: item.attributes || {} }
@@ -652,6 +627,7 @@ function openItemDialog(item) {
 }
 
 async function saveItem() {
+  if (!canManageCi.value) return
   if (!itemForm.value.name) return ElMessage.warning('请填写名称')
   if (!itemForm.value.ci_type) return ElMessage.warning('请选择 CI 类型')
   saving.value = true
@@ -670,226 +646,44 @@ async function saveItem() {
 }
 
 async function delItem(row) {
+  if (!canManageCi.value) return
   try { await deleteConfigItem(row.id); ElMessage.success('已删除'); fetchItems(); fetchItemStats() } catch(e) { ElMessage.error('删除失败') }
 }
 
 // CI Type dialog
 const typeDialogVisible = ref(false)
 const newTypeName = ref('')
-function openTypeDialog() { typeDialogVisible.value = true }
+function openTypeDialog() {
+  if (!canManageCi.value) return
+  typeDialogVisible.value = true
+}
 async function addType() {
+  if (!canManageCi.value) return
   if (!newTypeName.value) return
   try { await createCIType({ name: newTypeName.value }); ElMessage.success('已添加'); newTypeName.value = ''; fetchTypes() } catch(e) { ElMessage.error('添加失败') }
 }
 async function delType(row) {
+  if (!canManageCi.value) return
   try { await deleteCIType(row.id); ElMessage.success('已删除'); fetchTypes() } catch(e) { ElMessage.error('该类型下有配置项，无法删除') }
 }
 
 // ====== Tab: 资源地图 ======
-const topoCanvas = ref(null)
-const topoLoading = ref(false)
-const topoNodes = ref([])
-const topoEdges = ref([])
-const topoFilterType = ref('')
-const topoFilterBiz = ref(null)
-const topoFilterEnv = ref(null)
-const hoveredNode = ref(null)
-const tooltipPos = ref({ x: 0, y: 0 })
-const dragNode = ref(null)
-const dragOffset = ref({ x: 0, y: 0 })
-const bizLines = ref([])
-const allCiList = ref([])
-
-async function fetchTopology() {
-  await nextTick()
-  topoLoading.value = true
-  try {
-    const params = {}
-    if (topoFilterType.value) params.ci_type = topoFilterType.value
-    if (topoFilterBiz.value) params.business_line = topoFilterBiz.value
-    if (topoFilterEnv.value) params.environment = topoFilterEnv.value
-    const data = await getCmdbTopology(params)
-    topoNodes.value = data.nodes || []
-    topoEdges.value = data.edges || []
-    nextTick(() => {
-      layoutNodes()
-      drawTopology()
-    })
-  } catch(e) {}
-  topoLoading.value = false
+function openTopologyItemEditor(item) {
+  if (!canManageCi.value) return
+  openItemDialog(item)
 }
 
-function layoutNodes() {
-  const canvas = topoCanvas.value
-  if (!canvas) return
-  const w = canvas.width = canvas.parentElement.clientWidth
-  const h = canvas.height = Math.max(500, canvas.parentElement.clientHeight)
-  const n = topoNodes.value.length
-  if (n === 0) return
-  // Circular layout with more radius to avoid overlap
-  const cx = w / 2, cy = h / 2, radius = Math.min(w, h) * 0.42
-  topoNodes.value.forEach((node, i) => {
-    const angle = (2 * Math.PI * i) / n - Math.PI / 2
-    node.x = cx + radius * Math.cos(angle)
-    node.y = cy + radius * Math.sin(angle)
-    node.r = 26
-  })
+function getCurrentMonth() {
+  const now = new Date()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  return `${now.getFullYear()}-${month}`
 }
 
-function drawTopology() {
-  const canvas = topoCanvas.value
-  if (!canvas) return
-  const ctx = canvas.getContext('2d')
-  const w = canvas.width, h = canvas.height
-  ctx.clearRect(0, 0, w, h)
-
-  // Draw edges
-  topoEdges.value.forEach(edge => {
-    const src = topoNodes.value.find(n => n.id === edge.source)
-    const tgt = topoNodes.value.find(n => n.id === edge.target)
-    if (!src || !tgt) return
-    ctx.beginPath()
-    ctx.moveTo(src.x, src.y)
-    ctx.lineTo(tgt.x, tgt.y)
-    ctx.strokeStyle = edge.type === 'depends_on' ? '#8b5cf6' : '#94a3b8'
-    ctx.lineWidth = 1.5
-    if (edge.type !== 'depends_on') ctx.setLineDash([4, 4])
-    else ctx.setLineDash([])
-    ctx.stroke()
-    ctx.setLineDash([])
-
-    // Arrow head
-    const dx = tgt.x - src.x, dy = tgt.y - src.y
-    const len = Math.sqrt(dx * dx + dy * dy)
-    if (len === 0) return
-    const ux = dx / len, uy = dy / len
-    const arrowX = tgt.x - ux * tgt.r, arrowY = tgt.y - uy * tgt.r
-    const arrowSize = 8
-    ctx.beginPath()
-    ctx.moveTo(arrowX, arrowY)
-    ctx.lineTo(arrowX - arrowSize * ux + arrowSize * 0.4 * uy, arrowY - arrowSize * uy - arrowSize * 0.4 * ux)
-    ctx.lineTo(arrowX - arrowSize * ux - arrowSize * 0.4 * uy, arrowY - arrowSize * uy + arrowSize * 0.4 * ux)
-    ctx.closePath()
-    ctx.fillStyle = edge.type === 'depends_on' ? '#8b5cf6' : '#94a3b8'
-    ctx.fill()
-
-    // Edge label
-    const mx = (src.x + tgt.x) / 2, my = (src.y + tgt.y) / 2
-    ctx.font = '11px Inter, sans-serif'
-    const textWidth = ctx.measureText(edge.label).width
-    ctx.fillStyle = 'rgba(15,23,42,0.85)'
-    ctx.fillRect(mx - textWidth/2 - 4, my - 14, textWidth + 8, 18)
-    
-    ctx.fillStyle = '#94a3b8'
-    ctx.textAlign = 'center'
-    ctx.fillText(edge.label, mx, my - 1)
-  })
-
-  // Draw nodes
-  topoNodes.value.forEach(node => {
-    // Glow
-    const grd = ctx.createRadialGradient(node.x, node.y, node.r * 0.5, node.x, node.y, node.r * 1.8)
-    grd.addColorStop(0, node.color + '33')
-    grd.addColorStop(1, 'transparent')
-    ctx.beginPath()
-    ctx.arc(node.x, node.y, node.r * 1.8, 0, Math.PI * 2)
-    ctx.fillStyle = grd
-    ctx.fill()
-
-    // Circle
-    ctx.beginPath()
-    ctx.arc(node.x, node.y, node.r, 0, Math.PI * 2)
-    ctx.fillStyle = node.color
-    ctx.fill()
-    ctx.strokeStyle = '#fff'
-    ctx.lineWidth = 2
-    ctx.stroke()
-
-    // Status dot
-    if (node.status === 'active') {
-      ctx.beginPath()
-      ctx.arc(node.x + node.r * 0.6, node.y - node.r * 0.6, 5, 0, Math.PI * 2)
-      ctx.fillStyle = '#10b981'
-      ctx.fill()
-      ctx.strokeStyle = '#fff'
-      ctx.lineWidth = 1.5
-      ctx.stroke()
-    }
-
-    // Label Background
-    ctx.font = 'bold 12px Inter, sans-serif'
-    const lblW = ctx.measureText(node.name).width
-    ctx.fillStyle = 'rgba(15,23,42,0.85)'
-    ctx.beginPath()
-    ctx.roundRect(node.x - lblW/2 - 6, node.y + node.r + 8, lblW + 12, 22, 4)
-    ctx.fill()
-    ctx.strokeStyle = node.color
-    ctx.lineWidth = 1
-    ctx.stroke()
-
-    // Label Text
-    ctx.fillStyle = '#f8fafc'
-    ctx.textAlign = 'center'
-    ctx.fillText(node.name, node.x, node.y + node.r + 23)
-  })
-}
-
-function getNodeAt(x, y) {
-  for (const node of topoNodes.value) {
-    const dx = x - node.x, dy = y - node.y
-    if (dx * dx + dy * dy <= node.r * node.r * 1.5) return node
-  }
-  return null
-}
-
-function onCanvasMouseDown(e) {
-  const rect = topoCanvas.value.getBoundingClientRect()
-  const x = e.clientX - rect.left, y = e.clientY - rect.top
-  const node = getNodeAt(x, y)
-  if (node) { dragNode.value = node; dragOffset.value = { x: x - node.x, y: y - node.y } }
-}
-function onCanvasMouseMove(e) {
-  const rect = topoCanvas.value.getBoundingClientRect()
-  const x = e.clientX - rect.left, y = e.clientY - rect.top
-  if (dragNode.value) {
-    dragNode.value.x = x - dragOffset.value.x
-    dragNode.value.y = y - dragOffset.value.y
-    drawTopology()
-  } else {
-    const node = getNodeAt(x, y)
-    hoveredNode.value = node
-    if (node) { tooltipPos.value = { x: e.clientX - rect.left + 16, y: e.clientY - rect.top - 10} }
-  }
-  topoCanvas.value.style.cursor = (dragNode.value || getNodeAt(x, y)) ? 'grab' : 'default'
-}
-function onCanvasMouseUp() { dragNode.value = null }
-function onCanvasClick(e) {
-  // placeholder for future click-to-expand
-}
-
-// Relation dialog
-const relationDialogVisible = ref(false)
-const relationForm = ref({ source: null, target: null, relation_type: 'depends_on' })
-function openRelationDialog() {
-  relationForm.value = { source: null, target: null, relation_type: 'depends_on' }
-  fetchAllCiList()
-  relationDialogVisible.value = true
-}
-async function fetchAllCiList() {
-  try { const res = await getConfigItems({ page_size: 999 }); allCiList.value = res.results || res } catch(e) {}
-}
-async function saveRelation() {
-  if (!relationForm.value.source || !relationForm.value.target) return ElMessage.warning('请选择源和目标 CI')
-  saving.value = true
-  try { await createCIRelation(relationForm.value); ElMessage.success('关系已创建'); relationDialogVisible.value = false; fetchTopology() } catch(e) { ElMessage.error('创建失败') }
-  saving.value = false
-}
-
-// ====== Tab: 成本分析 ======
+const costMonth = ref(getCurrentMonth())
 const costReport = ref({})
 async function fetchCostReport() {
   loading.value = true
-  try { costReport.value = await getCmdbCostReport() } catch(e) {}
+  try { costReport.value = await getCmdbCostReport({ month: costMonth.value }) } catch(e) {}
   loading.value = false
 }
 const topCostBiz = computed(() => {
@@ -898,16 +692,28 @@ const topCostBiz = computed(() => {
 })
 const maxBizCost = computed(() => Math.max(...(costReport.value.by_business || []).map(b => parseFloat(b.total_cost) || 0), 1))
 const maxEnvCost = computed(() => Math.max(...(costReport.value.by_environment || []).map(e => parseFloat(e.total_cost) || 0), 1))
+const maxTrendCost = computed(() => Math.max(...(costReport.value.cost_trend || []).map(point => parseFloat(point.total) || 0), 1))
 
 function barWidth(val, max) { return max ? Math.max((parseFloat(val) / max) * 100, 2) : 2 }
+function trendHeight(val, max) { return max ? Math.max((parseFloat(val) / max) * 100, 8) : 8 }
 function formatCost(v) { return v ? parseFloat(v).toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) : '0' }
-function envLabel(env) { return { production: '生产', staging: '预发布', testing: '测试', development: '开发' }[env] || env }
+function envLabel(env) {
+  return {
+    prod: '生产',
+    test: '测试',
+    dev: '开发',
+    production: '生产',
+    staging: '预发布',
+    testing: '测试',
+    development: '开发',
+  }[env] || env
+}
 
 // ====== Tab: 资源优化 ======
 const optimization = ref({})
 async function fetchOptimization() {
   loading.value = true
-  try { optimization.value = await getCmdbOptimization() } catch(e) {}
+  try { optimization.value = await getCmdbOptimization({ month: costMonth.value }) } catch(e) {}
   loading.value = false
 }
 
@@ -929,49 +735,60 @@ async function fetchRequests() {
 }
 
 function openRequestDialog() {
+  if (!canSubmitRequests.value) return
   requestForm.value = { title: '', resource_type: '', specification: '', business_line: '', environment: 'testing', reason: '' }
   requestDialogVisible.value = true
 }
 async function saveRequest() {
+  if (!canSubmitRequests.value) return
   if (!requestForm.value.title || !requestForm.value.resource_type) return ElMessage.warning('请填写标题和资源类型')
   saving.value = true
   try { await createResourceRequest(requestForm.value); ElMessage.success('申请已提交'); requestDialogVisible.value = false; fetchRequests() } catch(e) { ElMessage.error('提交失败') }
   saving.value = false
 }
 async function doApprove(row) {
+  if (!canApproveRequests.value) return
   try { await approveRequest(row.id, {}); ElMessage.success('已批准'); fetchRequests() } catch(e) { ElMessage.error('操作失败') }
 }
 async function doReject(row) {
+  if (!canApproveRequests.value) return
   try { await rejectRequest(row.id, {}); ElMessage.success('已拒绝'); fetchRequests() } catch(e) { ElMessage.error('操作失败') }
 }
 async function doComplete(row) {
+  if (!canApproveRequests.value) return
   try { await completeRequest(row.id); ElMessage.success('已完成'); fetchRequests() } catch(e) { ElMessage.error('操作失败') }
 }
 
 function formatTime(t) { return t ? new Date(t).toLocaleString('zh-CN') : '' }
 
 // ====== Tab 切换 ======
-function switchTab(tab) {
-  activeTab.value = tab
-  if (tab === 'items') { fetchItems() }
-  else if (tab === 'topology') { fetchTopology(); fetchBizLines() }
-  else if (tab === 'cost') fetchCostReport()
-  else if (tab === 'optimize') fetchOptimization()
-  else if (tab === 'requests') fetchRequests()
+function loadTabData(tab) {
+  if (tab === 'items' && canViewCi.value) fetchItems()
+  else if (tab === 'cost' && canViewCost.value) fetchCostReport()
+  else if (tab === 'optimize' && canViewCost.value) fetchOptimization()
+  else if (tab === 'requests' && canViewCi.value) fetchRequests()
 }
 
-async function fetchBizLines() {
-  try {
-    const res = await getConfigItems({ page_size: 999 })
-    const list = (res.results || res).map(i => i.business_line).filter(Boolean)
-    bizLines.value = [...new Set(list)]
-  } catch(e) {}
+function switchTab(tab) {
+  if (!mainTabs.value.some(item => item.key === tab)) return
+  activeTab.value = tab
 }
+
+watch(mainTabs, (tabs) => {
+  if (tabs.length && !tabs.some(tab => tab.key === activeTab.value)) {
+    activeTab.value = tabs[0].key
+  }
+}, { immediate: true })
+
+watch(activeTab, (tab) => {
+  if (tab) loadTabData(tab)
+}, { immediate: true })
 
 onMounted(() => {
-  fetchTypes()
-  fetchResourceTree()
-  fetchItems()
+  if (canViewCi.value || canViewTopology.value) {
+    fetchTypes()
+    fetchResourceTree()
+  }
 })
 </script>
 
@@ -1020,6 +837,7 @@ onMounted(() => {
 }
 
 /* ====== 成本卡片 ====== */
+.cost-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 12px; }
 .cost-summary-row { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .cost-card {
   display: flex; align-items: center; gap: 14px; flex: 1; min-width: 200px;
@@ -1048,6 +866,19 @@ onMounted(() => {
 .bar-fill-env { background: linear-gradient(90deg, #3b82f6, #60a5fa); }
 .bar-value { font-size: 12px; font-weight: 600; color: #f59e0b; width: 80px; }
 .empty-chart { text-align: center; padding: 30px; color: #64748b; }
+.trend-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 12px; align-items: end; min-height: 220px; }
+.trend-item { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.trend-bar {
+  width: 100%; max-width: 56px; height: 140px; display: flex; align-items: end; justify-content: center;
+  padding: 6px; border-radius: 10px; background: rgba(148,163,184,0.08);
+}
+.trend-fill {
+  width: 100%; border-radius: 8px 8px 4px 4px;
+  background: linear-gradient(180deg, #22c55e 0%, #14b8a6 100%);
+  transition: height 0.4s ease;
+}
+.trend-label { font-size: 12px; color: #94a3b8; }
+.trend-value { font-size: 12px; font-weight: 600; color: var(--text-primary, #e2e8f0); }
 
 /* ====== 优化建议 ====== */
 .opt-card {

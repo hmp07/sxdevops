@@ -46,7 +46,7 @@
     <!-- ============ 环境管理 ============ -->
     <div v-if="activeTab === 'envs'" class="tab-content">
       <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
-        <el-button type="primary" size="small" @click="openEnvDialog()"><el-icon><Plus /></el-icon> 添加环境</el-button>
+        <el-button v-if="canManageNginx" type="primary" size="small" @click="openEnvDialog()"><el-icon><Plus /></el-icon> 添加环境</el-button>
       </div>
       <el-table :data="envs" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="环境名称" min-width="140">
@@ -69,7 +69,7 @@
           </template>
         </el-table-column>
         <el-table-column prop="description" label="描述" min-width="160" show-overflow-tooltip />
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column v-if="canManageNginx" label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="testEnv(row.id)">测试连接</el-button>
             <el-button link type="info" size="small" @click="openEnvDialog(row)">编辑</el-button>
@@ -85,7 +85,7 @@
     <div v-if="activeTab === 'domains'" class="tab-content">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
         <el-alert title="提示：修改配置和调整启用状态后，请点击【发布配置】实际生效" type="info" :closable="false" show-icon style="padding:4px 12px; width:auto; background:var(--bg-main);" />
-        <el-button type="primary" size="small" @click="openDomainDialog()" :disabled="!filterEnvId"><el-icon><Plus /></el-icon> 添加域名</el-button>
+        <el-button v-if="canManageNginx" type="primary" size="small" @click="openDomainDialog()" :disabled="!filterEnvId"><el-icon><Plus /></el-icon> 添加域名</el-button>
       </div>
       <el-table :data="filteredDomains" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="domain" label="域名/IP" min-width="180">
@@ -115,10 +115,10 @@
         </el-table-column>
         <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
-            <el-button link type="info" size="small" @click="openDomainDialog(row)">编辑</el-button>
+            <el-button v-if="canManageNginx" link type="info" size="small" @click="openDomainDialog(row)">编辑</el-button>
             <el-button link type="warning" size="small" @click="handlePreviewConf(row)">预览</el-button>
-            <el-button link type="success" size="small" @click="handleDeployConf(row)">发布配置</el-button>
-            <el-popconfirm title="确定删除该域名？" @confirm="delDomain(row.id)">
+            <el-button v-if="canManageNginx" link type="success" size="small" @click="handleDeployConf(row)">发布配置</el-button>
+            <el-popconfirm v-if="canManageNginx" title="确定删除该域名？" @confirm="delDomain(row.id)">
               <template #reference><el-button link type="danger" size="small">删除</el-button></template>
             </el-popconfirm>
           </template>
@@ -130,7 +130,7 @@
     <div v-if="activeTab === 'routes'" class="tab-content">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
         <el-alert title="提示：配置完路由后，请到【域名管理】选择对应域名【预览】并确认，无误后点击【发布配置】生效" type="info" :closable="false" show-icon style="padding:4px 12px; width:auto; background:var(--bg-main);" />
-        <el-button type="primary" size="small" @click="openRouteDialog()" :disabled="!filterDomainId"><el-icon><Plus /></el-icon> 添加路由</el-button>
+        <el-button v-if="canManageNginx" type="primary" size="small" @click="openRouteDialog()" :disabled="!filterDomainId"><el-icon><Plus /></el-icon> 添加路由</el-button>
       </div>
       <div v-if="!filterEnvId || !filterDomainId" style="text-align:center;padding:40px;color:#94a3b8;">
         请先在右上角选择<strong>环境</strong>和<strong>域名</strong>
@@ -155,7 +155,7 @@
         <el-table-column prop="enabled" label="启用" width="80">
           <template #default="{ row }"><el-tag :type="row.enabled?'success':'info'" size="small">{{ row.enabled?'是':'否' }}</el-tag></template>
         </el-table-column>
-        <el-table-column label="操作" width="130" fixed="right">
+        <el-table-column v-if="canManageNginx" label="操作" width="130" fixed="right">
           <template #default="{ row }">
             <el-button link type="info" size="small" @click="openRouteDialog(row)">编辑</el-button>
             <el-popconfirm title="确定删除该路由？" @confirm="delRoute(row.id)">
@@ -178,7 +178,7 @@
             </span>
           </template>
         </el-alert>
-        <el-button type="primary" size="small" @click="openCertDialog()"><el-icon><Plus /></el-icon> 添加证书</el-button>
+        <el-button v-if="canManageNginx" type="primary" size="small" @click="openCertDialog()"><el-icon><Plus /></el-icon> 添加证书</el-button>
       </div>
       <el-table :data="certs" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="domain" label="证书域名" min-width="180">
@@ -188,7 +188,7 @@
         </el-table-column>
         <el-table-column label="关联环境" min-width="200">
           <template #default="{ row }">
-            <el-tag v-for="env in (row.environment_names || [])" :key="env.id" size="small" type="success" style="margin-right:4px;margin-bottom:2px;" closable @close="handleUnlinkEnv(row, env.id)">{{ env.name }}</el-tag>
+            <el-tag v-for="env in (row.environment_names || [])" :key="env.id" size="small" type="success" style="margin-right:4px;margin-bottom:2px;" :closable="canManageNginx" @close="handleUnlinkEnv(row, env.id)">{{ env.name }}</el-tag>
             <span v-if="!row.environment_names || row.environment_names.length === 0" style="color:#cbd5e1;font-size:12px;">未关联</span>
           </template>
         </el-table-column>
@@ -199,7 +199,7 @@
           </template>
         </el-table-column>
         <el-table-column prop="description" label="描述" min-width="150" show-overflow-tooltip />
-        <el-table-column label="操作" width="260" fixed="right">
+        <el-table-column v-if="canManageNginx" label="操作" width="260" fixed="right">
           <template #default="{ row }">
             <el-button link type="info" size="small" @click="openCertDialog(row)">编辑</el-button>
             <el-button link type="primary" size="small" @click="openLinkEnvDialog(row)">关联环境</el-button>
@@ -355,6 +355,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import { useAuthStore } from '@/stores/auth'
 import { Location, Connection, Plus, Monitor, Lock, FolderOpened } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
 import {
@@ -363,6 +364,9 @@ import {
   getNginxDomains, createNginxDomain, updateNginxDomain, deleteNginxDomain, deployDomainConf, previewDomainConf,
   getNginxRoutes, createNginxRoute, updateNginxRoute, deleteNginxRoute
 } from '@/api/modules/nginx'
+
+const authStore = useAuthStore()
+const canManageNginx = computed(() => authStore.hasPermission('ops.nginx.manage'))
 
 const mainTabs = [
   { key: 'envs', label: '环境管理', icon: 'Monitor' },
@@ -486,10 +490,12 @@ onMounted(() => {
 
 // ====== ENV CRUD ======
 function openEnvDialog(row) {
+  if (!canManageNginx.value) return
   envForm.value = row ? { ...row, ssh_password: '' } : { ssh_port: 22, ssh_user: 'root', nginx_path: '/etc/nginx', status: 'disconnected' }
   envDialog.value = true
 }
 async function saveEnv() {
+  if (!canManageNginx.value) return
   saving.value = true
   try {
     if (envForm.value.id) {
@@ -503,18 +509,23 @@ async function saveEnv() {
   }
   saving.value = false
 }
-async function delEnv(id) { try { await deleteNginxEnvironment(id); ElMessage.success('删除成功'); fetchEnvs() } catch (e) { } }
+async function delEnv(id) {
+  if (!canManageNginx.value) return
+  try { await deleteNginxEnvironment(id); ElMessage.success('删除成功'); fetchEnvs() } catch (e) { } }
 async function testEnv(id) {
+  if (!canManageNginx.value) return
   ElMessage.info('测试连接中...')
   try { const res = await testNginxConnection(id); res.success ? ElMessage.success(res.message) : ElMessage.error(res.message); fetchEnvs() } catch (e) { ElMessage.error('连接失败') }
 }
 
 // ====== DOMAIN CRUD ======
 function openDomainDialog(row) {
+  if (!canManageNginx.value) return
   domainForm.value = row ? { ...row } : { environment: filterEnvId.value, listen_port: 80, ssl_port: 443, certificate: null, enabled: true }
   domainDialog.value = true
 }
 async function saveDomain() {
+  if (!canManageNginx.value) return
   if (!domainForm.value.domain) return ElMessage.warning('请填写域名或 IP')
   saving.value = true
   try {
@@ -527,8 +538,11 @@ async function saveDomain() {
   }
   saving.value = false
 }
-async function delDomain(id) { try { await deleteNginxDomain(id); ElMessage.success('删除成功'); fetchDomains() } catch (e) { } }
+async function delDomain(id) {
+  if (!canManageNginx.value) return
+  try { await deleteNginxDomain(id); ElMessage.success('删除成功'); fetchDomains() } catch (e) { } }
 async function handleDeployConf(row) {
+  if (!canManageNginx.value) return
   ElMessage.info('正在发布配置...')
   try { const res = await deployDomainConf(row.id); res.success ? ElMessage.success(res.message) : ElMessage.error(res.message) } catch (e) { ElMessage.error('发布失败') }
 }
@@ -539,10 +553,12 @@ function copyConf() { navigator.clipboard.writeText(previewContent.value).then((
 
 // ====== ROUTE CRUD ======
 function openRouteDialog(row) {
+  if (!canManageNginx.value) return
   routeForm.value = row ? { ...row } : { nginx_domain: filterDomainId.value, location: '/', upstream_servers: '', enabled: true, redirect_url: '', redirect_code: 301, custom_headers: '', proxy_set_headers: '', client_max_body_size: '10m', extra_directives: '' }
   routeDialog.value = true
 }
 async function saveRoute() {
+  if (!canManageNginx.value) return
   if (!routeForm.value.location) return ElMessage.warning('请填写 Location')
   if (!routeForm.value.upstream_servers && !routeForm.value.redirect_url) return ElMessage.warning('请填写后端地址或重定向地址')
   saving.value = true
@@ -555,14 +571,18 @@ async function saveRoute() {
   }
   saving.value = false
 }
-async function delRoute(id) { try { await deleteNginxRoute(id); ElMessage.success('删除成功'); fetchRoutes() } catch (e) { } }
+async function delRoute(id) {
+  if (!canManageNginx.value) return
+  try { await deleteNginxRoute(id); ElMessage.success('删除成功'); fetchRoutes() } catch (e) { } }
 
 // ====== CERT CRUD ======
 function openCertDialog(row) {
+  if (!canManageNginx.value) return
   certForm.value = row ? { ...row, cert_content: '', key_content: '' } : { cert_content: '', key_content: '', description: '' }
   certDialog.value = true
 }
 async function saveCert() {
+  if (!canManageNginx.value) return
   if (!certForm.value.id && !certForm.value.cert_content) return ElMessage.warning('请填写证书(PEM)内容')
   if (!certForm.value.id && !certForm.value.key_content) return ElMessage.warning('请填写私钥(KEY)内容')
   saving.value = true
@@ -584,14 +604,18 @@ async function saveCert() {
   }
   saving.value = false
 }
-async function delCert(id) { try { await deleteNginxCert(id); ElMessage.success('删除成功'); fetchCerts() } catch (e) { } }
+async function delCert(id) {
+  if (!canManageNginx.value) return
+  try { await deleteNginxCert(id); ElMessage.success('删除成功'); fetchCerts() } catch (e) { } }
 
 function openLinkEnvDialog(row) {
+  if (!canManageNginx.value) return
   linkCertId.value = row.id
   linkEnvId.value = ''
   linkEnvDialog.value = true
 }
 async function handleLinkEnv() {
+  if (!canManageNginx.value) return
   if (!linkEnvId.value) return ElMessage.warning('请选择环境')
   saving.value = true
   try {
@@ -602,6 +626,7 @@ async function handleLinkEnv() {
   saving.value = false
 }
 async function handleUnlinkEnv(row, envId) {
+  if (!canManageNginx.value) return
   try {
     const res = await unlinkCertEnv(row.id, envId)
     res.success ? ElMessage.success(res.message) : ElMessage.error(res.message)
@@ -609,6 +634,7 @@ async function handleUnlinkEnv(row, envId) {
   } catch (e) { ElMessage.error('操作失败') }
 }
 async function handlePushAll(row) {
+  if (!canManageNginx.value) return
   ElMessage.info('正在推送证书到所有关联环境...')
   try {
     const res = await pushCertAll(row.id)
@@ -631,3 +657,6 @@ async function handlePushAll(row) {
   margin-top: 3px;
 }
 </style>
+
+
+

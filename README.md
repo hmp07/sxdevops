@@ -2,69 +2,43 @@
 
 基于 Django、Django REST framework、Channels 与 Vue 3 / Element Plus 的一体化运维平台，覆盖主机管理、CMDB、部署管理、容器管理、Nginx 管理、日志中心、告警中心、SQL 审计等常见运维场景。
 
-## 术语说明
-
-- CMDB：Configuration Management Database，配置管理数据库
-- CI：Configuration Item，配置项或资源对象
-- WebShell：浏览器内主机终端入口
-
 ## 核心能力
 
-- 仪表盘：聚合主机、部署、告警等核心指标
-- 主机管理：主机台账、状态展示、WebShell 入口
-- CMDB：资源类型、配置项、资源树、拓扑关系、成本分析、优化建议、资源申请
-- 部署管理：部署记录、状态查看与发布追踪
-- 容器管理：K8s 集群、Docker 环境管理
-- Nginx 管理：域名、路由、证书与环境配置
-- 日志中心：数据源管理、日志查询、多标签页、历史记录、收藏条件、趋势图
-- SQL 审计：数据源管理、SQL 工单、只读查询
+- 仪表盘：汇总主机、部署、日志、告警等关键指标
+- 主机管理：主机纳管、连通性测试、WebShell 终端
+- CMDB：CI 类型、配置项、资源树、拓扑、成本分析、优化建议、资源申请
+- 部署管理：部署记录、状态跟踪、发布过程查询
+- 容器管理：K8s 集群、Docker 环境、容器与镜像查看
+- Nginx 管理：环境、证书、域名、路由与配置发布
+- 日志中心：日志源管理、查询、收藏条件、趋势图
+- SQL 审计：数据源、SQL 工单、只读查询
 - 工具市场：预留扩展型运维工具能力
 
-## 最近更新
+## RBAC 权限体系
 
-- CMDB 拓扑支持更清晰的筛选范围控制，适合做同环境资源梳理与邻接分析
-- CMDB 成本分析支持按月份查看、近 6 月趋势、Top 资源与多维度聚合
-- CMDB 优化建议基于资源状态、环境、规格与月成本给出节流提示
-- CI 关系增加自关联校验与唯一性约束，避免重复或无效关系
-- 新增 CMDB 自动关联设计文档，便于后续扩展关系发现能力
+项目已内置统一 RBAC 权限模型，后续新功能也应遵循同一套约束。
 
-## 技术栈
+- 模型：用户、用户组、角色、权限字典
+- 后端：统一在 `backend/rbac/registry.py` 注册权限，在 `backend/rbac/permissions.py` 做接口校验
+- 前端：路由、侧边栏、页面按钮、敏感操作统一走 `frontend/src/stores/auth.js`
+- WebSocket / WebShell：服务端二次校验，不依赖前端隐藏
+- SPA 登录页：后端已支持前端路由回退，直接访问 `/login` 不再返回 404
 
-- 后端：Django + Django REST framework + Channels + Daphne
-- 前端：Vue 3 + Vite + Element Plus + Pinia + Vue Router + ECharts
-- 数据存储：SQLite（默认开发配置）
+### 已覆盖的权限范围
 
-## 界面预览
+- 用户 / 用户组 / 角色 / 权限字典管理
+- 主机、终端、部署、告警、日志、SQL 审计、服务市场
+- CMDB、K8s、Docker、Nginx 的页面级与按钮级权限控制
 
-### CMDB 成本分析
+### 演示账号
 
-![CMDB 成本分析页](frontend/cmdb-cost-check-fixed.png)
+执行 `cd backend && python manage.py seed_data` 后，会自动补齐 RBAC 演示数据。默认密码均为 `Admin@123456`。
 
-## 项目结构
-
-```text
-agdevops/
-├─ backend/
-│  ├─ agdevops/                  # Django 配置
-│  ├─ ops/                       # 仪表盘、主机、部署、日志、告警
-│  ├─ cmdb/                      # CMDB、拓扑、成本、资源申请
-│  ├─ marketplace/               # 工具市场
-│  ├─ sqlaudit/                  # SQL 审计
-│  ├─ requirements.txt
-│  └─ manage.py
-├─ frontend/
-│  ├─ src/api/                   # 前端 API 封装
-│  ├─ src/components/            # 复用组件
-│  ├─ src/layout/                # 布局与菜单
-│  ├─ src/router/                # 路由配置
-│  ├─ src/stores/                # Pinia store
-│  ├─ src/views/                 # 页面视图
-│  └─ package.json
-├─ docs/
-│  ├─ CMDB使用手册.md
-│  └─ CMDB自动关联设计稿.md
-└─ README.md
-```
+- `admin`
+- `ops_demo`
+- `dev_demo`
+- `audit_demo`
+- `viewer_demo`
 
 ## 快速启动
 
@@ -93,10 +67,10 @@ npm run dev
 ## 常用命令
 
 ```bash
-# 后端全量测试
+# 后端测试
 cd backend && python manage.py test
 
-# 加载演示数据
+# 初始化或刷新演示数据（包含 RBAC 演示账号）
 cd backend && python manage.py seed_data
 
 # 前端开发
@@ -105,21 +79,41 @@ cd frontend && npm run dev
 # 前端生产构建
 cd frontend && npm run build
 
-# 前端本地预览构建结果
+# 前端本地预览
 cd frontend && npm run preview
 ```
 
-## 日志中心说明
+## 新功能接入权限的建议流程
 
-- 支持 Loki、ELK / Elasticsearch、阿里云 SLS
-- 首次迁移后可配合演示数据直接查看日志查询页面
-- 默认配置项位于 `backend/agdevops/settings.py`
-- 可通过环境变量覆盖日志源配置，例如 `LOKI_URL`、`ELK_URL`、`ELK_AUTH_TYPE`、`ALIYUN_SLS_ENDPOINT`、`ALIYUN_SLS_PROJECT`
+1. 在 `backend/rbac/registry.py` 注册权限编码，并按需加入内置角色
+2. 在后端 API 或 WebSocket 入口增加 RBAC 校验
+3. 在 `frontend/src/router/index.js` 和 `frontend/src/layout/AppLayout.vue` 配置路由 / 菜单权限
+4. 在页面内用 `useAuthStore().hasPermission(...)` 控制按钮、操作列和对话框
+5. 提交前执行 `cd backend && python manage.py test` 与 `cd frontend && npm run build`
 
-## 文档
+## 项目结构
 
-- `docs/CMDB使用手册.md`：CMDB 列表、拓扑与成本能力说明
-- `docs/CMDB自动关联设计稿.md`：CMDB 自动发现关系的设计思路
+```text
+agdevops/
+|- backend/
+|  |- agdevops/                  # Django 配置
+|  |- ops/                       # 仪表盘、主机、部署、日志、告警
+|  |- cmdb/                      # CMDB、拓扑、成本、资源申请
+|  |- marketplace/               # 工具市场
+|  |- rbac/                      # RBAC 权限系统
+|  |- sqlaudit/                  # SQL 审计
+|  |- requirements.txt
+|  `- manage.py
+|- frontend/
+|  |- src/api/                   # 前端 API 封装
+|  |- src/components/            # 复用组件
+|  |- src/layout/                # 布局与菜单
+|  |- src/router/                # 路由配置
+|  |- src/stores/                # Pinia store
+|  `- src/views/                 # 页面视图
+|- docs/
+`- README.md
+```
 
 ## 开发说明
 

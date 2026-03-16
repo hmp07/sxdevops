@@ -35,7 +35,7 @@
     <!-- ============ 集群管理 ============ -->
     <div v-if="activeTab === 'clusters'" class="tab-content">
       <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
-        <el-button type="primary" size="small" @click="openClusterDialog()"><el-icon><Plus /></el-icon> 添加集群</el-button>
+        <el-button v-if="canManageK8s" type="primary" size="small" @click="openClusterDialog()"><el-icon><Plus /></el-icon> 添加集群</el-button>
       </div>
       <el-table :data="clusters" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="集群名称" min-width="160">
@@ -53,7 +53,7 @@
           </template>
         </el-table-column>
         <el-table-column prop="description" label="描述" min-width="180" show-overflow-tooltip />
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column v-if="canManageK8s" label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="testCluster(row)">测试连接</el-button>
             <el-button link type="info" size="small" @click="openClusterDialog(row)">编辑</el-button>
@@ -616,6 +616,7 @@
   </div>
 </template><script setup>import { ref, computed, onMounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
+import { useAuthStore } from '@/stores/auth'
 import { DocumentCopy, Document, Monitor, Bell, Plus, Connection, FolderOpened, Menu } from '@element-plus/icons-vue'
 import {
   getK8sClusters, createK8sCluster, updateK8sCluster, deleteK8sCluster,
@@ -626,6 +627,9 @@ import {
   getK8sConfigMaps, getK8sSecrets, getK8sResourceYaml,
   getK8sWorkloadPods, getK8sPodLogs, getK8sResourceEvents,
 } from '@/api/modules/container'
+
+const authStore = useAuthStore()
+const canManageK8s = computed(() => authStore.hasPermission('ops.k8s.manage'))
 
 const mainTabs = [
   { key: 'clusters',   label: '集群管理', icon: 'OfficeBuilding' },
@@ -748,6 +752,7 @@ const savingCluster = ref(false)
 const clusterForm = ref({ name: '', api_server: '', description: '', kubeconfig: '' })
 
 function openClusterDialog(cluster) {
+  if (!canManageK8s.value) return
   if (cluster) {
     editingClusterId.value = cluster.id
     clusterForm.value = { name: cluster.name, api_server: cluster.api_server, description: cluster.description, kubeconfig: '' }
@@ -759,6 +764,7 @@ function openClusterDialog(cluster) {
 }
 
 async function saveCluster() {
+  if (!canManageK8s.value) return
   if (!clusterForm.value.name) return ElMessage.warning('请填写集群名称')
   if (!clusterForm.value.kubeconfig && !editingClusterId.value) return ElMessage.warning('请粘贴 KubeConfig')
   savingCluster.value = true
@@ -779,6 +785,7 @@ async function saveCluster() {
 }
 
 async function testCluster(row) {
+  if (!canManageK8s.value) return
   try {
     const res = await testK8sConnection(row.id)
     if (res.success) ElMessage.success(res.message)
@@ -788,6 +795,7 @@ async function testCluster(row) {
 }
 
 async function delCluster(row) {
+  if (!canManageK8s.value) return
   try {
     await deleteK8sCluster(row.id)
     ElMessage.success('集群已删除')

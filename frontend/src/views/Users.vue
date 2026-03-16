@@ -19,8 +19,8 @@
     <div class="table-card">
       <el-tabs v-model="activeTab">
         <el-tab-pane v-if="canViewUsers" label="用户" name="users" />
-        <el-tab-pane v-if="canViewRoles" label="角色" name="roles" />
         <el-tab-pane v-if="canViewGroups" label="用户组" name="groups" />
+        <el-tab-pane v-if="canViewRoles" label="角色" name="roles" />
         <el-tab-pane v-if="canViewPermissions" label="权限字典" name="permissions" />
       </el-tabs>
 
@@ -34,14 +34,14 @@
             <template #default="{ row }">{{ row.display_name || row.username }}</template>
           </el-table-column>
           <el-table-column prop="email" label="邮箱" min-width="180" />
-          <el-table-column label="角色" min-width="220">
-            <template #default="{ row }">
-              <el-tag v-for="role in row.roles" :key="role.id" size="small" style="margin-right:6px;">{{ role.name }}</el-tag>
-            </template>
-          </el-table-column>
           <el-table-column label="用户组" min-width="180">
             <template #default="{ row }">
               <el-tag v-for="group in row.user_groups" :key="group.id" size="small" type="info" style="margin-right:6px;">{{ group.name }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="角色" min-width="220">
+            <template #default="{ row }">
+              <el-tag v-for="role in row.roles" :key="role.id" size="small" style="margin-right:6px;">{{ role.name }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="状态" width="100">
@@ -181,14 +181,14 @@
             <el-switch v-model="userForm.is_superuser" />
           </el-form-item>
         </div>
-        <el-form-item label="角色">
-          <el-select v-model="userForm.role_ids" multiple filterable style="width:100%">
-            <el-option v-for="role in roles" :key="role.id" :label="role.name" :value="role.id" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="用户组">
           <el-select v-model="userForm.group_ids" multiple filterable style="width:100%">
             <el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="角色">
+          <el-select v-model="userForm.role_ids" multiple filterable style="width:100%">
+            <el-option v-for="role in roles" :key="role.id" :label="role.name" :value="role.id" />
           </el-select>
         </el-form-item>
       </el-form>
@@ -298,8 +298,8 @@ const canSync = computed(() => authStore.hasPermission('rbac.permission.view'))
 
 const availableTabs = computed(() => [
   canViewUsers.value && 'users',
-  canViewRoles.value && 'roles',
   canViewGroups.value && 'groups',
+  canViewRoles.value && 'roles',
   canViewPermissions.value && 'permissions',
 ].filter(Boolean))
 
