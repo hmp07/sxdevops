@@ -13,9 +13,9 @@
     </div>
 
     <!-- ============ Tab 1: 配置项管理 ============ -->
-    <div v-if="activeTab === 'items'" class="tab-content" style="display:flex;gap:16px;">
+    <div v-if="activeTab === 'items'" class="tab-content cmdb-items-layout">
       <!-- 左侧资源树 -->
-      <div style="width:240px;border-right:1px solid rgba(139,92,246,0.15);padding-right:12px;display:flex;flex-direction:column;">
+      <div class="cmdb-resource-tree-panel">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
           <span style="font-weight:600;color:var(--text-primary,#e2e8f0);font-size:14px;cursor:pointer;" @click="clearTreeFilter" title="点击查看全部"><el-icon style="margin-right:4px;vertical-align:-2px;"><Connection /></el-icon>业务资源树</span>
           <el-button v-if="canManageCi" link type="primary" size="small" @click="openNodeDialog()">
@@ -43,7 +43,7 @@
       </div>
 
       <!-- 右侧主体 -->
-      <div style="flex:1;min-width:0;">
+      <div class="cmdb-items-main">
       <!-- 工具栏 -->
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -460,6 +460,7 @@
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Plus, Search, CircleCheck, Files, Monitor, Edit, Delete, Connection } from '@element-plus/icons-vue'
 import CmdbTopologyPanel from '@/components/cmdb/CmdbTopologyPanel.vue'
@@ -472,6 +473,8 @@ import {
   getResourceNodeTree, createResourceNode, updateResourceNode, deleteResourceNode
 } from '@/api/modules/cmdb'
 
+const route = useRoute()
+const router = useRouter()
 const authStore = useAuthStore()
 const canViewCi = computed(() => authStore.hasPermission('cmdb.ci.view'))
 const canManageCi = computed(() => authStore.hasPermission('cmdb.ci.manage'))
@@ -489,6 +492,14 @@ const mainTabs = computed(() => [
 ].filter(Boolean))
 
 const activeTab = ref('items')
+
+function getDefaultTab() {
+  return mainTabs.value[0]?.key || 'items'
+}
+
+function normalizeTab(tab) {
+  return mainTabs.value.some(item => item.key === tab) ? tab : getDefaultTab()
+}
 const loading = ref(false)
 const saving = ref(false)
 
@@ -770,18 +781,37 @@ function loadTabData(tab) {
 }
 
 function switchTab(tab) {
-  if (!mainTabs.value.some(item => item.key === tab)) return
-  activeTab.value = tab
+  const nextTab = normalizeTab(tab)
+  if (activeTab.value === nextTab) return
+  activeTab.value = nextTab
 }
 
 watch(mainTabs, (tabs) => {
-  if (tabs.length && !tabs.some(tab => tab.key === activeTab.value)) {
-    activeTab.value = tabs[0].key
+  if (!tabs.length) return
+  const routeTab = typeof route.query.tab === 'string' ? route.query.tab : ''
+  const nextTab = normalizeTab(routeTab || activeTab.value)
+  if (activeTab.value !== nextTab) {
+    activeTab.value = nextTab
+    return
+  }
+  if (routeTab !== nextTab) {
+    router.replace({ query: { ...route.query, tab: nextTab } })
   }
 }, { immediate: true })
 
+watch(() => route.query.tab, (tab) => {
+  const nextTab = normalizeTab(typeof tab === 'string' ? tab : '')
+  if (activeTab.value !== nextTab) {
+    activeTab.value = nextTab
+  }
+})
+
 watch(activeTab, (tab) => {
-  if (tab) loadTabData(tab)
+  if (!tab) return
+  if (route.query.tab !== tab) {
+    router.replace({ query: { ...route.query, tab } })
+  }
+  loadTabData(tab)
 }, { immediate: true })
 
 onMounted(() => {
@@ -798,6 +828,38 @@ onMounted(() => {
 .custom-tree-node:hover { background: rgba(139,92,246,0.05); }
 .tree-actions { opacity: 0; transition: opacity 0.2s; }
 .el-tree-node__content:hover .tree-actions { opacity: 1; }
+.cmdb-items-layout { display: flex; gap: 16px; }
+.cmdb-resource-tree-panel {
+  width: 188px;
+  flex: 0 0 188px;
+  border-right: 1px solid rgba(139,92,246,0.15);
+  padding-right: 12px;
+  display: flex;
+  flex-direction: column;
+}
+.cmdb-items-main { flex: 1; min-width: 0; }
+
+@media (max-width: 1200px) {
+  .cmdb-resource-tree-panel {
+    width: 176px;
+    flex-basis: 176px;
+  }
+}
+
+@media (max-width: 900px) {
+  .cmdb-items-layout {
+    flex-direction: column;
+  }
+
+  .cmdb-resource-tree-panel {
+    width: 100%;
+    flex-basis: auto;
+    border-right: none;
+    border-bottom: 1px solid rgba(139,92,246,0.15);
+    padding-right: 0;
+    padding-bottom: 12px;
+  }
+}
 
 /* ====== 统计卡片行 ====== */
 .cmdb-stats-row {

@@ -264,7 +264,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   createGroup,
@@ -284,6 +284,7 @@ import {
   updateUser,
 } from '@/api/modules/rbac'
 import { useAuthStore } from '@/stores/auth'
+import { useRouteTabState } from '@/composables/useRouteTabState'
 
 const authStore = useAuthStore()
 
@@ -303,7 +304,10 @@ const availableTabs = computed(() => [
   canViewPermissions.value && 'permissions',
 ].filter(Boolean))
 
-const activeTab = ref('users')
+const activeTab = useRouteTabState({
+  tabs: () => availableTabs.value,
+  defaultTab: 'users',
+}).activeTab
 const loading = ref({ users: false, roles: false, groups: false, permissions: false })
 const saving = ref({ user: false, role: false, group: false, password: false })
 
@@ -591,12 +595,6 @@ async function handleSyncPermissions() {
   await Promise.all([fetchPermissions(), fetchRoles()])
   ElMessage.success('权限与内置角色已同步')
 }
-
-watch(availableTabs, (tabs) => {
-  if (tabs.length && !tabs.includes(activeTab.value)) {
-    activeTab.value = tabs[0]
-  }
-}, { immediate: true })
 
 onMounted(async () => {
   const tasks = []

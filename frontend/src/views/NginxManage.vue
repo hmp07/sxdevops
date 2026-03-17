@@ -353,9 +353,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { useRouteTabState } from '@/composables/useRouteTabState'
 import { Location, Connection, Plus, Monitor, Lock, FolderOpened } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
 import {
@@ -375,7 +376,11 @@ const mainTabs = [
   { key: 'routes', label: '路由配置', icon: 'FolderOpened' }
 ]
 
-const activeTab = ref('envs')
+const tabState = useRouteTabState({
+  tabs: () => mainTabs.map(item => item.key),
+  defaultTab: 'envs',
+})
+const activeTab = tabState.activeTab
 const loading = ref(false)
 const saving = ref(false)
 
@@ -474,17 +479,30 @@ function onDomainChange() {
 }
 
 function switchTab(t) {
-  activeTab.value = t
-  if (t === 'envs') fetchEnvs()
-  if (t === 'domains') { if (filterEnvId.value) fetchDomains(); else if (envs.value.length) { filterEnvId.value = envs.value[0].id; fetchDomains() } }
-  if (t === 'routes') { if (filterDomainId.value) fetchRoutes() }
-  if (t === 'certs') fetchCerts()
+  tabState.switchTab(t)
 }
+
+watch(activeTab, (tab, prev) => {
+  if (!tab || tab === prev) return
+  if (tab === 'envs') fetchEnvs()
+  if (tab === 'domains') { if (filterEnvId.value) fetchDomains(); else if (envs.value.length) { filterEnvId.value = envs.value[0].id; fetchDomains() } }
+  if (tab === 'routes') { if (filterDomainId.value) fetchRoutes() }
+  if (tab === 'certs') fetchCerts()
+})
 
 onMounted(() => {
   fetchEnvs().then(() => {
     getNginxDomains().then(res => { domains.value = res.results || res }).catch(() => {})
     fetchCerts()
+    if (activeTab.value === 'domains') {
+      if (filterEnvId.value) fetchDomains()
+      else if (envs.value.length) { filterEnvId.value = envs.value[0].id; fetchDomains() }
+    }
+    if (activeTab.value === 'routes') {
+      if (filterEnvId.value) fetchDomains()
+      else if (envs.value.length) { filterEnvId.value = envs.value[0].id; fetchDomains() }
+      if (filterDomainId.value) fetchRoutes()
+    }
   })
 })
 

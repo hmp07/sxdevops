@@ -614,7 +614,8 @@
       </div>
     </el-dialog>
   </div>
-</template><script setup>import { ref, computed, onMounted, nextTick } from 'vue'
+</template><script setup>import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { useRouteTabState } from '@/composables/useRouteTabState'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import { DocumentCopy, Document, Monitor, Bell, Plus, Connection, FolderOpened, Menu } from '@element-plus/icons-vue'
@@ -641,7 +642,11 @@ const mainTabs = [
   { key: 'config',     label: '配置管理', icon: 'Setting' },
 ]
 
-const activeTab = ref('clusters')
+const tabState = useRouteTabState({
+  tabs: () => mainTabs.map(item => item.key),
+  defaultTab: 'clusters',
+})
+const activeTab = tabState.activeTab
 const loading = ref(false)
 
 // ====== 集群 ======
@@ -670,19 +675,30 @@ const secrets = ref([])
 
 // ====== Sub-tabs ======
 const workloadSubTabs = ['Deployment', 'StatefulSet', 'DaemonSet', 'Job', 'CronJob']
-const workloadSub = ref('Deployment')
-const networkSub = ref('Service')
-const storageSub = ref('PV')
-const configSub = ref('ConfigMap')
+const workloadSub = useRouteTabState({
+  tabs: () => workloadSubTabs,
+  defaultTab: 'Deployment',
+  queryKey: 'workloadSub',
+}).activeTab
+const networkSub = useRouteTabState({
+  tabs: () => ['Service', 'Ingress'],
+  defaultTab: 'Service',
+  queryKey: 'networkSub',
+}).activeTab
+const storageSub = useRouteTabState({
+  tabs: () => ['PV', 'PVC', 'StorageClass'],
+  defaultTab: 'PV',
+  queryKey: 'storageSub',
+}).activeTab
+const configSub = useRouteTabState({
+  tabs: () => ['ConfigMap', 'Secret'],
+  defaultTab: 'ConfigMap',
+  queryKey: 'configSub',
+}).activeTab
 
 // ====== 切换 Tab ======
 function switchTab(tab) {
-  activeTab.value = tab
-  if (tab === 'clusters') {
-    fetchClusters()
-  } else if (selectedClusterId.value) {
-    fetchCurrentTab()
-  }
+  tabState.switchTab(tab)
 }
 
 async function fetchClusters() {
@@ -935,5 +951,27 @@ function formatEventTime(iso) {
 }
 
 // ====== 初始化 ======
+watch(activeTab, (tab, prev) => {
+  if (!tab || tab === prev) return
+  if (tab === 'clusters') {
+    fetchClusters()
+  } else if (selectedClusterId.value) {
+    fetchCurrentTab()
+  }
+})
+
+watch(workloadSub, (tab, prev) => {
+  if (tab !== prev && activeTab.value === 'workloads' && selectedClusterId.value) fetchCurrentTab()
+})
+watch(networkSub, (tab, prev) => {
+  if (tab !== prev && activeTab.value === 'network' && selectedClusterId.value) fetchCurrentTab()
+})
+watch(storageSub, (tab, prev) => {
+  if (tab !== prev && activeTab.value === 'storage' && selectedClusterId.value) fetchCurrentTab()
+})
+watch(configSub, (tab, prev) => {
+  if (tab !== prev && activeTab.value === 'config' && selectedClusterId.value) fetchCurrentTab()
+})
+
 onMounted(() => { fetchClusters() })
 </script>

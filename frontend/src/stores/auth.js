@@ -1,12 +1,23 @@
-﻿import { computed, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { getCurrentUser, login as loginApi, logout as logoutApi } from '@/api/modules/rbac'
 
 const TOKEN_KEY = 'agdevops_token'
+const USER_KEY = 'agdevops_user'
+
+function loadStoredUser() {
+  try {
+    const raw = localStorage.getItem(USER_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    localStorage.removeItem(USER_KEY)
+    return null
+  }
+}
 
 export const useAuthStore = defineStore('auth', () => {
   const token = ref(localStorage.getItem(TOKEN_KEY) || '')
-  const currentUser = ref(null)
+  const currentUser = ref(loadStoredUser())
   const initialized = ref(false)
 
   const isAuthenticated = computed(() => !!token.value && !!currentUser.value)
@@ -25,21 +36,43 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  function setUser(user) {
+  function persistUser(user) {
     currentUser.value = user || null
+    if (currentUser.value) {
+      localStorage.setItem(USER_KEY, JSON.stringify(currentUser.value))
+    } else {
+      localStorage.removeItem(USER_KEY)
+    }
+  }
+
+  function setUser(user) {
+    persistUser(user)
   }
 
   function clearSession() {
     persistToken('')
-    setUser(null)
+    persistUser(null)
   }
 
   async function bootstrap() {
     if (initialized.value) return currentUser.value
-    return reloadProfile()
+    initialized.value = true
+
+    if (!token.value) {
+      persistUser(null)
+      return null
+    }
+
+    if (currentUser.value) {
+      void reloadProfile({ silent: true, clearOnUnauthorized: false })
+      return currentUser.value
+    }
+
+    return reloadProfile({ silent: true, clearOnUnauthorized: true })
   }
 
-  async function reloadProfile() {
+  async function reloadProfile(options = {}) {
+    const { silent = false, clearOnUnauthorized = true } = options
     initialized.value = true
     if (!token.value) return null
     try {
@@ -47,8 +80,11 @@ export const useAuthStore = defineStore('auth', () => {
       setUser(user)
       return user
     } catch (error) {
-      clearSession()
-      return null
+      if (error?.response?.status === 401 && clearOnUnauthorized) {
+        clearSession()
+        return null
+      }
+      return silent ? currentUser.value : null
     }
   }
 

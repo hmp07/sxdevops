@@ -147,9 +147,10 @@
 </template>
 
 <script setup>
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { useRouteTabState } from '@/composables/useRouteTabState'
 import {
   getDockerHosts, createDockerHost, updateDockerHost, deleteDockerHost, testDockerConnection,
   getDockerContainers, getDockerImages,
@@ -166,7 +167,11 @@ const mainTabs = [
   { key: 'images',     label: '镜像管理', icon: 'Files' },
 ]
 
-const activeTab = ref('hosts')
+const tabState = useRouteTabState({
+  tabs: () => mainTabs.map(item => item.key),
+  defaultTab: 'hosts',
+})
+const activeTab = tabState.activeTab
 const loading = ref(false)
 
 // ====== Docker 环境列表 ======
@@ -179,12 +184,7 @@ const images = ref([])
 
 // ====== Tab 切换逻辑 ======
 function switchTab(tab) {
-  activeTab.value = tab
-  if (tab === 'hosts') {
-    fetchHosts()
-  } else if (selectedHostId.value) {
-    fetchCurrentTab()
-  }
+  tabState.switchTab(tab)
 }
 
 function onHostChange() {
@@ -341,5 +341,20 @@ async function delHost(row) {
 }
 
 // ====== 初始化 ======
-onMounted(() => { fetchHosts() })
+watch(activeTab, (tab, prev) => {
+  if (!tab || tab === prev) return
+  if (tab === 'hosts') {
+    fetchHosts()
+  } else if (selectedHostId.value) {
+    fetchCurrentTab()
+  }
+})
+
+onMounted(() => {
+  fetchHosts().then(() => {
+    if (activeTab.value !== 'hosts') {
+      fetchCurrentTab()
+    }
+  })
+})
 </script>

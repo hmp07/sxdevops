@@ -159,6 +159,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useRouteTabState } from '@/composables/useRouteTabState'
 import { ElMessage } from 'element-plus'
 import {
   getTemplates, getDeployments, deployService,
@@ -172,7 +173,6 @@ const authStore = useAuthStore()
 const templates = ref([])
 const deployments = ref([])
 const hosts = ref([])
-const activeTab = ref('market')
 const activeCategory = ref('all')
 const depLoading = ref(false)
 
@@ -200,6 +200,14 @@ const filteredTemplates = computed(() => {
 })
 const canViewMarketplaceDeployments = computed(() => authStore.hasPermission('marketplace.deployment.view'))
 const canManageMarketplaceDeployments = computed(() => authStore.hasPermission('marketplace.deployment.manage'))
+const availableTabs = computed(() => [
+  'market',
+  canViewMarketplaceDeployments.value && 'deploy',
+].filter(Boolean))
+const activeTab = useRouteTabState({
+  tabs: () => availableTabs.value,
+  defaultTab: 'market',
+}).activeTab
 
 // ====== 方法 ======
 function getIconEmoji(icon) { return ICON_MAP[icon] || '📦' }

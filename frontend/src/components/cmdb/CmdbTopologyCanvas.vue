@@ -847,20 +847,6 @@ function drawGraph() {
     ctx.arc(node.x, node.y, node.r * 1.8, 0, Math.PI * 2)
     ctx.fill()
 
-    ctx.strokeStyle = `${node.color}26`
-    ctx.lineWidth = 1.2
-    ctx.beginPath()
-    ctx.arc(node.x, node.y, node.r * 1.45, 0, Math.PI * 2)
-    ctx.stroke()
-
-    ctx.strokeStyle = `${node.color}18`
-    ctx.lineWidth = 0.9
-    ctx.setLineDash([6, 8])
-    ctx.beginPath()
-    ctx.arc(node.x, node.y, node.r * 1.78, -Math.PI / 3, Math.PI * 1.2)
-    ctx.stroke()
-    ctx.setLineDash([])
-
     ctx.fillStyle = node.color
     ctx.beginPath()
     ctx.arc(node.x, node.y, node.r, 0, Math.PI * 2)
