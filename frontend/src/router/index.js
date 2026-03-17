@@ -84,16 +84,16 @@ const routes = [
         meta: { hidden: true },
       },
       {
-        path: 'logs/datasources',
-        name: 'LogDataSources',
-        component: () => import('@/views/LogDataSources.vue'),
-        meta: { title: '日志数据源', icon: 'DataBoard', permission: 'ops.log.datasource.view' },
-      },
-      {
         path: 'logs/query',
         name: 'LogsQuery',
         component: () => import('@/views/LogsQuery.vue'),
         meta: { title: '日志查询', icon: 'Search', permission: 'ops.log.query' },
+      },
+      {
+        path: 'logs/datasources',
+        name: 'LogDataSources',
+        component: () => import('@/views/LogDataSources.vue'),
+        meta: { title: '日志数据源', icon: 'DataBoard', permission: 'ops.log.datasource.view' },
       },
       {
         path: 'alerts',

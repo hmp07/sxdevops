@@ -1,14 +1,27 @@
 ﻿<template>
   <div class="fade-in log-datasource-page">
-    <div class="page-header">
-      <div>
-        <h2>日志数据源</h2>
-        <p class="page-desc">统一管理 Loki、ELK 和阿里云 SLS 的连接配置，查询页直接复用已保存的数据源。</p>
+    <div class="page-header compact-header">
+      <div class="page-title-row">
+        <h2>日志中心</h2>
+        <p class="page-desc">{{ activeLogTab.description }}</p>
       </div>
       <el-button v-if="canManageLogDataSources" type="primary" @click="openDialog()">
         <el-icon><Plus /></el-icon>
         新增数据源
       </el-button>
+    </div>
+
+    <div class="neo-tabs theme-blue log-center-tabs">
+      <button
+        v-for="tab in logTabs"
+        :key="tab.path"
+        class="neo-tab-btn"
+        :class="{ active: route.path === tab.path }"
+        @click="switchLogTab(tab.path)"
+      >
+        <el-icon style="margin-right:4px;"><component :is="tab.icon" /></el-icon>
+        {{ tab.label }}
+      </button>
     </div>
 
     <div class="overview-grid">
@@ -174,6 +187,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   createLogDataSource,
@@ -185,7 +199,24 @@ import {
 } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
 
+const route = useRoute()
+const router = useRouter()
 const authStore = useAuthStore()
+const logTabs = [
+  {
+    path: '/logs/query',
+    label: '日志查询',
+    icon: 'Search',
+    description: '支持 ELK、Loki、阿里云 SLS 日志查询，可在页面内新增多个查询标签页并快速切换条件。',
+  },
+  {
+    path: '/logs/datasources',
+    label: '日志数据源',
+    icon: 'DataBoard',
+    description: '统一管理 Loki、ELK 和阿里云 SLS 的连接配置，查询页可以直接复用已保存的数据源。',
+  },
+]
+const activeLogTab = computed(() => logTabs.find((item) => item.path === route.path) || logTabs[0])
 const loading = ref(false)
 const saving = ref(false)
 const testingId = ref(null)
@@ -381,6 +412,10 @@ async function handleTest(row) {
   }
 }
 
+function switchLogTab(path) {
+  if (route.path !== path) router.push(path)
+}
+
 onMounted(async () => {
   await fetchProviders()
   await fetchDataSources()
@@ -391,11 +426,26 @@ onMounted(async () => {
 .log-datasource-page {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
+}
+
+.page-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.compact-header {
+  margin-bottom: 0;
+}
+
+.log-center-tabs {
+  margin-bottom: 0;
 }
 
 .page-desc {
-  margin-top: 8px;
+  margin-top: 0;
   color: var(--text-secondary);
   font-size: 14px;
 }
@@ -462,6 +512,7 @@ onMounted(async () => {
 }
 
 @media (max-width: 960px) {
+  .page-title-row { align-items: flex-start; }
   .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .switch-row { flex-direction: column; gap: 12px; padding-left: 0; }
 }

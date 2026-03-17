@@ -1,11 +1,23 @@
 ﻿<template>
   <div class="logs-query-page">
     <div class="page-header compact-header">
-      <div>
-        <h2>日志查询</h2>
-        <p class="page-desc">支持ELK、Loki、阿里云SLS 日志数据源查询。支持在页面内新增多个查询标签页，快速切换不同数据源和查询条件。</p>
+      <div class="page-title-row">
+        <h2>日志中心</h2>
+        <p class="page-desc">{{ activeLogTab.description }}</p>
       </div>
-      <el-button @click="goToDatasources">管理日志数据源</el-button>
+    </div>
+
+    <div class="neo-tabs theme-blue log-center-tabs">
+      <button
+        v-for="tab in logTabs"
+        :key="tab.path"
+        class="neo-tab-btn"
+        :class="{ active: route.path === tab.path }"
+        @click="switchLogTab(tab.path)"
+      >
+        <el-icon style="margin-right:4px;"><component :is="tab.icon" /></el-icon>
+        {{ tab.label }}
+      </button>
     </div>
 
     <el-empty v-if="!dataSources.length && !loadingSources" description="还没有日志数据源，请先新增后再查询。">
@@ -313,17 +325,33 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
 import { getLogDataSources, getLogProviderCatalog, queryLogs } from '@/api/modules/ops'
 
+const route = useRoute()
 const router = useRouter()
 const LAST_DATASOURCE_KEY = 'logs:last-datasource-id'
 const QUERY_HISTORY_KEY = 'logs:query-history'
 const QUERY_FAVORITES_KEY = 'logs:query-favorites'
 const DEFAULT_DATASOURCE_NAME = 'SLS 演示（上海）'
 const MAX_HISTORY_ITEMS = 12
+const logTabs = [
+  {
+    path: '/logs/query',
+    label: '日志查询',
+    icon: 'Search',
+    description: '支持 ELK、Loki、阿里云 SLS 日志查询，可在页面内新增多个查询标签页并快速切换条件。',
+  },
+  {
+    path: '/logs/datasources',
+    label: '日志数据源',
+    icon: 'DataBoard',
+    description: '统一管理 Loki、ELK 和阿里云 SLS 的连接配置，查询页可以直接复用已保存的数据源。',
+  },
+]
+const activeLogTab = computed(() => logTabs.find((item) => item.path === route.path) || logTabs[0])
 const MAX_FAVORITE_ITEMS = 8
 const SYNTAX_HELP_DOCS = {
   loki: {
@@ -512,6 +540,10 @@ function providerTagType(provider) {
 
 function goToDatasources() {
   router.push('/logs/datasources')
+}
+
+function switchLogTab(path) {
+  if (route.path !== path) router.push(path)
 }
 
 function openSyntaxHelp(provider) {
@@ -1059,8 +1091,19 @@ onUnmounted(() => {
   margin-bottom: 0;
 }
 
+.page-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.log-center-tabs {
+  margin-bottom: 0;
+}
+
 .page-desc {
-  margin-top: 6px;
+  margin-top: 0;
   color: var(--text-secondary);
   font-size: 13px;
 }
@@ -1479,6 +1522,10 @@ pre {
 }
 
 @media (max-width: 760px) {
+  .page-title-row {
+    align-items: flex-start;
+  }
+
   .compact-stats,
   .filter-row,
   .compact-grid {

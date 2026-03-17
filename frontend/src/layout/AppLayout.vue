@@ -9,7 +9,7 @@
       </div>
 
       <el-menu
-        :default-active="route.path"
+        :default-active="activeMenuPath"
         class="sidebar-nav el-menu-vertical"
         :collapse="appStore.sidebarCollapsed"
         router
@@ -96,13 +96,13 @@ const authStore = useAuthStore()
 
 const menuItems = [
   { path: '/dashboard', title: '仪表盘', icon: 'Odometer', permission: 'ops.dashboard.view' },
-  { path: '/hosts', title: '主机管理', icon: 'Monitor', permission: 'ops.host.view' },
   {
     path: '/cmdb',
     title: 'CMDB',
     icon: 'Files',
     anyPermissions: ['cmdb.dashboard.view', 'cmdb.ci.view', 'cmdb.topology.view', 'cmdb.cost.view', 'cmdb.request.submit'],
   },
+  { path: '/hosts', title: '主机管理', icon: 'Monitor', permission: 'ops.host.view' },
   { path: '/deployments', title: '部署管理', icon: 'Promotion', permission: 'ops.deployment.view' },
   {
     path: '/marketplace',
@@ -120,12 +120,10 @@ const menuItems = [
   },
   { path: '/nginx', title: 'Nginx 管理', icon: 'Location', permission: 'ops.nginx.view' },
   {
+    key: 'log-center',
     title: '日志中心',
     icon: 'Document',
-    children: [
-      { path: '/logs/datasources', title: '日志数据源', icon: 'DataBoard', permission: 'ops.log.datasource.view' },
-      { path: '/logs/query', title: '日志查询', icon: 'Search', permission: 'ops.log.query' },
-    ],
+    anyPermissions: ['ops.log.query', 'ops.log.datasource.view'],
   },
   { path: '/alerts', title: '告警中心', icon: 'Bell', permission: 'ops.alert.view' },
   {
@@ -163,11 +161,24 @@ function canAccess(item) {
 
 const visibleMenuItems = computed(() => menuItems
   .map((item) => {
+    if (item.key === 'log-center') {
+      return {
+        ...item,
+        path: authStore.hasPermission('ops.log.query') ? '/logs/query' : '/logs/datasources',
+      }
+    }
     if (!item.children) return item
     const children = item.children.filter(canAccess)
     return { ...item, children }
   })
   .filter((item) => item.children ? item.children.length > 0 : canAccess(item)))
+
+const activeMenuPath = computed(() => {
+  if (route.path.startsWith('/logs')) {
+    return authStore.hasPermission('ops.log.query') ? '/logs/query' : '/logs/datasources'
+  }
+  return route.path
+})
 
 const currentTitle = computed(() => {
   const currentPath = route.path

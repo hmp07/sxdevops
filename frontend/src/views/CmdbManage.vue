@@ -1,7 +1,7 @@
 <template>
   <div class="fade-in">
     <div class="page-header">
-      <h2>🗄️ CMDB 配置管理</h2>
+      <h2>🗄️ CMDB 资产管理</h2>
     </div>
 
     <!-- 主 Tab 栏 (Pill Tab Theme: Purple) -->
@@ -343,7 +343,11 @@
           <el-table-column prop="potential_saving" label="预计月节省" width="120">
             <template #default="{ row }"><span style="font-weight:700;color:#10b981;">&yen;{{ formatCost(row.potential_saving) }}</span></template>
           </el-table-column>
-          <el-table-column prop="action_hint" label="建议动作" min-width="220" show-overflow-tooltip />
+          <el-table-column prop="action_hint" label="建议动作" min-width="220" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span class="opt-action-hint">{{ row.action_hint }}</span>
+            </template>
+          </el-table-column>
         </el-table>
       </div>
 
@@ -1993,7 +1997,11 @@ onMounted(() => {
   font-size: 12px;
   line-height: 1.7;
 }
-.opt-action { color: #e2e8f0; }
+.opt-action,
+.opt-action-hint {
+  color: var(--el-text-color-regular, #475569);
+  font-weight: 600;
+}
 .opt-evidence { color: #94a3b8; }
 .opt-saving {
   width: 160px;
