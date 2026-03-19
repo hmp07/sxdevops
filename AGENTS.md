@@ -22,5 +22,15 @@ Backend tests use Django's built-in `TestCase`; add coverage in the nearest app-
 ## Commit & Pull Request Guidelines
 Use the commit style already in history: `feat: ...`, `feat(scope): ...`, `style(scope): ...`, `docs: ...`. Keep subjects imperative and scoped to one change. PRs should describe the user-visible impact, list touched areas, include validation steps, and attach screenshots for UI updates.
 
+## README Screenshot Workflow
+When the user asks to update `README.md` for product presentation, treat README updates as including screenshot refresh by default unless the user explicitly says text-only.
+
+- Capture real product screenshots from the running demo instead of using placeholders when the demo is available.
+- Prefer the four README showcase pages already used in this repo: dashboard, CMDB, logs, and IaC orchestration.
+- Save screenshot assets under `docs/screenshots/` and keep README image references aligned with the latest `.png` files.
+- For README-facing screenshots, add lightweight presentation polish when helpful, such as consistent framing, title bars, and highlight annotations for key areas.
+- After replacing screenshots, also update `docs/screenshots/README.md` if the asset format, naming, or usage notes change.
+- If a page needs live data to look complete, use the local demo account and trigger a representative query or action before capturing the screenshot.
+
 ## Security & Configuration Tips
 `backend/agdevops/settings.py` is configured for local development (`DEBUG = True`, open CORS, SQLite). Do not commit production secrets, real credentials, or environment-specific hostnames. If you change backend Python code while using Daphne, restart the server manually because hot reload is not enabled.
