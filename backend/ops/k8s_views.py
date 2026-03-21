@@ -6,16 +6,22 @@ Kubernetes 集群管理 API
 import logging
 import tempfile
 import os
+import copy
+import base64
+import difflib
 import yaml
+from django.core.cache import cache
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from .models import K8sCluster
+from .models import K8sCluster, K8sConfigRevision
 from .serializers import K8sClusterSerializer
 from rbac.permissions import RBACPermissionMixin
 
 logger = logging.getLogger(__name__)
+K8S_SUMMARY_CACHE_TTL = 15
+K8S_DEMO_STATE_CACHE_TTL = 86400
 
 
 def _is_demo(cluster):
@@ -163,6 +169,243 @@ def _filter_by_ns(data, namespace):
     return [d for d in data if d['namespace'] == namespace]
 
 
+def _summary_cache_key(cluster_id):
+    return f'ops:k8s:summary:{cluster_id}'
+
+
+def _clear_summary_cache(cluster_or_id):
+    cluster_id = cluster_or_id.pk if hasattr(cluster_or_id, 'pk') else cluster_or_id
+    if cluster_id:
+        cache.delete(_summary_cache_key(cluster_id))
+
+
+def _demo_state_key(cluster_id, resource):
+    return f'ops:k8s:demo:{cluster_id}:{resource}'
+
+
+def _get_demo_state(cluster_id, resource, default):
+    cache_key = _demo_state_key(cluster_id, resource)
+    cached = cache.get(cache_key)
+    if cached is None:
+        cached = copy.deepcopy(default)
+        cache.set(cache_key, cached, K8S_DEMO_STATE_CACHE_TTL)
+    return cached
+
+
+def _set_demo_state(cluster_id, resource, value):
+    cache.set(_demo_state_key(cluster_id, resource), value, K8S_DEMO_STATE_CACHE_TTL)
+
+
+def _demo_config_backup_key(cluster_id, resource_type, namespace, name):
+    return f'ops:k8s:demo:backup:{cluster_id}:{resource_type}:{namespace}:{name}'
+
+
+def _config_backup_key(cluster_id, resource_type, namespace, name):
+    return f'ops:k8s:config:backup:{cluster_id}:{resource_type}:{namespace}:{name}'
+
+
+def _config_revision_queryset(cluster, resource_type, namespace, name):
+    return K8sConfigRevision.objects.filter(
+        cluster=cluster,
+        resource_type=resource_type,
+        namespace=namespace,
+        resource_name=name,
+    )
+
+
+def _serialize_revision(revision):
+    return {
+        'id': revision.id,
+        'resource_type': revision.resource_type,
+        'namespace': revision.namespace,
+        'name': revision.resource_name,
+        'secret_type': revision.secret_type,
+        'operator': revision.operator,
+        'action': revision.action,
+        'content': revision.content,
+        'created_at': revision.created_at.isoformat() if revision.created_at else '',
+    }
+
+
+def _build_text_diff(current_text, target_text, from_label='current', to_label='target'):
+    diff = difflib.unified_diff(
+        (current_text or '').splitlines(),
+        (target_text or '').splitlines(),
+        fromfile=from_label,
+        tofile=to_label,
+        lineterm='',
+    )
+    return '\n'.join(diff) or 'No changes.'
+
+
+def _normalize_config_text(content):
+    parsed = yaml.safe_load(content or '{}')
+    if parsed is None:
+        parsed = {}
+    if not isinstance(parsed, dict):
+        raise ValueError('配置内容必须是对象映射')
+    return {str(key): '' if value is None else str(value) for key, value in parsed.items()}
+
+
+def _dump_config_text(data):
+    return yaml.dump(data or {}, default_flow_style=False, allow_unicode=True, sort_keys=True)
+
+
+def _create_config_revision(cluster, resource_type, namespace, name, detail, username, action):
+    return K8sConfigRevision.objects.create(
+        cluster=cluster,
+        resource_type=resource_type,
+        namespace=namespace,
+        resource_name=name,
+        secret_type=detail.get('secret_type', ''),
+        content=detail.get('text', ''),
+        operator=username or '',
+        action=action,
+    )
+
+
+def _safe_collection(label, loader, default=None):
+    fallback = [] if default is None else default
+    try:
+        return loader()
+    except Exception as exc:
+        logger.warning('K8s summary skipped %s: %s', label, exc)
+        return fallback
+
+
+def _count_ready_nodes(nodes):
+    ready = 0
+    for node in nodes:
+        if isinstance(node, dict):
+            if node.get('status') == 'Ready':
+                ready += 1
+            continue
+        conditions = {c.type: c.status for c in (node.status.conditions or [])}
+        if conditions.get('Ready') == 'True':
+            ready += 1
+    return ready
+
+
+def _pod_status_summary(pods):
+    abnormal = 0
+    restarting = 0
+    restarts = 0
+    for pod in pods:
+        if isinstance(pod, dict):
+            status = pod.get('status', '')
+            pod_restarts = int(pod.get('restarts', 0) or 0)
+        else:
+            status = pod.status.phase
+            pod_restarts = sum(cs.restart_count for cs in (pod.status.container_statuses or []))
+
+        if status not in ('Running', 'Succeeded'):
+            abnormal += 1
+        if pod_restarts > 0:
+            restarting += 1
+        restarts += pod_restarts
+    return abnormal, restarting, restarts
+
+
+def _build_summary_alerts(ready_nodes, total_nodes, abnormal_pods, restarting_pods, total_restarts, degraded_workloads, pending_pvcs):
+    alerts = []
+    if total_nodes and ready_nodes < total_nodes:
+        alerts.append({'level': 'warning', 'message': f'节点健康不足：{ready_nodes}/{total_nodes} Ready'})
+    if abnormal_pods:
+        alerts.append({'level': 'danger', 'message': f'存在 {abnormal_pods} 个异常 Pod，需要排查调度或探针'})
+    if restarting_pods:
+        alerts.append({'level': 'warning', 'message': f'{restarting_pods} 个 Pod 发生重启，总次数 {total_restarts}'})
+    if degraded_workloads:
+        alerts.append({'level': 'warning', 'message': f'{degraded_workloads} 个工作负载副本未就绪'})
+    if pending_pvcs:
+        alerts.append({'level': 'warning', 'message': f'{pending_pvcs} 个 PVC 尚未绑定存储'})
+    if not alerts:
+        alerts.append({'level': 'success', 'message': '集群核心资源状态正常'})
+    return alerts
+
+
+def _build_demo_summary(cluster):
+    ready_nodes = _count_ready_nodes(DEMO_NODES)
+    abnormal_pods, restarting_pods, total_restarts = _pod_status_summary(DEMO_PODS)
+    degraded_workloads = (
+        sum(1 for item in DEMO_DEPLOYMENTS if item.get('ready_replicas', 0) < item.get('replicas', 0))
+        + sum(1 for item in DEMO_STATEFULSETS if item.get('ready_replicas', 0) < item.get('replicas', 0))
+        + sum(1 for item in DEMO_DAEMONSETS if item.get('ready', 0) < item.get('desired', 0))
+    )
+    pending_pvcs = sum(1 for pvc in DEMO_PVCS if pvc.get('status') != 'Bound')
+    return {
+        'cluster_name': cluster.name,
+        'status': cluster.status or 'connected',
+        'namespaces_total': len(DEMO_NAMESPACES),
+        'nodes_total': len(DEMO_NODES),
+        'nodes_ready': ready_nodes,
+        'pods_total': len(DEMO_PODS),
+        'pods_abnormal': abnormal_pods,
+        'pods_restarting': restarting_pods,
+        'total_restarts': total_restarts,
+        'services_total': len(DEMO_SERVICES),
+        'ingresses_total': len(DEMO_INGRESSES),
+        'workloads_total': len(DEMO_DEPLOYMENTS) + len(DEMO_STATEFULSETS) + len(DEMO_DAEMONSETS) + len(DEMO_JOBS) + len(DEMO_CRONJOBS),
+        'workloads_degraded': degraded_workloads,
+        'pvcs_total': len(DEMO_PVCS),
+        'pvcs_pending': pending_pvcs,
+        'configmaps_total': len(DEMO_CONFIGMAPS),
+        'secrets_total': len(DEMO_SECRETS),
+        'alerts': _build_summary_alerts(ready_nodes, len(DEMO_NODES), abnormal_pods, restarting_pods, total_restarts, degraded_workloads, pending_pvcs),
+    }
+
+
+def _build_live_summary(cluster):
+    k8s = _get_k8s_client(cluster)
+    v1 = k8s.CoreV1Api()
+    apps_v1 = k8s.AppsV1Api()
+    batch_v1 = k8s.BatchV1Api()
+    net_v1 = k8s.NetworkingV1Api()
+
+    namespaces = _safe_collection('namespaces', lambda: v1.list_namespace().items)
+    nodes = _safe_collection('nodes', lambda: v1.list_node().items)
+    pods = _safe_collection('pods', lambda: v1.list_pod_for_all_namespaces().items)
+    services = _safe_collection('services', lambda: v1.list_service_for_all_namespaces().items)
+    ingresses = _safe_collection('ingresses', lambda: net_v1.list_ingress_for_all_namespaces().items)
+    pvcs = _safe_collection('pvcs', lambda: v1.list_persistent_volume_claim_for_all_namespaces().items)
+    configmaps = _safe_collection('configmaps', lambda: v1.list_config_map_for_all_namespaces().items)
+    secrets = _safe_collection('secrets', lambda: v1.list_secret_for_all_namespaces().items)
+    deployments = _safe_collection('deployments', lambda: apps_v1.list_deployment_for_all_namespaces().items)
+    statefulsets = _safe_collection('statefulsets', lambda: apps_v1.list_stateful_set_for_all_namespaces().items)
+    daemonsets = _safe_collection('daemonsets', lambda: apps_v1.list_daemon_set_for_all_namespaces().items)
+    jobs = _safe_collection('jobs', lambda: batch_v1.list_job_for_all_namespaces().items)
+    cronjobs = _safe_collection('cronjobs', lambda: batch_v1.list_cron_job_for_all_namespaces().items)
+
+    ready_nodes = _count_ready_nodes(nodes)
+    abnormal_pods, restarting_pods, total_restarts = _pod_status_summary(pods)
+    degraded_workloads = (
+        sum(1 for item in deployments if (item.status.ready_replicas or 0) < (item.spec.replicas or 0))
+        + sum(1 for item in statefulsets if (item.status.ready_replicas or 0) < (item.spec.replicas or 0))
+        + sum(1 for item in daemonsets if (item.status.number_ready or 0) < (item.status.desired_number_scheduled or 0))
+    )
+    pending_pvcs = sum(1 for pvc in pvcs if (pvc.status.phase or '') != 'Bound')
+
+    return {
+        'cluster_name': cluster.name,
+        'status': cluster.status or 'connected',
+        'namespaces_total': len(namespaces),
+        'nodes_total': len(nodes),
+        'nodes_ready': ready_nodes,
+        'pods_total': len(pods),
+        'pods_abnormal': abnormal_pods,
+        'pods_restarting': restarting_pods,
+        'total_restarts': total_restarts,
+        'services_total': len(services),
+        'ingresses_total': len(ingresses),
+        'workloads_total': len(deployments) + len(statefulsets) + len(daemonsets) + len(jobs) + len(cronjobs),
+        'workloads_degraded': degraded_workloads,
+        'pvcs_total': len(pvcs),
+        'pvcs_pending': pending_pvcs,
+        'configmaps_total': len(configmaps),
+        'secrets_total': len(secrets),
+        'alerts': _build_summary_alerts(ready_nodes, len(nodes), abnormal_pods, restarting_pods, total_restarts, degraded_workloads, pending_pvcs),
+    }
+
+
 class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     """K8s 集群连接管理"""
     queryset = K8sCluster.objects.all()
@@ -176,11 +419,14 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'partial_update': ['ops.k8s.manage'],
         'destroy': ['ops.k8s.manage'],
         'test_connection': ['ops.k8s.manage'],
+        'summary': ['ops.k8s.view'],
         'namespaces': ['ops.k8s.view'],
         'pods': ['ops.k8s.view'],
         'services': ['ops.k8s.view'],
         'deployments': ['ops.k8s.view'],
         'restart_pod': ['ops.k8s.manage'],
+        'pod_exec': ['ops.k8s.exec'],
+        'scale_workload': ['ops.k8s.manage'],
         'nodes': ['ops.k8s.view'],
         'statefulsets': ['ops.k8s.view'],
         'daemonsets': ['ops.k8s.view'],
@@ -193,16 +439,37 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'configmaps': ['ops.k8s.view'],
         'secrets': ['ops.k8s.view'],
         'resource_yaml': ['ops.k8s.view'],
+        'config_resource_detail': ['ops.k8s.view'],
+        'config_resource_preview': ['ops.k8s.manage'],
+        'config_resource_update': ['ops.k8s.manage'],
+        'config_resource_revisions': ['ops.k8s.view'],
+        'config_resource_revision_preview': ['ops.k8s.view'],
+        'config_resource_rollback_preview': ['ops.k8s.manage'],
+        'config_resource_rollback': ['ops.k8s.manage'],
+        'config_resource_rollback_to_revision': ['ops.k8s.manage'],
         'workload_pods': ['ops.k8s.view'],
         'pod_logs': ['ops.k8s.view'],
         'resource_events': ['ops.k8s.view'],
     }
+
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        _clear_summary_cache(instance)
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        _clear_summary_cache(instance)
+
+    def perform_destroy(self, instance):
+        _clear_summary_cache(instance)
+        instance.delete()
 
     @action(detail=True, methods=['post'])
     def test_connection(self, request, pk=None):
         """测试集群连接"""
         cluster = self.get_object()
         if _is_demo(cluster):
+            _clear_summary_cache(cluster)
             return Response({'success': True, 'message': '连接成功 (Kubernetes v1.29.3) [演示模式]'})
         try:
             k8s = _get_k8s_client(cluster)
@@ -210,6 +477,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             version = k8s.VersionApi().get_code()
             cluster.status = 'connected'
             cluster.save(update_fields=['status'])
+            _clear_summary_cache(cluster)
             return Response({
                 'success': True,
                 'message': f'连接成功 (Kubernetes {version.git_version})',
@@ -217,7 +485,31 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         except Exception as e:
             cluster.status = 'error'
             cluster.save(update_fields=['status'])
+            _clear_summary_cache(cluster)
             return Response({'success': False, 'message': f'连接失败: {str(e)}'})
+
+    @action(detail=True, methods=['get'])
+    def summary(self, request, pk=None):
+        """获取集群概览摘要"""
+        cluster = self.get_object()
+        cache_key = _summary_cache_key(cluster.id)
+        cached = cache.get(cache_key)
+        if cached:
+            return Response(cached)
+        try:
+            summary = _build_demo_summary(cluster) if _is_demo(cluster) else _build_live_summary(cluster)
+            if cluster.status != 'connected':
+                cluster.status = 'connected'
+                cluster.save(update_fields=['status'])
+                summary['status'] = cluster.status
+            cache.set(cache_key, summary, K8S_SUMMARY_CACHE_TTL)
+            return Response(summary)
+        except Exception as e:
+            if cluster.status != 'error':
+                cluster.status = 'error'
+                cluster.save(update_fields=['status'])
+            _clear_summary_cache(cluster)
+            return Response({'detail': f'获取集群概览失败: {str(e)}'}, status=400)
 
     @action(detail=True, methods=['get'])
     def namespaces(self, request, pk=None):
@@ -320,7 +612,8 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         cluster = self.get_object()
         namespace = request.query_params.get('namespace', 'default')
         if _is_demo(cluster):
-            return Response(_filter_by_ns(DEMO_DEPLOYMENTS, namespace))
+            demo_items = _get_demo_state(cluster.id, 'deployments', DEMO_DEPLOYMENTS)
+            return Response(_filter_by_ns(demo_items, namespace))
         try:
             k8s = _get_k8s_client(cluster)
             apps_v1 = k8s.AppsV1Api()
@@ -347,12 +640,14 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         """删除 Pod 以触发重启"""
         cluster = self.get_object()
         if _is_demo(cluster):
+            _clear_summary_cache(cluster)
             return Response({'success': True, 'message': f'Pod {pod_name} 正在重启 [演示模式]'})
         namespace = request.data.get('namespace', 'default')
         try:
             k8s = _get_k8s_client(cluster)
             v1 = k8s.CoreV1Api()
             v1.delete_namespaced_pod(name=pod_name, namespace=namespace)
+            _clear_summary_cache(cluster)
             return Response({'success': True, 'message': f'Pod {pod_name} 正在重启'})
         except Exception as e:
             return Response({'success': False, 'message': f'重启失败: {str(e)}'}, status=400)
@@ -396,7 +691,8 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         cluster = self.get_object()
         namespace = request.query_params.get('namespace', 'default')
         if _is_demo(cluster):
-            return Response(_filter_by_ns(DEMO_STATEFULSETS, namespace))
+            demo_items = _get_demo_state(cluster.id, 'statefulsets', DEMO_STATEFULSETS)
+            return Response(_filter_by_ns(demo_items, namespace))
         try:
             k8s = _get_k8s_client(cluster)
             apps_v1 = k8s.AppsV1Api()
@@ -568,7 +864,8 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         cluster = self.get_object()
         namespace = request.query_params.get('namespace', 'default')
         if _is_demo(cluster):
-            return Response(_filter_by_ns(DEMO_CONFIGMAPS, namespace))
+            demo_items = _get_demo_state(cluster.id, 'configmaps', DEMO_CONFIGMAPS)
+            return Response(_filter_by_ns(demo_items, namespace))
         try:
             k8s = _get_k8s_client(cluster)
             v1 = k8s.CoreV1Api()
@@ -587,7 +884,8 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         cluster = self.get_object()
         namespace = request.query_params.get('namespace', 'default')
         if _is_demo(cluster):
-            return Response(_filter_by_ns(DEMO_SECRETS, namespace))
+            demo_items = _get_demo_state(cluster.id, 'secrets', DEMO_SECRETS)
+            return Response(_filter_by_ns(demo_items, namespace))
         try:
             k8s = _get_k8s_client(cluster)
             v1 = k8s.CoreV1Api()
@@ -602,6 +900,424 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             return Response({'detail': str(e)}, status=400)
 
     # ====== YAML 查看 ======
+    def _get_demo_config_resource(self, cluster, resource_type, namespace, name):
+        cache_name = 'configmaps' if resource_type == 'configmap' else 'secrets'
+        defaults = DEMO_CONFIGMAPS if resource_type == 'configmap' else DEMO_SECRETS
+        items = _get_demo_state(cluster.id, cache_name, defaults)
+        for item in items:
+            if item.get('name') == name and item.get('namespace') == namespace:
+                payload = item.get('data_payload')
+                if payload is None:
+                    payload = {f'key{i + 1}': f'value{i + 1}' for i in range(item.get('data_count', 1))}
+                return {
+                    'resource_type': resource_type,
+                    'name': item.get('name', name),
+                    'namespace': item.get('namespace', namespace),
+                    'secret_type': item.get('type', 'Opaque'),
+                    'data': payload,
+                    'text': _dump_config_text(payload),
+                    'updated_at': item.get('updated_at', ''),
+                    'updated_by': item.get('updated_by', ''),
+                }
+        raise ValueError(f'Resource not found: {resource_type}/{namespace}/{name}')
+
+    def _update_demo_config_resource(self, cluster, resource_type, namespace, name, data, username):
+        import datetime as _dt
+
+        cache_name = 'configmaps' if resource_type == 'configmap' else 'secrets'
+        defaults = DEMO_CONFIGMAPS if resource_type == 'configmap' else DEMO_SECRETS
+        items = _get_demo_state(cluster.id, cache_name, defaults)
+        now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        for item in items:
+            if item.get('name') == name and item.get('namespace') == namespace:
+                previous = item.get('data_payload')
+                if previous is None:
+                    previous = {f'key{i + 1}': f'value{i + 1}' for i in range(item.get('data_count', 1))}
+                backup = {
+                    'resource_type': resource_type,
+                    'name': name,
+                    'namespace': namespace,
+                    'secret_type': item.get('type', 'Opaque'),
+                    'data': previous,
+                    'text': _dump_config_text(previous),
+                    'updated_at': item.get('updated_at', ''),
+                    'updated_by': item.get('updated_by', ''),
+                }
+                item['data_payload'] = data
+                item['data_count'] = len(data)
+                item['updated_at'] = now
+                item['updated_by'] = username
+                _set_demo_state(cluster.id, cache_name, items)
+                cache.set(_demo_config_backup_key(cluster.id, resource_type, namespace, name), backup, K8S_DEMO_STATE_CACHE_TTL)
+                return {
+                    'resource_type': resource_type,
+                    'name': name,
+                    'namespace': namespace,
+                    'secret_type': item.get('type', 'Opaque'),
+                    'data': data,
+                    'text': _dump_config_text(data),
+                    'updated_at': now,
+                    'updated_by': username,
+                }
+        raise ValueError(f'Resource not found: {resource_type}/{namespace}/{name}')
+
+    def _get_live_config_resource(self, cluster, resource_type, namespace, name):
+        k8s = _get_k8s_client(cluster)
+        v1 = k8s.CoreV1Api()
+        if resource_type == 'configmap':
+            obj = v1.read_namespaced_config_map(name, namespace)
+            data = obj.data or {}
+            secret_type = ''
+        else:
+            obj = v1.read_namespaced_secret(name, namespace)
+            data = {}
+            for key, value in (obj.data or {}).items():
+                try:
+                    data[key] = base64.b64decode(value).decode('utf-8')
+                except Exception:
+                    data[key] = ''
+            secret_type = obj.type or 'Opaque'
+        return {
+            'resource_type': resource_type,
+            'name': obj.metadata.name,
+            'namespace': obj.metadata.namespace,
+            'secret_type': secret_type,
+            'resource_version': obj.metadata.resource_version or '',
+            'data': {str(key): '' if value is None else str(value) for key, value in data.items()},
+            'text': _dump_config_text(data),
+            'updated_at': obj.metadata.creation_timestamp.isoformat() if obj.metadata.creation_timestamp else '',
+            'updated_by': '',
+        }
+
+    def _apply_live_config_resource(self, cluster, resource_type, namespace, name, data, username):
+        k8s = _get_k8s_client(cluster)
+        v1 = k8s.CoreV1Api()
+        current = self._get_live_config_resource(cluster, resource_type, namespace, name)
+        cache.set(_config_backup_key(cluster.id, resource_type, namespace, name), current, K8S_DEMO_STATE_CACHE_TTL)
+        if resource_type == 'configmap':
+            body = v1.read_namespaced_config_map(name, namespace)
+            body.data = data
+            v1.replace_namespaced_config_map(name, namespace, body)
+        else:
+            body = v1.read_namespaced_secret(name, namespace)
+            body.data = {
+                key: base64.b64encode(value.encode('utf-8')).decode('utf-8')
+                for key, value in data.items()
+            }
+            v1.replace_namespaced_secret(name, namespace, body)
+        refreshed = self._get_live_config_resource(cluster, resource_type, namespace, name)
+        refreshed['updated_by'] = username
+        return refreshed
+
+    def _get_config_resource(self, cluster, resource_type, namespace, name):
+        if _is_demo(cluster):
+            detail = self._get_demo_config_resource(cluster, resource_type, namespace, name)
+            backup = cache.get(_demo_config_backup_key(cluster.id, resource_type, namespace, name))
+        else:
+            detail = self._get_live_config_resource(cluster, resource_type, namespace, name)
+            backup = cache.get(_config_backup_key(cluster.id, resource_type, namespace, name))
+        latest_revision = _config_revision_queryset(cluster, resource_type, namespace, name).first()
+        detail['rollback_available'] = bool(latest_revision or backup)
+        detail['revision_count'] = _config_revision_queryset(cluster, resource_type, namespace, name).count()
+        detail['latest_revision_id'] = latest_revision.id if latest_revision else None
+        detail['latest_revision_at'] = latest_revision.created_at.isoformat() if latest_revision and latest_revision.created_at else ''
+        return detail
+
+    def _get_latest_config_snapshot(self, cluster, resource_type, namespace, name):
+        revision = _config_revision_queryset(cluster, resource_type, namespace, name).first()
+        if revision:
+            snapshot = _serialize_revision(revision)
+            snapshot['data'] = _normalize_config_text(revision.content)
+            snapshot['text'] = revision.content
+            return snapshot
+
+        backup_key = _demo_config_backup_key(cluster.id, resource_type, namespace, name) if _is_demo(cluster) else _config_backup_key(cluster.id, resource_type, namespace, name)
+        backup = cache.get(backup_key)
+        if not backup:
+            return None
+        return backup
+
+    @action(detail=True, methods=['post'], url_path='pod_exec')
+    def pod_exec(self, request, pk=None):
+        cluster = self.get_object()
+        pod_name = request.data.get('pod_name', '')
+        namespace = request.data.get('namespace', 'default')
+        container = request.data.get('container', '')
+        command = request.data.get('command', 'pwd')
+        if not pod_name:
+            return Response({'detail': 'Missing pod_name parameter'}, status=400)
+        if not command:
+            return Response({'detail': 'Missing command parameter'}, status=400)
+
+        if _is_demo(cluster):
+            output = '\n'.join([
+                f'$ {command}',
+                f'demo-exec on {pod_name} ({namespace})',
+                'uid=1000 gid=1000 groups=1000',
+                '/app',
+            ])
+            return Response({
+                'success': True,
+                'pod_name': pod_name,
+                'namespace': namespace,
+                'container': container or 'main',
+                'command': command,
+                'output': output,
+            })
+
+        try:
+            from kubernetes.stream import stream
+
+            k8s = _get_k8s_client(cluster)
+            v1 = k8s.CoreV1Api()
+            kwargs = {
+                'name': pod_name,
+                'namespace': namespace,
+                'command': ['/bin/sh', '-lc', command],
+                'stderr': True,
+                'stdin': False,
+                'stdout': True,
+                'tty': False,
+            }
+            if container:
+                kwargs['container'] = container
+            output = stream(v1.connect_get_namespaced_pod_exec, **kwargs)
+            return Response({
+                'success': True,
+                'pod_name': pod_name,
+                'namespace': namespace,
+                'container': container or '',
+                'command': command,
+                'output': output or '',
+            })
+        except Exception as e:
+            return Response({'detail': f'Pod exec failed: {str(e)}'}, status=400)
+
+    @action(detail=True, methods=['post'], url_path='scale_workload')
+    def scale_workload(self, request, pk=None):
+        cluster = self.get_object()
+        workload_type = request.data.get('workload_type', '')
+        name = request.data.get('name', '')
+        namespace = request.data.get('namespace', 'default')
+        replicas = request.data.get('replicas')
+        if workload_type not in ('deployment', 'statefulset'):
+            return Response({'detail': 'Only Deployment and StatefulSet scaling is supported'}, status=400)
+        if not name:
+            return Response({'detail': 'Missing name parameter'}, status=400)
+        try:
+            replicas = int(replicas)
+        except (TypeError, ValueError):
+            return Response({'detail': 'replicas must be an integer'}, status=400)
+        if replicas < 0:
+            return Response({'detail': 'replicas must be greater than or equal to 0'}, status=400)
+
+        if _is_demo(cluster):
+            cache_name = 'deployments' if workload_type == 'deployment' else 'statefulsets'
+            defaults = DEMO_DEPLOYMENTS if workload_type == 'deployment' else DEMO_STATEFULSETS
+            items = _get_demo_state(cluster.id, cache_name, defaults)
+            for item in items:
+                if item.get('name') == name and item.get('namespace') == namespace:
+                    item['replicas'] = replicas
+                    item['ready_replicas'] = min(item.get('ready_replicas', 0), replicas)
+                    if workload_type == 'deployment':
+                        item['available_replicas'] = min(item.get('available_replicas', item.get('ready_replicas', 0)), replicas)
+                    _set_demo_state(cluster.id, cache_name, items)
+                    _clear_summary_cache(cluster)
+                    return Response({'success': True, 'message': f'{name} scaled to {replicas} replicas'})
+            return Response({'detail': f'Resource not found: {workload_type}/{namespace}/{name}'}, status=404)
+
+        try:
+            k8s = _get_k8s_client(cluster)
+            apps_v1 = k8s.AppsV1Api()
+            body = {'spec': {'replicas': replicas}}
+            if workload_type == 'deployment':
+                apps_v1.patch_namespaced_deployment_scale(name, namespace, body)
+            else:
+                apps_v1.patch_namespaced_stateful_set_scale(name, namespace, body)
+            _clear_summary_cache(cluster)
+            return Response({'success': True, 'message': f'{name} scaled to {replicas} replicas'})
+        except Exception as e:
+            return Response({'detail': f'Scale failed: {str(e)}'}, status=400)
+
+    @action(detail=True, methods=['get'], url_path='config_resource_detail')
+    def config_resource_detail(self, request, pk=None):
+        cluster = self.get_object()
+        resource_type = request.query_params.get('type', '')
+        name = request.query_params.get('name', '')
+        namespace = request.query_params.get('namespace', 'default')
+        if resource_type not in ('configmap', 'secret') or not name:
+            return Response({'detail': 'Valid type and name are required'}, status=400)
+        try:
+            return Response(self._get_config_resource(cluster, resource_type, namespace, name))
+        except Exception as e:
+            return Response({'detail': f'Failed to load config resource: {str(e)}'}, status=400)
+
+    @action(detail=True, methods=['post'], url_path='config_resource_preview')
+    def config_resource_preview(self, request, pk=None):
+        cluster = self.get_object()
+        resource_type = request.data.get('type', '')
+        name = request.data.get('name', '')
+        namespace = request.data.get('namespace', 'default')
+        content = request.data.get('content', '')
+        if resource_type not in ('configmap', 'secret') or not name:
+            return Response({'detail': 'Valid type and name are required'}, status=400)
+        try:
+            current = self._get_config_resource(cluster, resource_type, namespace, name)
+            target_data = _normalize_config_text(content)
+            target_text = _dump_config_text(target_data)
+            return Response({
+                'content': target_text,
+                'changed': current.get('text', '') != target_text,
+                'diff': _build_text_diff(current.get('text', ''), target_text, 'current', 'proposed'),
+            })
+        except Exception as e:
+            return Response({'detail': f'Preview failed: {str(e)}'}, status=400)
+
+    @action(detail=True, methods=['post'], url_path='config_resource_update')
+    def config_resource_update(self, request, pk=None):
+        cluster = self.get_object()
+        resource_type = request.data.get('type', '')
+        name = request.data.get('name', '')
+        namespace = request.data.get('namespace', 'default')
+        content = request.data.get('content', '')
+        if resource_type not in ('configmap', 'secret') or not name:
+            return Response({'detail': 'Valid type and name are required'}, status=400)
+        try:
+            current = self._get_config_resource(cluster, resource_type, namespace, name)
+            data = _normalize_config_text(content)
+            username = request.user.username if request.user and request.user.is_authenticated else ''
+            _create_config_revision(cluster, resource_type, namespace, name, current, username, 'update')
+            if _is_demo(cluster):
+                detail = self._update_demo_config_resource(cluster, resource_type, namespace, name, data, username)
+            else:
+                detail = self._apply_live_config_resource(cluster, resource_type, namespace, name, data, username)
+            _clear_summary_cache(cluster)
+            detail['rollback_available'] = True
+            detail['revision_count'] = _config_revision_queryset(cluster, resource_type, namespace, name).count()
+            return Response({'success': True, 'message': f'{resource_type} updated', 'resource': detail})
+        except Exception as e:
+            return Response({'detail': f'Update failed: {str(e)}'}, status=400)
+
+    @action(detail=True, methods=['get'], url_path='config_resource_revisions')
+    def config_resource_revisions(self, request, pk=None):
+        cluster = self.get_object()
+        resource_type = request.query_params.get('type', '')
+        name = request.query_params.get('name', '')
+        namespace = request.query_params.get('namespace', 'default')
+        if resource_type not in ('configmap', 'secret') or not name:
+            return Response({'detail': 'Valid type and name are required'}, status=400)
+
+        revisions = [
+            _serialize_revision(item)
+            for item in _config_revision_queryset(cluster, resource_type, namespace, name)[:20]
+        ]
+        return Response({'count': len(revisions), 'items': revisions})
+
+    @action(detail=True, methods=['get'], url_path='config_resource_revision_preview')
+    def config_resource_revision_preview(self, request, pk=None):
+        cluster = self.get_object()
+        resource_type = request.query_params.get('type', '')
+        name = request.query_params.get('name', '')
+        namespace = request.query_params.get('namespace', 'default')
+        revision_id = request.query_params.get('revision_id')
+        if resource_type not in ('configmap', 'secret') or not name or not revision_id:
+            return Response({'detail': 'Valid type, name and revision_id are required'}, status=400)
+
+        revision = _config_revision_queryset(cluster, resource_type, namespace, name).filter(id=revision_id).first()
+        if not revision:
+            return Response({'detail': 'Revision not found'}, status=404)
+
+        try:
+            current = self._get_config_resource(cluster, resource_type, namespace, name)
+            return Response({
+                'revision': _serialize_revision(revision),
+                'diff': _build_text_diff(current.get('text', ''), revision.content, 'current', f'revision-{revision.id}'),
+            })
+        except Exception as e:
+            return Response({'detail': f'Failed to load revision preview: {str(e)}'}, status=400)
+
+    @action(detail=True, methods=['get'], url_path='config_resource_rollback_preview')
+    def config_resource_rollback_preview(self, request, pk=None):
+        cluster = self.get_object()
+        resource_type = request.query_params.get('type', '')
+        name = request.query_params.get('name', '')
+        namespace = request.query_params.get('namespace', 'default')
+        if resource_type not in ('configmap', 'secret') or not name:
+            return Response({'detail': 'Valid type and name are required'}, status=400)
+        backup = self._get_latest_config_snapshot(cluster, resource_type, namespace, name)
+        if not backup:
+            return Response({'detail': 'No rollback snapshot available'}, status=404)
+        try:
+            current = self._get_config_resource(cluster, resource_type, namespace, name)
+            return Response({
+                'rollback_available': True,
+                'backup': backup,
+                'diff': _build_text_diff(current.get('text', ''), backup.get('text', ''), 'current', 'rollback'),
+            })
+        except Exception as e:
+            return Response({'detail': f'Failed to load rollback preview: {str(e)}'}, status=400)
+
+    @action(detail=True, methods=['post'], url_path='config_resource_rollback')
+    def config_resource_rollback(self, request, pk=None):
+        cluster = self.get_object()
+        resource_type = request.data.get('type', '')
+        name = request.data.get('name', '')
+        namespace = request.data.get('namespace', 'default')
+        if resource_type not in ('configmap', 'secret') or not name:
+            return Response({'detail': 'Valid type and name are required'}, status=400)
+        backup = self._get_latest_config_snapshot(cluster, resource_type, namespace, name)
+        if not backup:
+            return Response({'detail': 'No rollback snapshot available'}, status=404)
+        try:
+            current = self._get_config_resource(cluster, resource_type, namespace, name)
+            username = request.user.username if request.user and request.user.is_authenticated else ''
+            _create_config_revision(cluster, resource_type, namespace, name, current, username, 'rollback')
+            if _is_demo(cluster):
+                detail = self._update_demo_config_resource(cluster, resource_type, namespace, name, backup.get('data', {}), username)
+            else:
+                detail = self._apply_live_config_resource(cluster, resource_type, namespace, name, backup.get('data', {}), username)
+            _clear_summary_cache(cluster)
+            detail['rollback_available'] = True
+            detail['revision_count'] = _config_revision_queryset(cluster, resource_type, namespace, name).count()
+            return Response({'success': True, 'message': f'{resource_type} rolled back', 'resource': detail})
+        except Exception as e:
+            return Response({'detail': f'Rollback failed: {str(e)}'}, status=400)
+
+    @action(detail=True, methods=['post'], url_path='config_resource_rollback_to_revision')
+    def config_resource_rollback_to_revision(self, request, pk=None):
+        cluster = self.get_object()
+        resource_type = request.data.get('type', '')
+        name = request.data.get('name', '')
+        namespace = request.data.get('namespace', 'default')
+        revision_id = request.data.get('revision_id')
+        if resource_type not in ('configmap', 'secret') or not name or not revision_id:
+            return Response({'detail': 'Valid type, name and revision_id are required'}, status=400)
+
+        revision = _config_revision_queryset(cluster, resource_type, namespace, name).filter(id=revision_id).first()
+        if not revision:
+            return Response({'detail': 'Revision not found'}, status=404)
+
+        try:
+            current = self._get_config_resource(cluster, resource_type, namespace, name)
+            target_data = _normalize_config_text(revision.content)
+            username = request.user.username if request.user and request.user.is_authenticated else ''
+            _create_config_revision(cluster, resource_type, namespace, name, current, username, 'rollback')
+            if _is_demo(cluster):
+                detail = self._update_demo_config_resource(cluster, resource_type, namespace, name, target_data, username)
+            else:
+                detail = self._apply_live_config_resource(cluster, resource_type, namespace, name, target_data, username)
+            _clear_summary_cache(cluster)
+            detail['rollback_available'] = True
+            detail['revision_count'] = _config_revision_queryset(cluster, resource_type, namespace, name).count()
+            return Response({
+                'success': True,
+                'message': f'{resource_type} rolled back to revision #{revision.id}',
+                'resource': detail,
+                'revision': _serialize_revision(revision),
+            })
+        except Exception as e:
+            return Response({'detail': f'Rollback failed: {str(e)}'}, status=400)
+
     def _build_demo_yaml(self, resource_type, name, namespace, demo_list):
         """从 demo 数据生成模拟的 YAML"""
         item = None
@@ -742,10 +1458,12 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             result['volumeBindingMode'] = item.get('binding_mode', 'Immediate')
             result['allowVolumeExpansion'] = item.get('allow_expansion', False)
         elif resource_type == 'configmap':
-            result['data'] = {f'key{i+1}': f'value{i+1}' for i in range(item.get('data_count', 1))}
+            payload = item.get('data_payload') or {f'key{i+1}': f'value{i+1}' for i in range(item.get('data_count', 1))}
+            result['data'] = payload
         elif resource_type == 'secret':
+            payload = item.get('data_payload') or {f'key{i+1}': f'value{i+1}' for i in range(item.get('data_count', 1))}
             result['type'] = item.get('type', 'Opaque')
-            result['data'] = {f'key{i+1}': 'base64encodedvalue' for i in range(item.get('data_count', 1))}
+            result['stringData'] = payload
 
         return yaml.dump(result, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
@@ -763,11 +1481,11 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if _is_demo(cluster):
             demo_map = {
                 'node': DEMO_NODES, 'namespace': DEMO_NAMESPACES, 'pod': DEMO_PODS,
-                'deployment': DEMO_DEPLOYMENTS, 'statefulset': DEMO_STATEFULSETS,
+                'deployment': _get_demo_state(cluster.id, 'deployments', DEMO_DEPLOYMENTS), 'statefulset': _get_demo_state(cluster.id, 'statefulsets', DEMO_STATEFULSETS),
                 'daemonset': DEMO_DAEMONSETS, 'job': DEMO_JOBS, 'cronjob': DEMO_CRONJOBS,
                 'service': DEMO_SERVICES, 'ingress': DEMO_INGRESSES,
                 'pv': DEMO_PVS, 'pvc': DEMO_PVCS, 'storageclass': DEMO_STORAGECLASSES,
-                'configmap': DEMO_CONFIGMAPS, 'secret': DEMO_SECRETS,
+                'configmap': _get_demo_state(cluster.id, 'configmaps', DEMO_CONFIGMAPS), 'secret': _get_demo_state(cluster.id, 'secrets', DEMO_SECRETS),
             }
             demo_list = demo_map.get(resource_type, [])
             yaml_content = self._build_demo_yaml(resource_type, name, namespace, demo_list)
@@ -879,18 +1597,31 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             elif workload_type == 'daemonset':
                 obj = apps_v1.read_namespaced_daemon_set(workload_name, namespace)
                 label_selector = ','.join(f'{k}={v}' for k, v in (obj.spec.selector.match_labels or {}).items())
-            elif workload_type in ('job', 'cronjob'):
-                if workload_type == 'cronjob':
-                    label_selector = f'job-name={workload_name}'
-                else:
-                    obj = batch_v1.read_namespaced_job(workload_name, namespace)
-                    label_selector = ','.join(f'{k}={v}' for k, v in (obj.spec.selector.match_labels or {}).items())
-
-            pod_list = v1.list_namespaced_pod(namespace, label_selector=label_selector)
+            elif workload_type == 'job':
+                label_selector = f'job-name={workload_name}'
+            elif workload_type == 'cronjob':
+                job_list = batch_v1.list_namespaced_job(namespace)
+                job_names = {
+                    job.metadata.name
+                    for job in job_list.items
+                    if any(
+                        ref.kind == 'CronJob' and ref.name == workload_name
+                        for ref in (job.metadata.owner_references or [])
+                    )
+                }
+                if not job_names:
+                    return Response([])
+                pod_items = v1.list_namespaced_pod(namespace).items
+                pod_list_items = [
+                    pod for pod in pod_items
+                    if (pod.metadata.labels or {}).get('job-name') in job_names
+                ]
+            if workload_type != 'cronjob':
+                pod_list_items = v1.list_namespaced_pod(namespace, label_selector=label_selector).items
             import datetime as _dt
             now = _dt.datetime.now(_dt.timezone.utc)
             pods = []
-            for p in pod_list.items:
+            for p in pod_list_items:
                 age_delta = now - p.metadata.creation_timestamp.replace(tzinfo=_dt.timezone.utc)
                 days = age_delta.days
                 hours = age_delta.seconds // 3600

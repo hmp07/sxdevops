@@ -89,7 +89,7 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
-import * as echarts from 'echarts'
+import echarts from '@/lib/echarts'
 import { getDashboardStats } from '@/api/modules/ops'
 
 const stats = ref({})

@@ -3,23 +3,43 @@
     <div class="page-header">
       <h2>☸️ K8s 集群管理</h2>
       <div class="k8s-toolbar" v-if="activeTab !== 'clusters'">
-        <div class="cluster-selector-group">
-          <span class="toolbar-label"><el-icon><Connection /></el-icon> 当前集群</span>
-          <el-select v-model="selectedClusterId" placeholder="选择集群" @change="onClusterChange" style="width: 150px" class="industrial-select" popper-class="industrial-popper">
-            <el-option v-for="c in clusters" :key="c.id" :label="c.name" :value="c.id">
-              <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
-                <span class="state-pulse" :class="c.status==='connected'?'running':'exited'"></span> {{ c.name }}
-              </div>
-            </el-option>
-          </el-select>
-        </div>
-        
-        <div class="namespace-selector-group" v-if="needsNamespace">
-          <span class="toolbar-label"><el-icon><FolderOpened /></el-icon> NS</span>
-          <el-select v-model="selectedNamespace" placeholder="命名空间" @change="fetchCurrentTab" style="width: 100px" class="industrial-select" popper-class="industrial-popper">
-            <el-option label="[ 全部命名空间 ]" value="_all" />
-            <el-option v-for="ns in namespaces" :key="ns.name" :label="ns.name" :value="ns.name" />
-          </el-select>
+        <div class="toolbar-filter-bar">
+          <div class="toolbar-filter-pill toolbar-filter-pill--cluster">
+            <span class="toolbar-filter-label">集群</span>
+            <el-select
+              v-model="selectedClusterId"
+              placeholder="选择集群"
+              @change="onClusterChange"
+              class="industrial-select toolbar-filter-select"
+              popper-class="industrial-popper"
+            >
+              <el-option v-for="c in clusters" :key="c.id" :label="c.name" :value="c.id">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                  <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
+                    <span class="state-pulse" :class="c.status==='connected'?'running':'exited'"></span>
+                    <span>{{ c.name }}</span>
+                  </div>
+                  <el-tag size="small" :type="c.status === 'connected' ? 'success' : 'info'">
+                    {{ c.status === 'connected' ? '在线' : '离线' }}
+                  </el-tag>
+                </div>
+              </el-option>
+            </el-select>
+          </div>
+
+          <div v-if="needsNamespace" class="toolbar-filter-pill toolbar-filter-pill--namespace">
+            <span class="toolbar-filter-label">命名空间</span>
+            <el-select
+              v-model="selectedNamespace"
+              placeholder="命名空间"
+              @change="fetchCurrentTab"
+              class="industrial-select toolbar-filter-select"
+              popper-class="industrial-popper"
+            >
+              <el-option label="全部命名空间" value="_all" />
+              <el-option v-for="ns in namespaces" :key="ns.name" :label="ns.name" :value="ns.name" />
+            </el-select>
+          </div>
         </div>
       </div>
     </div>
@@ -31,6 +51,83 @@
         {{ tab.label }}
       </button>
     </div>
+
+    <div v-if="activeTab !== 'clusters' && selectedClusterId && !selectedClusterConnected" class="empty-state">
+      <div class="empty-icon">☸️</div>
+      <div class="empty-text">当前集群未连接，请先测试连接或切换到已连接集群</div>
+      <div style="display:flex;gap:8px;margin-top:16px;">
+        <el-button type="primary" @click="switchTab('clusters')">前往集群管理</el-button>
+        <el-button @click="refreshView">重新加载</el-button>
+      </div>
+    </div>
+
+    <template v-else-if="activeTab !== 'clusters' && selectedClusterId">
+      <div class="stats-grid k8s-summary-grid" style="margin-bottom:16px;">
+        <div class="stat-card k8s-summary-card">
+          <div class="stat-icon primary"><el-icon><Connection /></el-icon></div>
+          <div class="stat-info">
+            <div class="stat-value">{{ summary.nodes_ready }}/{{ summary.nodes_total }}</div>
+            <div class="stat-label">Ready 节点</div>
+          </div>
+        </div>
+        <div class="stat-card k8s-summary-card">
+          <div class="stat-icon success"><el-icon><Box /></el-icon></div>
+          <div class="stat-info">
+            <div class="stat-value">{{ summary.pods_total }}</div>
+            <div class="stat-label">Pod 总数</div>
+          </div>
+        </div>
+        <div class="stat-card k8s-summary-card">
+          <div class="stat-icon warning"><el-icon><WarningFilled /></el-icon></div>
+          <div class="stat-info">
+            <div class="stat-value">{{ summary.pods_abnormal }}</div>
+            <div class="stat-label">异常 Pod</div>
+          </div>
+        </div>
+        <div class="stat-card k8s-summary-card">
+          <div class="stat-icon info"><el-icon><Setting /></el-icon></div>
+          <div class="stat-info">
+            <div class="stat-value">{{ summary.workloads_total }}</div>
+            <div class="stat-label">工作负载</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="filter-bar" style="margin-bottom:12px;">
+        <el-input v-model="tableSearchKeyword" clearable placeholder="搜索当前列表名称、镜像、IP 或描述" style="max-width:360px" />
+        <el-tag size="large" :type="summary.status === 'connected' ? 'success' : 'danger'">{{ selectedCluster?.name || '未选择集群' }}</el-tag>
+        <el-tag v-if="needsNamespace && selectedNamespace !== '_all'" size="large" type="info">NS: {{ selectedNamespace }}</el-tag>
+        <el-tag v-if="summary.pvcs_pending" size="large" type="warning">PVC Pending {{ summary.pvcs_pending }}</el-tag>
+      </div>
+
+      <div v-if="summary.alerts?.length" class="k8s-alert-strip">
+        <span class="k8s-alert-strip__label">运行提示</span>
+        <el-tag
+          v-for="(alert, index) in summary.alerts.slice(0, 2)"
+          :key="index"
+          :type="summaryAlertTagType(alert.level)"
+          effect="light"
+          class="k8s-alert-strip__tag"
+        >
+          {{ compactAlertMessage(alert.message) }}
+        </el-tag>
+        <el-popover v-if="summary.alerts.length > 2" placement="bottom-end" :width="320" trigger="hover">
+          <template #reference>
+            <el-button link type="primary">+{{ summary.alerts.length - 2 }} 更多</el-button>
+          </template>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <div
+              v-for="(alert, index) in summary.alerts"
+              :key="`all-${index}`"
+              style="display:flex;gap:8px;align-items:flex-start;"
+            >
+              <el-tag size="small" :type="summaryAlertTagType(alert.level)">{{ alert.level }}</el-tag>
+              <span style="line-height:1.5;color:#334155;">{{ alert.message }}</span>
+            </div>
+          </div>
+        </el-popover>
+      </div>
+    </template>
 
     <!-- ============ 集群管理 ============ -->
     <div v-if="activeTab === 'clusters'" class="tab-content">
@@ -67,7 +164,7 @@
 
     <!-- ============ 节点管理 ============ -->
     <div v-if="activeTab === 'nodes'" class="tab-content">
-      <el-table :data="nodes" stripe v-loading="loading" style="width:100%">
+      <el-table :data="filterRows(nodes, ['name', 'internal_ip', 'roles', 'version', 'os_image'])" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="节点名称" min-width="180">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -108,7 +205,7 @@
 
     <!-- ============ 命名空间 ============ -->
     <div v-if="activeTab === 'namespaces'" class="tab-content">
-      <el-table :data="nsData" stripe v-loading="loading" style="width:100%">
+      <el-table :data="filterRows(nsData, ['name', 'status', 'created'])" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="命名空间名称" min-width="200">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -133,13 +230,73 @@
       </el-table>
     </div>
 
-    <!-- ============ 工作负载 ============ -->
+    <!-- ============ Pod 管理 ============ -->
+    <div v-if="activeTab === 'pods'" class="tab-content">
+      <el-table :data="filterRows(pods, podSearchFields)" stripe v-loading="loading" style="width:100%">
+        <el-table-column prop="name" label="Pod 名称" min-width="260">
+          <template #default="{ row }">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span class="state-pulse" :class="row.status==='Running'?'running':row.status==='Pending'?'restarting':'exited'"></span>
+              <span style="font-weight:600;font-family:'Cascadia Code','Consolas',monospace;font-size:12px;">{{ row.name }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="namespace" label="命名空间" width="130" />
+        <el-table-column prop="status" label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="row.status==='Running'?'success':row.status==='Pending'?'warning':'danger'" size="small">{{ row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="restarts" label="重启次数" width="80">
+          <template #default="{ row }">
+            <span :style="{ color: row.restarts > 0 ? '#f59e0b' : '#10b981', fontWeight: 600 }">{{ row.restarts }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="node" label="节点" width="140" show-overflow-tooltip />
+        <el-table-column prop="ip" label="Pod 地址" width="150" show-overflow-tooltip />
+        <el-table-column label="容器" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ normalizeContainerNames(row.containers).join(', ') || '-' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="镜像" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ (row.containers || []).map(item => typeof item === 'string' ? item : item?.image).filter(Boolean).join(', ') || '-' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="220" fixed="right">
+          <template #default="{ row }">
+            <div style="display:flex;gap:6px;">
+              <el-popconfirm v-if="canManageK8s" title="Restart this pod?" @confirm="restartListedPod(row)">
+                <template #reference>
+                  <el-tooltip content="重启 Pod" placement="top" :show-after="500">
+                    <button class="pod-op-btn pod-op-event"><el-icon :size="14"><RefreshRight /></el-icon></button>
+                  </el-tooltip>
+                </template>
+              </el-popconfirm>
+              <el-tooltip v-if="canExecK8s" content="Pod Exec" placement="top" :show-after="500">
+                <button class="pod-op-btn pod-op-log" style="background:linear-gradient(135deg,#0f766e,#0d9488);" @click="openExecDialog(row)"><el-icon :size="14"><Monitor /></el-icon></button>
+              </el-tooltip>
+              <el-tooltip content="Logs" placement="top" :show-after="500">
+                <button class="pod-op-btn pod-op-log" @click="showPodLog(row.name, row.namespace, normalizeContainerNames(row.containers))"><el-icon :size="14"><Monitor /></el-icon></button>
+              </el-tooltip>
+              <el-tooltip content="View YAML" placement="top" :show-after="500">
+                <button class="pod-op-btn pod-op-yaml" @click="showYaml('pod', row.name, row.namespace)"><el-icon :size="14"><Document /></el-icon></button>
+              </el-tooltip>
+              <el-tooltip content="Events" placement="top" :show-after="500">
+                <button class="pod-op-btn pod-op-event" @click="showEvents('pod', row.name, row.namespace)"><el-icon :size="14"><Bell /></el-icon></button>
+              </el-tooltip>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
     <div v-if="activeTab === 'workloads'" class="tab-content">
       <div class="neo-sub-tabs theme-blue">
-        <button v-for="st in workloadSubTabs" :key="st" class="neo-sub-tab-btn" :class="{ active: workloadSub === st }" @click="workloadSub = st; fetchCurrentTab()">{{ st }}</button>
+        <button v-for="st in workloadSubTabs" :key="st" class="neo-sub-tab-btn" :class="{ active: workloadSub === st }" @click="workloadSub = st">{{ st }}</button>
       </div>
-      <!-- Deployment -->
-      <el-table v-if="workloadSub==='Deployment'" :data="deployments" stripe v-loading="loading" style="width:100%">
+      <el-table v-if="workloadSub==='Deployment'" :data="filterRows(deployments, ['name', 'namespace', 'images'])" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="名称" min-width="220">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -149,26 +306,28 @@
           </template>
         </el-table-column>
         <el-table-column prop="namespace" label="命名空间" width="130" />
-        <el-table-column label="副本" width="100"><template #default="{ row }"><span :style="{color:row.ready_replicas===row.replicas?'#10b981':'#f59e0b',fontWeight:600}">{{ row.ready_replicas }}/{{ row.replicas }}</span></template></el-table-column>
+        <el-table-column label="副本数" width="100"><template #default="{ row }"><span :style="{color:row.ready_replicas===row.replicas?'#10b981':'#f59e0b',fontWeight:600}">{{ row.ready_replicas }}/{{ row.replicas }}</span></template></el-table-column>
         <el-table-column prop="images" label="镜像" min-width="240" show-overflow-tooltip />
-        <el-table-column label="操作" width="140" fixed="right">
+        <el-table-column label="操作" width="176" fixed="right">
           <template #default="{ row }">
             <div style="display:flex;gap:6px;">
-              <el-tooltip content="查看 Pod (状态/日志)" placement="top" :show-after="500">
+              <el-tooltip v-if="canManageK8s" content="Scale" placement="top" :show-after="500">
+                <button class="pod-op-btn pod-op-event" style="background:linear-gradient(135deg,#2563eb,#1d4ed8);" @click="openScaleDialog('deployment', row)"><el-icon :size="14"><RefreshRight /></el-icon></button>
+              </el-tooltip>
+              <el-tooltip content="Pods" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-log" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);" @click="showPodDetail('deployment', row.name, row.namespace)"><el-icon :size="14"><Menu /></el-icon></button>
               </el-tooltip>
-              <el-tooltip content="查看 YAML" placement="top" :show-after="500">
+              <el-tooltip content="View YAML" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-yaml" @click="showYaml('deployment', row.name, row.namespace)"><el-icon :size="14"><Document /></el-icon></button>
               </el-tooltip>
-              <el-tooltip content="查看事件" placement="top" :show-after="500">
+              <el-tooltip content="Events" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-event" @click="showEvents('deployment', row.name, row.namespace)"><el-icon :size="14"><Bell /></el-icon></button>
               </el-tooltip>
             </div>
           </template>
         </el-table-column>
       </el-table>
-      <!-- StatefulSet -->
-      <el-table v-if="workloadSub==='StatefulSet'" :data="statefulsets" stripe v-loading="loading" style="width:100%">
+      <el-table v-if="workloadSub==='StatefulSet'" :data="filterRows(statefulsets, ['name', 'namespace', 'images'])" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="名称" min-width="220">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -178,26 +337,28 @@
           </template>
         </el-table-column>
         <el-table-column prop="namespace" label="命名空间" width="130" />
-        <el-table-column label="副本" width="100"><template #default="{ row }"><span :style="{color:row.ready_replicas===row.replicas?'#10b981':'#f59e0b',fontWeight:600}">{{ row.ready_replicas }}/{{ row.replicas }}</span></template></el-table-column>
+        <el-table-column label="副本数" width="100"><template #default="{ row }"><span :style="{color:row.ready_replicas===row.replicas?'#10b981':'#f59e0b',fontWeight:600}">{{ row.ready_replicas }}/{{ row.replicas }}</span></template></el-table-column>
         <el-table-column prop="images" label="镜像" min-width="240" show-overflow-tooltip />
-        <el-table-column label="操作" width="140" fixed="right">
+        <el-table-column label="操作" width="176" fixed="right">
           <template #default="{ row }">
             <div style="display:flex;gap:6px;">
-              <el-tooltip content="查看 Pod (状态/日志)" placement="top" :show-after="500">
+              <el-tooltip v-if="canManageK8s" content="Scale" placement="top" :show-after="500">
+                <button class="pod-op-btn pod-op-event" style="background:linear-gradient(135deg,#2563eb,#1d4ed8);" @click="openScaleDialog('statefulset', row)"><el-icon :size="14"><RefreshRight /></el-icon></button>
+              </el-tooltip>
+              <el-tooltip content="Pods" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-log" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);" @click="showPodDetail('statefulset', row.name, row.namespace)"><el-icon :size="14"><Menu /></el-icon></button>
               </el-tooltip>
-              <el-tooltip content="查看 YAML" placement="top" :show-after="500">
+              <el-tooltip content="View YAML" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-yaml" @click="showYaml('statefulset', row.name, row.namespace)"><el-icon :size="14"><Document /></el-icon></button>
               </el-tooltip>
-              <el-tooltip content="查看事件" placement="top" :show-after="500">
+              <el-tooltip content="Events" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-event" @click="showEvents('statefulset', row.name, row.namespace)"><el-icon :size="14"><Bell /></el-icon></button>
               </el-tooltip>
             </div>
           </template>
         </el-table-column>
       </el-table>
-      <!-- DaemonSet -->
-      <el-table v-if="workloadSub==='DaemonSet'" :data="daemonsets" stripe v-loading="loading" style="width:100%">
+      <el-table v-if="workloadSub==='DaemonSet'" :data="filterRows(daemonsets, ['name', 'namespace', 'images', 'node_selector'])" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="名称" min-width="220">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -207,26 +368,25 @@
           </template>
         </el-table-column>
         <el-table-column prop="namespace" label="命名空间" width="130" />
-        <el-table-column label="就绪" width="100"><template #default="{ row }"><span :style="{color:row.ready===row.desired?'#10b981':'#f59e0b',fontWeight:600}">{{ row.ready }}/{{ row.desired }}</span></template></el-table-column>
+        <el-table-column label="就绪数" width="100"><template #default="{ row }"><span :style="{color:row.ready===row.desired?'#10b981':'#f59e0b',fontWeight:600}">{{ row.ready }}/{{ row.desired }}</span></template></el-table-column>
         <el-table-column prop="images" label="镜像" min-width="240" show-overflow-tooltip />
         <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
             <div style="display:flex;gap:6px;">
-              <el-tooltip content="查看 Pod (状态/日志)" placement="top" :show-after="500">
+              <el-tooltip content="Pods" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-log" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);" @click="showPodDetail('daemonset', row.name, row.namespace)"><el-icon :size="14"><Menu /></el-icon></button>
               </el-tooltip>
-              <el-tooltip content="查看 YAML" placement="top" :show-after="500">
+              <el-tooltip content="View YAML" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-yaml" @click="showYaml('daemonset', row.name, row.namespace)"><el-icon :size="14"><Document /></el-icon></button>
               </el-tooltip>
-              <el-tooltip content="查看事件" placement="top" :show-after="500">
+              <el-tooltip content="Events" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-event" @click="showEvents('daemonset', row.name, row.namespace)"><el-icon :size="14"><Bell /></el-icon></button>
               </el-tooltip>
             </div>
           </template>
         </el-table-column>
       </el-table>
-      <!-- Job -->
-      <el-table v-if="workloadSub==='Job'" :data="jobs" stripe v-loading="loading" style="width:100%">
+      <el-table v-if="workloadSub==='Job'" :data="filterRows(jobs, ['name', 'namespace', 'images', 'status'])" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="名称" min-width="220">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -242,21 +402,20 @@
         <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
             <div style="display:flex;gap:6px;">
-              <el-tooltip content="查看 Pod (状态/日志)" placement="top" :show-after="500">
+              <el-tooltip content="Pods" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-log" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);" @click="showPodDetail('job', row.name, row.namespace)"><el-icon :size="14"><Menu /></el-icon></button>
               </el-tooltip>
-              <el-tooltip content="查看 YAML" placement="top" :show-after="500">
+              <el-tooltip content="View YAML" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-yaml" @click="showYaml('job', row.name, row.namespace)"><el-icon :size="14"><Document /></el-icon></button>
               </el-tooltip>
-              <el-tooltip content="查看事件" placement="top" :show-after="500">
+              <el-tooltip content="Events" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-event" @click="showEvents('job', row.name, row.namespace)"><el-icon :size="14"><Bell /></el-icon></button>
               </el-tooltip>
             </div>
           </template>
         </el-table-column>
       </el-table>
-      <!-- CronJob -->
-      <el-table v-if="workloadSub==='CronJob'" :data="cronjobs" stripe v-loading="loading" style="width:100%">
+      <el-table v-if="workloadSub==='CronJob'" :data="filterRows(cronjobs, ['name', 'namespace', 'images', 'schedule'])" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="名称" min-width="200">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -266,19 +425,19 @@
           </template>
         </el-table-column>
         <el-table-column prop="namespace" label="命名空间" width="130" />
-        <el-table-column prop="schedule" label="调度" width="140"><template #default="{ row }"><code style="font-size:12px;background:#f1f5f9;padding:2px 6px;border-radius:3px">{{ row.schedule }}</code></template></el-table-column>
-        <el-table-column label="暂停" width="70"><template #default="{ row }"><el-tag :type="row.suspend?'danger':'success'" size="small">{{ row.suspend?'是':'否' }}</el-tag></template></el-table-column>
-        <el-table-column prop="last_schedule" label="上次调度" min-width="140" show-overflow-tooltip />
+        <el-table-column prop="schedule" label="调度策略" width="140"><template #default="{ row }"><code style="font-size:12px;background:#f1f5f9;padding:2px 6px;border-radius:3px">{{ row.schedule }}</code></template></el-table-column>
+        <el-table-column label="是否暂停" width="88"><template #default="{ row }"><el-tag :type="row.suspend?'danger':'success'" size="small">{{ row.suspend?'是':'否' }}</el-tag></template></el-table-column>
+        <el-table-column prop="last_schedule" label="最近调度" min-width="140" show-overflow-tooltip />
         <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
             <div style="display:flex;gap:6px;">
-              <el-tooltip content="查看 Pod (状态/日志)" placement="top" :show-after="500">
+              <el-tooltip content="Pods" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-log" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);" @click="showPodDetail('cronjob', row.name, row.namespace)"><el-icon :size="14"><Menu /></el-icon></button>
               </el-tooltip>
-              <el-tooltip content="查看 YAML" placement="top" :show-after="500">
+              <el-tooltip content="View YAML" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-yaml" @click="showYaml('cronjob', row.name, row.namespace)"><el-icon :size="14"><Document /></el-icon></button>
               </el-tooltip>
-              <el-tooltip content="查看事件" placement="top" :show-after="500">
+              <el-tooltip content="Events" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-event" @click="showEvents('cronjob', row.name, row.namespace)"><el-icon :size="14"><Bell /></el-icon></button>
               </el-tooltip>
             </div>
@@ -286,12 +445,12 @@
         </el-table-column>
       </el-table>
     </div>
-    <!-- ============ 网络管理 ============ -->
+
     <div v-if="activeTab === 'network'" class="tab-content">
       <div class="neo-sub-tabs theme-blue">
-        <button v-for="st in ['Service','Ingress']" :key="st" class="neo-sub-tab-btn" :class="{ active: networkSub === st }" @click="networkSub = st; fetchCurrentTab()">{{ st }}</button>
+        <button v-for="st in ['Service','Ingress']" :key="st" class="neo-sub-tab-btn" :class="{ active: networkSub === st }" @click="networkSub = st">{{ st }}</button>
       </div>
-      <el-table v-if="networkSub==='Service'" :data="services" stripe v-loading="loading" style="width:100%">
+      <el-table v-if="networkSub==='Service'" :data="filterRows(services, ['name', 'namespace', 'type', 'cluster_ip', 'ports'])" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="名称" min-width="200">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -317,7 +476,7 @@
           </template>
         </el-table-column>
       </el-table>
-      <el-table v-if="networkSub==='Ingress'" :data="ingresses" stripe v-loading="loading" style="width:100%">
+      <el-table v-if="networkSub==='Ingress'" :data="filterRows(ingresses, ['name', 'namespace', 'class', 'hosts', 'address'])" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="名称" min-width="180">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -349,9 +508,9 @@
     <!-- ============ 存储管理 ============ -->
     <div v-if="activeTab === 'storage'" class="tab-content">
       <div class="neo-sub-tabs theme-blue">
-        <button v-for="st in ['PV','PVC','StorageClass']" :key="st" class="neo-sub-tab-btn" :class="{ active: storageSub === st }" @click="storageSub = st; fetchCurrentTab()">{{ st }}</button>
+        <button v-for="st in ['PV','PVC','StorageClass']" :key="st" class="neo-sub-tab-btn" :class="{ active: storageSub === st }" @click="storageSub = st">{{ st }}</button>
       </div>
-      <el-table v-if="storageSub==='PV'" :data="pvs" stripe v-loading="loading" style="width:100%">
+      <el-table v-if="storageSub==='PV'" :data="filterRows(pvs, ['name', 'capacity', 'access_modes', 'status', 'claim', 'storage_class'])" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="名称" min-width="200">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -376,7 +535,7 @@
           </template>
         </el-table-column>
       </el-table>
-      <el-table v-if="storageSub==='PVC'" :data="pvcs" stripe v-loading="loading" style="width:100%">
+      <el-table v-if="storageSub==='PVC'" :data="filterRows(pvcs, ['name', 'namespace', 'status', 'capacity', 'storage_class', 'volume'])" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="名称" min-width="240">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -404,7 +563,7 @@
           </template>
         </el-table-column>
       </el-table>
-      <el-table v-if="storageSub==='StorageClass'" :data="storageclasses" stripe v-loading="loading" style="width:100%">
+      <el-table v-if="storageSub==='StorageClass'" :data="filterRows(storageclasses, ['name', 'provisioner', 'reclaim_policy', 'binding_mode'])" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="名称" min-width="160">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -433,9 +592,9 @@
     <!-- ============ 配置管理 ============ -->
     <div v-if="activeTab === 'config'" class="tab-content">
       <div class="neo-sub-tabs theme-blue">
-        <button v-for="st in ['ConfigMap','Secret']" :key="st" class="neo-sub-tab-btn" :class="{ active: configSub === st }" @click="configSub = st; fetchCurrentTab()">{{ st }}</button>
+        <button v-for="st in ['ConfigMap','Secret']" :key="st" class="neo-sub-tab-btn" :class="{ active: configSub === st }" @click="configSub = st">{{ st }}</button>
       </div>
-      <el-table v-if="configSub==='ConfigMap'" :data="configmaps" stripe v-loading="loading" style="width:100%">
+      <el-table v-if="configSub==='ConfigMap'" :data="filterRows(configmaps, ['name', 'namespace', 'data_count', 'created'])" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="名称" min-width="250">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -445,11 +604,14 @@
           </template>
         </el-table-column>
         <el-table-column prop="namespace" label="命名空间" width="130" />
-        <el-table-column prop="data_count" label="数据条目" width="100" />
+        <el-table-column prop="data_count" label="键值数" width="100" />
         <el-table-column prop="created" label="创建时间" min-width="200" show-overflow-tooltip />
-        <el-table-column label="操作" width="80" fixed="right">
+        <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }">
             <div style="display:flex;gap:6px;">
+              <el-tooltip v-if="canManageK8s" content="编辑配置" placement="top" :show-after="500">
+                <button class="pod-op-btn pod-op-event" style="background:linear-gradient(135deg,#0f766e,#0d9488);" @click="openConfigEditor('configmap', row)"><el-icon :size="14"><Setting /></el-icon></button>
+              </el-tooltip>
               <el-tooltip content="查看 YAML" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-yaml" @click="showYaml('configmap', row.name, row.namespace)"><el-icon :size="14"><Document /></el-icon></button>
               </el-tooltip>
@@ -457,7 +619,7 @@
           </template>
         </el-table-column>
       </el-table>
-      <el-table v-if="configSub==='Secret'" :data="secrets" stripe v-loading="loading" style="width:100%">
+      <el-table v-if="configSub==='Secret'" :data="filterRows(secrets, ['name', 'namespace', 'type', 'data_count', 'created'])" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="名称" min-width="250">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -468,11 +630,14 @@
         </el-table-column>
         <el-table-column prop="namespace" label="命名空间" width="130" />
         <el-table-column prop="type" label="类型" min-width="240"><template #default="{ row }"><code style="font-size:11px;background:#f1f5f9;padding:2px 6px;border-radius:3px">{{ row.type }}</code></template></el-table-column>
-        <el-table-column prop="data_count" label="数据条目" width="100" />
+        <el-table-column prop="data_count" label="键值数" width="100" />
         <el-table-column prop="created" label="创建时间" min-width="200" show-overflow-tooltip />
-        <el-table-column label="操作" width="80" fixed="right">
+        <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }">
             <div style="display:flex;gap:6px;">
+              <el-tooltip v-if="canManageK8s" content="编辑配置" placement="top" :show-after="500">
+                <button class="pod-op-btn pod-op-event" style="background:linear-gradient(135deg,#0f766e,#0d9488);" @click="openConfigEditor('secret', row)"><el-icon :size="14"><Setting /></el-icon></button>
+              </el-tooltip>
               <el-tooltip content="查看 YAML" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-yaml" @click="showYaml('secret', row.name, row.namespace)"><el-icon :size="14"><Document /></el-icon></button>
               </el-tooltip>
@@ -481,7 +646,7 @@
         </el-table-column>
       </el-table>
     </div>
-<!-- PLACEHOLDER_2 -->    <!-- ============ 集群弹窗 ============ -->
+<!-- ============ 集群弹窗 ============ -->
     <el-dialog v-model="clusterDialogVisible" :title="editingClusterId ? '编辑集群' : '添加 K8s 集群'" width="90%" style="max-width:600px;" top="5vh" append-to-body destroy-on-close>
       <el-form :model="clusterForm" label-width="110px">
         <el-form-item label="集群名称"><el-input v-model="clusterForm.name" placeholder="例如 prod-cluster" /></el-form-item>
@@ -508,7 +673,7 @@
 
     <!-- ============ Pod 详情弹窗 ============ -->
     <el-dialog v-model="podDialogVisible" :title="'🔲 Pod 列表 - ' + podWorkloadName" width="95%" style="max-width:1200px;" top="3vh" append-to-body destroy-on-close>
-      <el-table :data="podList" stripe v-loading="podLoading" style="width:100%" size="small">
+      <el-table :data="filterRows(podList, ['name', 'namespace', 'status', 'node', 'pod_ip', 'host_ip', 'cpu_request', 'memory_request'])" stripe v-loading="podLoading" style="width:100%" size="small">
         <el-table-column prop="name" label="Pod 名称" min-width="280">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -549,9 +714,16 @@
             <span style="font-family:monospace;font-size:12px;color:#64748b">{{ row.age }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="140" fixed="right">
+        <el-table-column label="操作" width="176" fixed="right">
           <template #default="{ row }">
             <div style="display:flex;gap:6px;">
+              <el-popconfirm v-if="canManageK8s" title="确定重启该 Pod？" @confirm="restartPod(row)">
+                <template #reference>
+                  <el-tooltip content="重启 Pod" placement="top" :show-after="500">
+                    <button class="pod-op-btn pod-op-event"><el-icon :size="14"><RefreshRight /></el-icon></button>
+                  </el-tooltip>
+                </template>
+              </el-popconfirm>
               <el-tooltip content="查看日志" placement="top" :show-after="500">
                 <button class="pod-op-btn pod-op-log" @click="showPodLog(row.name, row.namespace, row.containers)"><el-icon :size="14"><Monitor /></el-icon></button>
               </el-tooltip>
@@ -613,29 +785,147 @@
         </div>
       </div>
     </el-dialog>
+
+    <el-dialog v-model="execDialogVisible" :title="'Pod Terminal - ' + execForm.pod_name" width="92%" style="max-width:1100px;" top="4vh" append-to-body destroy-on-close>
+      <div class="filter-bar" style="margin-bottom:12px;">
+        <el-tag size="large" type="info">{{ execForm.namespace }}</el-tag>
+        <el-select
+          v-if="execContainers.length > 1"
+          v-model="execForm.container"
+          size="small"
+          style="width:180px"
+          @change="reconnectExecTerminal"
+        >
+          <el-option v-for="name in execContainers" :key="name" :label="name" :value="name" />
+        </el-select>
+        <el-tag v-else-if="execForm.container" size="large">容器: {{ execForm.container }}</el-tag>
+        <el-tag :type="execStatusTagType" size="large">{{ execStatusText }}</el-tag>
+        <el-button size="small" plain :disabled="!execDialogVisible" @click="reconnectExecTerminal">
+          <el-icon><RefreshRight /></el-icon> 重连
+        </el-button>
+        <el-button size="small" plain :disabled="!execSessionLog" @click="downloadExecSessionLog">下载会话日志</el-button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+        <el-button
+          v-for="preset in execPresetCommands"
+          :key="preset.command"
+          size="small"
+          plain
+          @click="runExecPreset(preset.command)"
+        >
+          {{ preset.label }}
+        </el-button>
+      </div>
+      <div ref="execTerminalRef" style="height:420px;background:#0f172a;border-radius:12px;overflow:hidden;padding:8px;"></div>
+    </el-dialog>
+
+    <el-dialog v-model="scaleDialogVisible" :title="'弹性伸缩 - ' + scaleForm.name" width="90%" style="max-width:420px;" top="8vh" append-to-body destroy-on-close>
+      <el-form label-width="100px">
+        <el-form-item label="工作负载">
+          <el-tag>{{ scaleForm.workload_type }}</el-tag>
+        </el-form-item>
+        <el-form-item label="命名空间">
+          <el-tag type="info">{{ scaleForm.namespace }}</el-tag>
+        </el-form-item>
+        <el-form-item label="副本数">
+          <el-input-number v-model="scaleForm.replicas" :min="0" :max="200" controls-position="right" style="width:180px;" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="scaleDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="scaleLoading" @click="submitScale">应用</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="configEditorVisible" :title="configDialogTitle" width="90%" style="max-width:980px;" top="3vh" append-to-body destroy-on-close>
+      <div class="filter-bar" style="margin-bottom:12px;">
+        <el-tag type="info">{{ configForm.namespace }}</el-tag>
+        <el-tag>{{ configForm.type }}</el-tag>
+        <el-tag v-if="configForm.rollback_available" type="warning">可回滚</el-tag>
+        <el-tag v-if="configForm.revision_count" type="success">历史 {{ configForm.revision_count }}</el-tag>
+        <span class="config-editor-note">仅编辑 data/stringData，保存前建议先预览差异。</span>
+      </div>
+      <el-input v-model="configForm.content" type="textarea" :rows="18" placeholder="key: value" style="font-family:'Cascadia Code','Consolas',monospace;" />
+      <div class="config-history-panel">
+        <div class="config-history-head">
+          <div class="config-history-title">
+            <strong class="config-history-heading">历史版本</strong>
+            <span class="config-history-note">每次保存前和回滚前都会自动留档，可随时预览差异并回滚到指定版本。</span>
+          </div>
+          <el-button size="small" plain :loading="configRevisionLoading" @click="fetchConfigRevisions">刷新历史</el-button>
+        </div>
+        <el-table :data="configRevisions" size="small" stripe v-loading="configRevisionLoading" max-height="220" empty-text="暂无历史版本">
+          <el-table-column prop="created_at" label="时间" min-width="180" show-overflow-tooltip />
+          <el-table-column prop="action" label="动作" width="110">
+            <template #default="{ row }">
+              <el-tag :type="row.action === 'rollback' ? 'warning' : 'info'" size="small">
+                {{ row.action === 'rollback' ? '回滚前快照' : '更新前快照' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="operator" label="操作人" width="120" show-overflow-tooltip />
+          <el-table-column label="操作" width="160" fixed="right">
+            <template #default="{ row }">
+              <div style="display:flex;gap:6px;">
+                <el-button link type="primary" @click="previewConfigRevision(row)">预览</el-button>
+                <el-button v-if="canManageK8s" link type="warning" @click="applyConfigRevisionRollback(row)">回滚</el-button>
+              </div>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:8px;margin-top:12px;flex-wrap:wrap;">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <el-button @click="configEditorVisible = false">关闭</el-button>
+          <el-button type="info" plain :loading="configPreviewLoading" @click="previewConfigChange">预览本次变更</el-button>
+          <el-button type="warning" plain :disabled="!configForm.rollback_available" :loading="configPreviewLoading" @click="previewConfigRollback">预览最近一次回滚</el-button>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <el-button v-if="configForm.rollback_available" type="warning" :loading="configSaving" @click="applyConfigRollback">回滚到上一版本</el-button>
+          <el-button type="primary" :loading="configSaving" @click="saveConfigResource">保存配置</el-button>
+        </div>
+      </div>
+    </el-dialog>
+
+    <el-dialog v-model="diffDialogVisible" :title="diffDialogTitle" width="90%" style="max-width:980px;" top="4vh" append-to-body destroy-on-close>
+      <pre class="log-output terminal-log" style="min-height:320px;">{{ diffDialogContent || '暂无差异' }}</pre>
+    </el-dialog>
   </div>
-</template><script setup>import { ref, computed, onMounted, nextTick, watch } from 'vue'
+</template>
+
+<script setup>
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRouteTabState } from '@/composables/useRouteTabState'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
-import { DocumentCopy, Document, Monitor, Bell, Plus, Connection, FolderOpened, Menu } from '@element-plus/icons-vue'
+import { DocumentCopy, Document, Monitor, Bell, Plus, Connection, FolderOpened, Menu, RefreshRight, Box, WarningFilled, Setting } from '@element-plus/icons-vue'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import '@xterm/xterm/css/xterm.css'
 import {
   getK8sClusters, createK8sCluster, updateK8sCluster, deleteK8sCluster,
-  testK8sConnection, getK8sNamespaces,
+  testK8sConnection, getK8sSummary, getK8sNamespaces,
   getK8sPods, getK8sServices, getK8sDeployments, restartK8sPod,
   getK8sNodes, getK8sStatefulSets, getK8sDaemonSets, getK8sJobs, getK8sCronJobs,
   getK8sIngresses, getK8sPVs, getK8sPVCs, getK8sStorageClasses,
   getK8sConfigMaps, getK8sSecrets, getK8sResourceYaml,
   getK8sWorkloadPods, getK8sPodLogs, getK8sResourceEvents,
+  scaleK8sWorkload, getK8sConfigResourceDetail,
+  previewK8sConfigResource, updateK8sConfigResource,
+  getK8sConfigRevisions, getK8sConfigRevisionPreview,
+  getK8sConfigRollbackPreview, rollbackK8sConfigResource,
+  rollbackK8sConfigResourceToRevision,
 } from '@/api/modules/container'
 
 const authStore = useAuthStore()
 const canManageK8s = computed(() => authStore.hasPermission('ops.k8s.manage'))
+const canExecK8s = computed(() => authStore.hasPermission('ops.k8s.exec'))
 
 const mainTabs = [
   { key: 'clusters',   label: '集群管理', icon: 'OfficeBuilding' },
   { key: 'nodes',      label: '节点管理', icon: 'Monitor' },
   { key: 'namespaces', label: '命名空间', icon: 'FolderOpened' },
+  { key: 'pods',       label: 'Pod 管理', icon: 'Box' },
   { key: 'workloads',  label: '工作负载', icon: 'Cpu' },
   { key: 'network',    label: '网络管理', icon: 'Connection' },
   { key: 'storage',    label: '存储管理', icon: 'Coin' },
@@ -654,12 +944,41 @@ const clusters = ref([])
 const selectedClusterId = ref(null)
 const selectedNamespace = ref('_all')
 const namespaces = ref([])
+const tableSearchKeyword = ref('')
+const selectedCluster = computed(() => clusters.value.find(item => item.id === selectedClusterId.value) || null)
+const selectedClusterConnected = computed(() => selectedCluster.value?.status === 'connected')
 
-const needsNamespace = computed(() => ['namespaces', 'workloads', 'network', 'config'].includes(activeTab.value) || (activeTab.value === 'storage' && storageSub.value === 'PVC'))
+const needsNamespace = computed(() => ['pods', 'namespaces', 'workloads', 'network', 'config'].includes(activeTab.value) || (activeTab.value === 'storage' && storageSub.value === 'PVC'))
+
+function createEmptySummary() {
+  return {
+    status: 'disconnected',
+    nodes_total: 0,
+    nodes_ready: 0,
+    pods_total: 0,
+    pods_abnormal: 0,
+    total_restarts: 0,
+    workloads_total: 0,
+    pvcs_pending: 0,
+    alerts: [],
+  }
+}
+
+const summary = ref(createEmptySummary())
+const podSearchFields = [
+  'name',
+  'namespace',
+  'status',
+  'node',
+  'ip',
+  (row) => normalizeContainerNames(row.containers),
+  (row) => (row.containers || []).map(item => typeof item === 'string' ? item : item?.image),
+]
 
 // ====== 各 Tab 数据 ======
 const nodes = ref([])
 const nsData = ref([])
+const pods = ref([])
 const deployments = ref([])
 const statefulsets = ref([])
 const daemonsets = ref([])
@@ -701,32 +1020,107 @@ function switchTab(tab) {
   tabState.switchTab(tab)
 }
 
+function normalizeSearchValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(normalizeSearchValue).join(' ')
+  }
+  if (value && typeof value === 'object') {
+    return Object.values(value).map(normalizeSearchValue).join(' ')
+  }
+  return String(value || '').toLowerCase()
+}
+
+function filterRows(rows, fields = []) {
+  const keyword = tableSearchKeyword.value.trim().toLowerCase()
+  if (!keyword) return rows
+  return rows.filter((row) => fields.some((field) => {
+    const value = typeof field === 'function' ? field(row) : row?.[field]
+    return normalizeSearchValue(value).includes(keyword)
+  }))
+}
+
+function summaryAlertType(level) {
+  const mapping = { success: 'success', warning: 'warning', danger: 'error' }
+  return mapping[level] || 'info'
+}
+
+function summaryAlertTagType(level) {
+  const mapping = { success: 'success', warning: 'warning', danger: 'danger' }
+  return mapping[level] || 'info'
+}
+
+function compactAlertMessage(message) {
+  const text = String(message || '').trim()
+  if (text.length <= 24) return text
+  return `${text.slice(0, 24)}...`
+}
+
 async function fetchClusters() {
   loading.value = true
   try {
     const res = await getK8sClusters()
     clusters.value = res.results || res
-    
-    // 默认选择第一个集群
-    if (clusters.value.length > 0 && !selectedClusterId.value) {
-      selectedClusterId.value = clusters.value[0].id
-      if (activeTab.value !== 'clusters') {
-        onClusterChange()
-      }
+
+    const connectedCluster = clusters.value.find(item => item.status === 'connected')
+    const current = clusters.value.find(item => item.id === selectedClusterId.value)
+    if (current) {
+      selectedClusterId.value = current.id
+    } else if (activeTab.value !== 'clusters' && connectedCluster) {
+      selectedClusterId.value = connectedCluster.id
+    } else {
+      selectedClusterId.value = clusters.value[0]?.id || null
+    }
+    if (!selectedClusterId.value) {
+      summary.value = createEmptySummary()
+    }
+
+    if (selectedClusterId.value && activeTab.value !== 'clusters' && selectedClusterConnected.value) {
+      await onClusterChange()
+    } else if (!selectedClusterConnected.value) {
+      summary.value = createEmptySummary()
     }
   } catch (e) { /* */ }
   loading.value = false
 }
 
+async function fetchSummary() {
+  if (!selectedClusterId.value || !selectedClusterConnected.value) {
+    summary.value = createEmptySummary()
+    return
+  }
+  try {
+    summary.value = await getK8sSummary(selectedClusterId.value)
+  } catch (e) {
+    summary.value = createEmptySummary()
+  }
+}
+
+function refreshView() {
+  if (activeTab.value === 'clusters') {
+    fetchClusters()
+    return
+  }
+  fetchSummary()
+  fetchCurrentTab()
+}
+
 async function onClusterChange() {
   namespaces.value = []
-  if (!selectedClusterId.value) return
+  if (!selectedClusterId.value) {
+    summary.value = createEmptySummary()
+    return
+  }
+  if (!selectedClusterConnected.value) {
+    summary.value = createEmptySummary()
+    return
+  }
   try { namespaces.value = await getK8sNamespaces(selectedClusterId.value) } catch (e) { /* */ }
+  await fetchSummary()
   fetchCurrentTab()
 }
 
 async function fetchCurrentTab() {
-  if (!selectedClusterId.value && activeTab.value !== 'clusters') return
+  if (activeTab.value !== 'clusters' && (!selectedClusterId.value || !selectedClusterConnected.value)) return
   loading.value = true
   const id = selectedClusterId.value
   const ns = selectedNamespace.value
@@ -734,6 +1128,7 @@ async function fetchCurrentTab() {
     switch (activeTab.value) {
       case 'nodes': nodes.value = await getK8sNodes(id); break
       case 'namespaces': nsData.value = await getK8sNamespaces(id); break
+      case 'pods': pods.value = await getK8sPods(id, ns); break
       case 'workloads':
         if (workloadSub.value === 'Deployment') deployments.value = await getK8sDeployments(id, ns)
         else if (workloadSub.value === 'StatefulSet') statefulsets.value = await getK8sStatefulSets(id, ns)
@@ -759,6 +1154,10 @@ async function fetchCurrentTab() {
     ElMessage.error('获取数据失败')
   }
   loading.value = false
+}
+
+function normalizeContainerNames(containers) {
+  return (containers || []).map((item) => (typeof item === 'string' ? item : item?.name)).filter(Boolean)
 }
 
 // ====== 集群 CRUD ======
@@ -855,22 +1254,52 @@ function copyYaml() {
 // ====== Pod 详情 ======
 const podDialogVisible = ref(false)
 const podWorkloadName = ref('')
+const podWorkloadType = ref('')
+const podWorkloadNamespace = ref('default')
 const podList = ref([])
 const podLoading = ref(false)
 
 async function showPodDetail(workloadType, name, namespace) {
   if (!selectedClusterId.value) return ElMessage.warning('请先选择集群')
+  podWorkloadType.value = workloadType
   podWorkloadName.value = name
+  podWorkloadNamespace.value = namespace || selectedNamespace.value || 'default'
   podList.value = []
   podDialogVisible.value = true
   podLoading.value = true
   try {
-    const ns = namespace || selectedNamespace.value || 'default'
+    const ns = podWorkloadNamespace.value
     podList.value = await getK8sWorkloadPods(selectedClusterId.value, workloadType, name, ns)
   } catch (e) {
     ElMessage.error('获取 Pod 列表失败')
   }
   podLoading.value = false
+}
+
+async function restartPod(row) {
+  if (!canManageK8s.value) return
+  try {
+    await performPodRestart(row)
+    await showPodDetail(podWorkloadType.value, podWorkloadName.value, podWorkloadNamespace.value)
+  } catch (e) {
+    ElMessage.error('Pod 重启失败')
+  }
+}
+
+async function performPodRestart(row) {
+  const res = await restartK8sPod(selectedClusterId.value, row.name, row.namespace)
+  ElMessage.success(res.message || 'Pod 正在重启')
+  await fetchSummary()
+}
+
+async function restartListedPod(row) {
+  if (!canManageK8s.value) return
+  try {
+    await performPodRestart(row)
+    await fetchCurrentTab()
+  } catch (e) {
+    ElMessage.error('Pod 重启失败')
+  }
 }
 
 // ====== Pod 日志 ======
@@ -912,11 +1341,443 @@ async function fetchPodLog() {
 
 function copyLogContent() {
   navigator.clipboard.writeText(logContent.value).then(() => {
-    ElMessage.success('已复制到剪贴板')
-  }).catch(() => { ElMessage.error('复制失败') })
+    ElMessage.success('Copied')
+  }).catch(() => { ElMessage.error('Copy failed') })
 }
 
 // ====== 事件查看 ======
+const execDialogVisible = ref(false)
+const execForm = ref({ pod_name: '', namespace: 'default', container: '' })
+const execContainers = ref([])
+const execTerminalRef = ref(null)
+const execSessionLog = ref('')
+const execPresetCommands = [
+  { label: 'pwd', command: 'pwd' },
+  { label: 'env', command: 'env' },
+  { label: 'ps aux', command: 'ps aux' },
+  { label: 'df -h', command: 'df -h' },
+  { label: 'kubectl get pods', command: 'kubectl get pods' },
+]
+const execWsStatus = ref('disconnected')
+const execStatusText = computed(() => ({
+  connecting: '连接中',
+  connected: '已连接',
+  error: '异常',
+  disconnected: '未连接',
+}[execWsStatus.value] || '未连接'))
+const execStatusTagType = computed(() => ({
+  connecting: 'warning',
+  connected: 'success',
+  error: 'danger',
+  disconnected: 'info',
+}[execWsStatus.value] || 'info'))
+
+let execTerminal = null
+let execFitAddon = null
+let execSocket = null
+let execResizeObserver = null
+let execClosingByClient = false
+
+function appendExecSessionLog(chunk) {
+  if (!chunk) return
+  execSessionLog.value += chunk
+  if (execSessionLog.value.length > 200000) {
+    execSessionLog.value = execSessionLog.value.slice(-200000)
+  }
+}
+
+function appendExecSystemLine(message) {
+  const line = `[${new Date().toLocaleTimeString()}] ${message}\n`
+  appendExecSessionLog(line)
+}
+
+function sendExecInput(data) {
+  if (!execSocket || execSocket.readyState !== WebSocket.OPEN) {
+    ElMessage.warning('终端未连接')
+    return false
+  }
+  execSocket.send(JSON.stringify({ type: 'input', data }))
+  return true
+}
+
+function runExecPreset(command) {
+  if (sendExecInput(`${command}\r`) && execTerminal) {
+    execTerminal.focus()
+  }
+}
+
+function downloadExecSessionLog() {
+  if (!execSessionLog.value) return
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const filename = `k8s-exec-${execForm.value.pod_name || 'session'}-${stamp}.log`
+  const blob = new Blob([execSessionLog.value], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function openExecDialog(row) {
+  const containers = normalizeContainerNames(row.containers)
+  execContainers.value = containers
+  execForm.value = {
+    pod_name: row.name,
+    namespace: row.namespace || 'default',
+    container: containers[0] || '',
+  }
+  execSessionLog.value = ''
+  execDialogVisible.value = true
+}
+
+function initExecTerminal() {
+  disposeExecTerminal()
+  if (!execTerminalRef.value) return
+
+  execTerminal = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
+    theme: {
+      background: '#0f172a',
+      foreground: '#e2e8f0',
+      cursor: '#22c55e',
+      selectionBackground: '#22c55e33',
+    },
+    scrollback: 5000,
+  })
+  execFitAddon = new FitAddon()
+  execTerminal.loadAddon(execFitAddon)
+  execTerminal.open(execTerminalRef.value)
+  execFitAddon.fit()
+  execTerminal.writeln('\x1b[1;36mAgDevOps Pod Terminal\x1b[0m')
+  execTerminal.writeln('\x1b[2mConnecting to pod...\x1b[0m')
+  execTerminal.writeln('')
+
+  execTerminal.onData((data) => {
+    if (execSocket && execSocket.readyState === WebSocket.OPEN) {
+      execSocket.send(JSON.stringify({ type: 'input', data }))
+    }
+  })
+
+  execResizeObserver = new ResizeObserver(() => {
+    if (execFitAddon) {
+      execFitAddon.fit()
+      sendExecResize()
+    }
+  })
+  execResizeObserver.observe(execTerminalRef.value)
+}
+
+function sendExecResize() {
+  if (!execTerminal || !execSocket || execSocket.readyState !== WebSocket.OPEN) return
+  execSocket.send(JSON.stringify({
+    type: 'resize',
+    cols: execTerminal.cols,
+    rows: execTerminal.rows,
+  }))
+}
+
+function connectExecTerminal() {
+  if (!selectedClusterId.value || !execForm.value.pod_name || !execTerminal) return
+  disconnectExecSocket()
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const token = localStorage.getItem('agdevops_token') || ''
+  const params = new URLSearchParams({
+    token,
+    pod_name: execForm.value.pod_name,
+    namespace: execForm.value.namespace || 'default',
+  })
+  if (execForm.value.container) {
+    params.set('container', execForm.value.container)
+  }
+
+  execClosingByClient = false
+  execWsStatus.value = 'connecting'
+  appendExecSystemLine(`connecting to ${execForm.value.pod_name}`)
+  execSocket = new WebSocket(`${protocol}//${window.location.host}/ws/k8s/exec/${selectedClusterId.value}/?${params.toString()}`)
+
+  execSocket.onopen = () => {
+    execWsStatus.value = 'connected'
+    appendExecSystemLine(`connected to ${execForm.value.pod_name}`)
+    sendExecResize()
+  }
+
+  execSocket.onmessage = (event) => {
+    try {
+      const payload = JSON.parse(event.data)
+      if (payload.type === 'output') {
+        if (execTerminal) execTerminal.write(payload.data || '')
+        appendExecSessionLog(payload.data || '')
+      } else if (payload.type === 'connected') {
+        if (execTerminal) execTerminal.writeln(`\x1b[1;32m${payload.message}\x1b[0m`)
+        appendExecSystemLine(payload.message || 'terminal connected')
+      } else if (payload.type === 'error') {
+        execWsStatus.value = 'error'
+        if (execTerminal) execTerminal.writeln(`\x1b[1;31m${payload.message}\x1b[0m`)
+        appendExecSystemLine(payload.message || 'terminal error')
+      }
+    } catch {
+      if (execTerminal) execTerminal.write(event.data)
+      appendExecSessionLog(event.data || '')
+    }
+  }
+
+  execSocket.onclose = () => {
+    if (execClosingByClient) {
+      execClosingByClient = false
+      return
+    }
+    if (execWsStatus.value !== 'error') {
+      execWsStatus.value = 'disconnected'
+    }
+    appendExecSystemLine('terminal disconnected')
+  }
+
+  execSocket.onerror = () => {
+    execWsStatus.value = 'error'
+    appendExecSystemLine('terminal websocket error')
+  }
+}
+
+function disconnectExecSocket() {
+  if (execSocket) {
+    execClosingByClient = true
+    execSocket.close()
+    execSocket = null
+  }
+}
+
+function disposeExecTerminal() {
+  disconnectExecSocket()
+  if (execResizeObserver) {
+    execResizeObserver.disconnect()
+    execResizeObserver = null
+  }
+  if (execTerminal) {
+    execTerminal.dispose()
+    execTerminal = null
+  }
+  execFitAddon = null
+  execWsStatus.value = 'disconnected'
+}
+
+function reconnectExecTerminal() {
+  if (!execDialogVisible.value) return
+  nextTick(() => {
+    initExecTerminal()
+    connectExecTerminal()
+  })
+}
+
+const scaleDialogVisible = ref(false)
+const scaleLoading = ref(false)
+const scaleForm = ref({ workload_type: 'deployment', name: '', namespace: 'default', replicas: 1 })
+
+function openScaleDialog(workloadType, row) {
+  scaleForm.value = {
+    workload_type: workloadType,
+    name: row.name,
+    namespace: row.namespace || 'default',
+    replicas: Number(row.replicas || 0),
+  }
+  scaleDialogVisible.value = true
+}
+
+async function submitScale() {
+  if (!selectedClusterId.value) return
+  scaleLoading.value = true
+  try {
+    const res = await scaleK8sWorkload(selectedClusterId.value, { ...scaleForm.value })
+    ElMessage.success(res.message || 'Scale submitted')
+    scaleDialogVisible.value = false
+    await fetchSummary()
+    await fetchCurrentTab()
+  } catch (e) {
+    ElMessage.error('Scale failed')
+  }
+  scaleLoading.value = false
+}
+
+const configEditorVisible = ref(false)
+const configPreviewLoading = ref(false)
+const configSaving = ref(false)
+const configRevisionLoading = ref(false)
+const configRevisions = ref([])
+const diffDialogVisible = ref(false)
+const diffDialogTitle = ref('差异预览')
+const diffDialogContent = ref('')
+const configForm = ref({
+  type: 'configmap',
+  name: '',
+  namespace: 'default',
+  content: '',
+  rollback_available: false,
+  revision_count: 0,
+})
+const configDialogTitle = computed(() => `${configForm.value.type} 配置 - ${configForm.value.name}`)
+
+function syncConfigRevisionState(detail = {}) {
+  if (typeof detail.rollback_available === 'boolean') {
+    configForm.value.rollback_available = detail.rollback_available
+  }
+  if (typeof detail.revision_count === 'number') {
+    configForm.value.revision_count = detail.revision_count
+  } else {
+    configForm.value.revision_count = configRevisions.value.length
+  }
+}
+
+async function fetchConfigRevisions() {
+  if (!selectedClusterId.value || !configForm.value.name) return
+  configRevisionLoading.value = true
+  try {
+    const res = await getK8sConfigRevisions(
+      selectedClusterId.value,
+      configForm.value.type,
+      configForm.value.name,
+      configForm.value.namespace,
+    )
+    configRevisions.value = res.items || []
+    syncConfigRevisionState({ revision_count: configRevisions.value.length, rollback_available: configRevisions.value.length > 0 })
+  } catch (e) {
+    configRevisions.value = []
+    ElMessage.error('加载配置历史失败')
+  }
+  configRevisionLoading.value = false
+}
+
+async function openConfigEditor(type, row) {
+  if (!selectedClusterId.value) return
+  configPreviewLoading.value = true
+  try {
+    const detail = await getK8sConfigResourceDetail(selectedClusterId.value, type, row.name, row.namespace)
+    configForm.value = {
+      type,
+      name: row.name,
+      namespace: row.namespace || 'default',
+      content: detail.text || '',
+      rollback_available: detail.rollback_available || false,
+      revision_count: detail.revision_count || 0,
+    }
+    configRevisions.value = []
+    configEditorVisible.value = true
+    await fetchConfigRevisions()
+  } catch (e) {
+    ElMessage.error('加载配置详情失败')
+  }
+  configPreviewLoading.value = false
+}
+
+async function previewConfigChange() {
+  if (!selectedClusterId.value) return
+  configPreviewLoading.value = true
+  try {
+    const res = await previewK8sConfigResource(selectedClusterId.value, { ...configForm.value })
+    diffDialogTitle.value = `保存前预览 - ${configForm.value.name}`
+    diffDialogContent.value = res.diff || '暂无差异'
+    diffDialogVisible.value = true
+  } catch (e) {
+    ElMessage.error('配置预览失败')
+  }
+  configPreviewLoading.value = false
+}
+
+async function saveConfigResource() {
+  if (!selectedClusterId.value) return
+  configSaving.value = true
+  try {
+    const res = await updateK8sConfigResource(selectedClusterId.value, { ...configForm.value })
+    configForm.value.content = res.resource?.text || configForm.value.content
+    syncConfigRevisionState(res.resource)
+    ElMessage.success(res.message || '配置已更新')
+    await fetchConfigRevisions()
+    await fetchCurrentTab()
+    await fetchSummary()
+  } catch (e) {
+    ElMessage.error('保存配置失败')
+  }
+  configSaving.value = false
+}
+
+async function previewConfigRollback() {
+  if (!selectedClusterId.value) return
+  configPreviewLoading.value = true
+  try {
+    const res = await getK8sConfigRollbackPreview(selectedClusterId.value, configForm.value.type, configForm.value.name, configForm.value.namespace)
+    diffDialogTitle.value = `最近回滚预览 - ${configForm.value.name}`
+    diffDialogContent.value = res.diff || '当前版本与最近一次回滚没有差异'
+    diffDialogVisible.value = true
+  } catch (e) {
+    ElMessage.error('回滚预览失败')
+  }
+  configPreviewLoading.value = false
+}
+
+async function applyConfigRollback() {
+  if (!selectedClusterId.value) return
+  configSaving.value = true
+  try {
+    const res = await rollbackK8sConfigResource(selectedClusterId.value, {
+      type: configForm.value.type,
+      name: configForm.value.name,
+      namespace: configForm.value.namespace,
+    })
+    configForm.value.content = res.resource?.text || configForm.value.content
+    syncConfigRevisionState(res.resource)
+    ElMessage.success(res.message || '配置已回滚')
+    await fetchConfigRevisions()
+    await fetchCurrentTab()
+    await fetchSummary()
+  } catch (e) {
+    ElMessage.error('回滚失败')
+  }
+  configSaving.value = false
+}
+
+async function previewConfigRevision(row) {
+  if (!selectedClusterId.value) return
+  configPreviewLoading.value = true
+  try {
+    const res = await getK8sConfigRevisionPreview(
+      selectedClusterId.value,
+      configForm.value.type,
+      configForm.value.name,
+      configForm.value.namespace,
+      row.id,
+    )
+    diffDialogTitle.value = `历史版本预览 - #${row.id}`
+    diffDialogContent.value = res.diff || '暂无差异'
+    diffDialogVisible.value = true
+  } catch (e) {
+    ElMessage.error('加载历史版本预览失败')
+  }
+  configPreviewLoading.value = false
+}
+
+async function applyConfigRevisionRollback(row) {
+  if (!selectedClusterId.value) return
+  configSaving.value = true
+  try {
+    const res = await rollbackK8sConfigResourceToRevision(selectedClusterId.value, {
+      type: configForm.value.type,
+      name: configForm.value.name,
+      namespace: configForm.value.namespace,
+      revision_id: row.id,
+    })
+    configForm.value.content = res.resource?.text || configForm.value.content
+    syncConfigRevisionState(res.resource)
+    ElMessage.success(res.message || '已回滚到指定历史版本')
+    await fetchConfigRevisions()
+    await fetchCurrentTab()
+    await fetchSummary()
+  } catch (e) {
+    ElMessage.error('回滚到指定历史版本失败')
+  }
+  configSaving.value = false
+}
+
 const eventsDialogVisible = ref(false)
 const eventsResourceName = ref('')
 const eventsList = ref([])
@@ -943,11 +1804,13 @@ function formatEventTime(iso) {
     const d = new Date(iso)
     const now = new Date()
     const diff = Math.floor((now - d) / 1000)
-    if (diff < 60) return `${diff}秒前`
-    if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`
-    if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`
-    return `${Math.floor(diff / 86400)}天前`
-  } catch { return iso }
+    if (diff < 60) return `${diff}s ago`
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+    return `${Math.floor(diff / 86400)}d ago`
+  } catch {
+    return iso
+  }
 }
 
 // ====== 初始化 ======
@@ -956,6 +1819,7 @@ watch(activeTab, (tab, prev) => {
   if (tab === 'clusters') {
     fetchClusters()
   } else if (selectedClusterId.value) {
+    fetchSummary()
     fetchCurrentTab()
   }
 })
@@ -973,5 +1837,211 @@ watch(configSub, (tab, prev) => {
   if (tab !== prev && activeTab.value === 'config' && selectedClusterId.value) fetchCurrentTab()
 })
 
+watch(execDialogVisible, (visible) => {
+  if (visible) {
+    reconnectExecTerminal()
+  } else {
+    disposeExecTerminal()
+  }
+})
+
 onMounted(() => { fetchClusters() })
+onBeforeUnmount(() => { disposeExecTerminal() })
 </script>
+
+<style scoped>
+.k8s-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.toolbar-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 4px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+}
+
+.toolbar-filter-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.toolbar-filter-label {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  border: 1px solid transparent;
+  background: #f8fafc;
+}
+
+.toolbar-filter-pill--cluster .toolbar-filter-label {
+  color: #1d4ed8;
+  background: rgba(219, 234, 254, 0.9);
+  border-color: rgba(96, 165, 250, 0.28);
+}
+
+.toolbar-filter-pill--namespace .toolbar-filter-label {
+  color: #0f766e;
+  background: rgba(204, 251, 241, 0.9);
+  border-color: rgba(45, 212, 191, 0.28);
+}
+
+.toolbar-filter-select {
+  width: 180px;
+}
+
+:deep(.toolbar-filter-select .el-select__wrapper) {
+  min-height: 30px;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-radius: 999px;
+  background: rgba(241, 245, 249, 0.92);
+  box-shadow: none;
+  border: 1px solid transparent;
+}
+
+:deep(.toolbar-filter-select .el-select__selected-item) {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+:deep(.toolbar-filter-select.is-focus .el-select__wrapper) {
+  border-color: rgba(59, 130, 246, 0.42);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.k8s-summary-grid {
+  gap: 12px;
+}
+
+.k8s-summary-card {
+  padding: 14px 16px;
+  gap: 10px;
+  border-radius: 14px;
+}
+
+.k8s-summary-card .stat-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  font-size: 18px;
+}
+
+.k8s-summary-card .stat-value {
+  font-size: 20px;
+  line-height: 1.1;
+}
+
+.k8s-summary-card .stat-label {
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.config-editor-note {
+  color: #475569;
+  font-size: 12px;
+}
+
+.config-history-panel {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid rgba(96, 165, 250, 0.16);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(239, 246, 255, 0.96));
+}
+
+.config-history-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.config-history-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.config-history-heading {
+  color: #0f172a;
+}
+
+.config-history-note {
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.k8s-alert-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.88);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.k8s-alert-strip__label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #475569;
+}
+
+.k8s-alert-strip__tag {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 900px) {
+  .k8s-toolbar {
+    justify-content: flex-start;
+  }
+
+  .toolbar-filter-bar {
+    width: 100%;
+    border-radius: 16px;
+  }
+
+  .toolbar-filter-pill {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .toolbar-filter-select {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .k8s-summary-grid {
+    gap: 10px;
+  }
+
+  .k8s-summary-card {
+    padding: 12px 14px;
+  }
+}
+</style>

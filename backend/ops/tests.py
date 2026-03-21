@@ -1,8 +1,11 @@
-﻿from unittest.mock import patch
+﻿from urllib.parse import quote
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
+from ops.models import DockerHost, K8sCluster, K8sConfigRevision
 
 
 TEST_LOG_PROVIDER_CONFIGS = {
@@ -486,3 +489,273 @@ class LogViewsTests(TestCase):
         payload = query_response.json()
         self.assertGreaterEqual(payload['total'], 200)
         self.assertEqual(len(payload['logs']), 200)
+
+
+class ContainerManagementTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = get_user_model().objects.create_superuser('container-admin', 'container@example.com', 'Admin@123456')
+        self.client.force_authenticate(user=self.user)
+        cache.clear()
+
+    def test_k8s_summary_returns_demo_cluster_metrics(self):
+        cluster = K8sCluster.objects.create(
+            name='demo-cluster',
+            kubeconfig='demo',
+            status='connected',
+        )
+
+        response = self.client.get(f'/api/k8s/clusters/{cluster.id}/summary/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['cluster_name'], 'demo-cluster')
+        self.assertEqual(payload['nodes_total'], 4)
+        self.assertEqual(payload['nodes_ready'], 4)
+        self.assertEqual(payload['pods_total'], 15)
+        self.assertEqual(payload['pods_abnormal'], 2)
+        self.assertEqual(payload['total_restarts'], 8)
+        self.assertEqual(payload['workloads_total'], 16)
+        self.assertGreaterEqual(len(payload['alerts']), 1)
+
+    @patch('ops.k8s_views._build_demo_summary')
+    def test_k8s_summary_uses_short_cache(self, mock_build_demo_summary):
+        cluster = K8sCluster.objects.create(
+            name='demo-cluster-cache',
+            kubeconfig='demo',
+            status='connected',
+        )
+        mock_build_demo_summary.return_value = {
+            'cluster_name': cluster.name,
+            'status': 'connected',
+            'nodes_total': 4,
+            'nodes_ready': 4,
+            'pods_total': 15,
+            'pods_abnormal': 0,
+            'pods_restarting': 0,
+            'total_restarts': 0,
+            'services_total': 0,
+            'ingresses_total': 0,
+            'workloads_total': 0,
+            'workloads_degraded': 0,
+            'pvcs_total': 0,
+            'pvcs_pending': 0,
+            'configmaps_total': 0,
+            'secrets_total': 0,
+            'alerts': [],
+        }
+
+        first = self.client.get(f'/api/k8s/clusters/{cluster.id}/summary/')
+        second = self.client.get(f'/api/k8s/clusters/{cluster.id}/summary/')
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(mock_build_demo_summary.call_count, 1)
+
+    @patch('ops.docker_views._get_ssh_client_from_docker_host')
+    @patch('ops.docker_views._ssh_exec')
+    def test_list_containers_uses_json_line_format_for_broader_docker_compatibility(self, mock_ssh_exec, mock_get_client):
+        host = DockerHost.objects.create(name='docker-host-01', ip_address='10.0.0.10')
+        client = MagicMock()
+        mock_get_client.return_value = client
+        mock_ssh_exec.return_value = (0, '{"ID":"abc123","Names":"web","Image":"nginx:1.25","State":"running","Status":"Up 2h"}\n', '')
+
+        response = self.client.get('/api/docker/containers/', {'host_id': host.id})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()[0]['name'], 'web')
+        issued_command = mock_ssh_exec.call_args.args[1]
+        self.assertIn("--format '{{json .}}'", issued_command)
+        client.close.assert_called_once()
+
+    @patch('ops.docker_views._get_ssh_client_from_docker_host')
+    @patch('ops.docker_views._ssh_exec')
+    def test_container_logs_quote_identifier_and_clamp_tail(self, mock_ssh_exec, mock_get_client):
+        host = DockerHost.objects.create(name='docker-host-02', ip_address='10.0.0.11')
+        client = MagicMock()
+        mock_get_client.return_value = client
+        mock_ssh_exec.return_value = (0, 'demo logs', '')
+        container_id = 'demo; echo hacked'
+
+        response = self.client.get(
+            f"/api/docker/containers/{quote(container_id, safe='')}/logs/",
+            {'host_id': host.id, 'tail': 99999},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['logs'], 'demo logs')
+        issued_command = mock_ssh_exec.call_args.args[1]
+        self.assertIn('docker logs --tail=2000', issued_command)
+        self.assertIn("'demo; echo hacked'", issued_command)
+        client.close.assert_called_once()
+
+    def test_k8s_pod_exec_returns_demo_output(self):
+        cluster = K8sCluster.objects.create(name='demo-cluster-exec', kubeconfig='demo', status='connected')
+
+        response = self.client.post(
+            f'/api/k8s/clusters/{cluster.id}/pod_exec/',
+            {
+                'pod_name': 'api-server-5f8b7c6d4-r9p2w',
+                'namespace': 'production',
+                'command': 'whoami && pwd',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertIn('whoami && pwd', payload['output'])
+
+    def test_k8s_scale_workload_updates_demo_state(self):
+        cluster = K8sCluster.objects.create(name='demo-cluster-scale', kubeconfig='demo', status='connected')
+
+        scale_response = self.client.post(
+            f'/api/k8s/clusters/{cluster.id}/scale_workload/',
+            {
+                'workload_type': 'deployment',
+                'name': 'nginx-deployment',
+                'namespace': 'production',
+                'replicas': 4,
+            },
+            format='json',
+        )
+        list_response = self.client.get(f'/api/k8s/clusters/{cluster.id}/deployments/', {'namespace': 'production'})
+
+        self.assertEqual(scale_response.status_code, 200)
+        self.assertEqual(list_response.status_code, 200)
+        deployment = next(item for item in list_response.json() if item['name'] == 'nginx-deployment')
+        self.assertEqual(deployment['replicas'], 4)
+
+    def test_k8s_config_resource_update_and_rollback_preview_use_demo_snapshot(self):
+        cluster = K8sCluster.objects.create(name='demo-cluster-config', kubeconfig='demo', status='connected')
+
+        detail_response = self.client.get(
+            f'/api/k8s/clusters/{cluster.id}/config_resource_detail/',
+            {'type': 'configmap', 'name': 'nginx-config', 'namespace': 'production'},
+        )
+        update_response = self.client.post(
+            f'/api/k8s/clusters/{cluster.id}/config_resource_update/',
+            {
+                'type': 'configmap',
+                'name': 'nginx-config',
+                'namespace': 'production',
+                'content': 'worker_processes: auto\nkeepalive_timeout: 65\n',
+            },
+            format='json',
+        )
+        rollback_preview = self.client.get(
+            f'/api/k8s/clusters/{cluster.id}/config_resource_rollback_preview/',
+            {'type': 'configmap', 'name': 'nginx-config', 'namespace': 'production'},
+        )
+
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(rollback_preview.status_code, 200)
+        self.assertTrue(update_response.json()['resource']['rollback_available'])
+        self.assertIn('worker_processes', update_response.json()['resource']['text'])
+        self.assertIn('rollback', rollback_preview.json()['diff'])
+        self.assertEqual(K8sConfigRevision.objects.filter(cluster=cluster).count(), 1)
+
+    def test_k8s_config_resource_revisions_list_preview_and_targeted_rollback(self):
+        cluster = K8sCluster.objects.create(name='demo-cluster-revisions', kubeconfig='demo', status='connected')
+
+        first_update = self.client.post(
+            f'/api/k8s/clusters/{cluster.id}/config_resource_update/',
+            {
+                'type': 'configmap',
+                'name': 'nginx-config',
+                'namespace': 'production',
+                'content': 'worker_processes: auto\nkeepalive_timeout: 65\n',
+            },
+            format='json',
+        )
+        second_update = self.client.post(
+            f'/api/k8s/clusters/{cluster.id}/config_resource_update/',
+            {
+                'type': 'configmap',
+                'name': 'nginx-config',
+                'namespace': 'production',
+                'content': 'worker_processes: 4\nkeepalive_timeout: 75\n',
+            },
+            format='json',
+        )
+        revisions_response = self.client.get(
+            f'/api/k8s/clusters/{cluster.id}/config_resource_revisions/',
+            {'type': 'configmap', 'name': 'nginx-config', 'namespace': 'production'},
+        )
+
+        self.assertEqual(first_update.status_code, 200)
+        self.assertEqual(second_update.status_code, 200)
+        self.assertEqual(revisions_response.status_code, 200)
+        items = revisions_response.json()['items']
+        self.assertGreaterEqual(len(items), 2)
+        target_revision = items[-1]
+        self.assertEqual(target_revision['action'], 'update')
+
+        preview_response = self.client.get(
+            f'/api/k8s/clusters/{cluster.id}/config_resource_revision_preview/',
+            {
+                'type': 'configmap',
+                'name': 'nginx-config',
+                'namespace': 'production',
+                'revision_id': target_revision['id'],
+            },
+        )
+        rollback_response = self.client.post(
+            f'/api/k8s/clusters/{cluster.id}/config_resource_rollback_to_revision/',
+            {
+                'type': 'configmap',
+                'name': 'nginx-config',
+                'namespace': 'production',
+                'revision_id': target_revision['id'],
+            },
+            format='json',
+        )
+        detail_response = self.client.get(
+            f'/api/k8s/clusters/{cluster.id}/config_resource_detail/',
+            {'type': 'configmap', 'name': 'nginx-config', 'namespace': 'production'},
+        )
+
+        self.assertEqual(preview_response.status_code, 200)
+        self.assertEqual(rollback_response.status_code, 200)
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertIn('revision-', preview_response.json()['diff'])
+        self.assertIn('key1', detail_response.json()['text'])
+        self.assertIn('key3', detail_response.json()['text'])
+        self.assertGreaterEqual(K8sConfigRevision.objects.filter(cluster=cluster).count(), 3)
+
+    @patch('ops.docker_views._get_ssh_client_from_docker_host')
+    @patch('ops.docker_views._ssh_exec')
+    def test_remove_images_quotes_each_identifier(self, mock_ssh_exec, mock_get_client):
+        host = DockerHost.objects.create(name='docker-host-03', ip_address='10.0.0.12')
+        client = MagicMock()
+        mock_get_client.return_value = client
+        mock_ssh_exec.return_value = (0, 'deleted', '')
+
+        response = self.client.delete(
+            '/api/docker/images/remove/',
+            {'host_id': host.id, 'image_ids': ['sha256:abc', 'bad; echo hacked']},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        issued_command = mock_ssh_exec.call_args.args[1]
+        self.assertIn("docker rmi", issued_command)
+        self.assertIn("'bad; echo hacked'", issued_command)
+        client.close.assert_called_once()
+
+    @patch('ops.docker_views._get_ssh_client_from_docker_host')
+    @patch('ops.docker_views._ssh_exec')
+    def test_prune_dangling_images_uses_docker_image_prune(self, mock_ssh_exec, mock_get_client):
+        host = DockerHost.objects.create(name='docker-host-04', ip_address='10.0.0.13')
+        client = MagicMock()
+        mock_get_client.return_value = client
+        mock_ssh_exec.return_value = (0, 'Total reclaimed space: 0B', '')
+
+        response = self.client.post('/api/docker/images/prune/', {'host_id': host.id}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        issued_command = mock_ssh_exec.call_args.args[1]
+        self.assertEqual(issued_command, 'docker image prune -f 2>&1')
+        client.close.assert_called_once()

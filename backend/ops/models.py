@@ -160,6 +160,34 @@ class K8sCluster(models.Model):
         return self.name
 
 
+class K8sConfigRevision(models.Model):
+    ACTION_CHOICES = [
+        ('update', 'Update Snapshot'),
+        ('rollback', 'Rollback Snapshot'),
+    ]
+
+    cluster = models.ForeignKey(K8sCluster, on_delete=models.CASCADE, related_name='config_revisions')
+    resource_type = models.CharField(max_length=32)
+    namespace = models.CharField(max_length=128)
+    resource_name = models.CharField(max_length=255)
+    secret_type = models.CharField(max_length=128, blank=True, default='')
+    content = models.TextField()
+    operator = models.CharField(max_length=64, blank=True, default='')
+    action = models.CharField(max_length=32, choices=ACTION_CHOICES, default='update')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'K8s config revision'
+        verbose_name_plural = 'K8s config revisions'
+        ordering = ['-created_at', '-id']
+        indexes = [
+            models.Index(fields=['cluster', 'resource_type', 'namespace', 'resource_name']),
+        ]
+
+    def __str__(self):
+        return f'{self.cluster.name}:{self.resource_type}/{self.namespace}/{self.resource_name}'
+
+
 class DockerHost(models.Model):
     """Docker 环境主机（手工录入，独立于通用 Host）"""
     STATUS_CHOICES = [

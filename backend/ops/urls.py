@@ -34,6 +34,8 @@ urlpatterns = [
     # Docker 容器管理
     path('docker/containers/', docker_views.list_containers, name='docker-containers'),
     path('docker/images/', docker_views.list_images, name='docker-images'),
+    path('docker/images/remove/', docker_views.remove_images, name='docker-images-remove'),
+    path('docker/images/prune/', docker_views.prune_dangling_images, name='docker-images-prune'),
     path('docker/containers/<str:container_id>/action/', docker_views.container_action, name='docker-container-action'),
     path('docker/containers/<str:container_id>/remove/', docker_views.container_remove, name='docker-container-remove'),
     path('docker/containers/<str:container_id>/logs/', docker_views.container_logs, name='docker-container-logs'),

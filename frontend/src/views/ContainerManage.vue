@@ -3,15 +3,23 @@
     <div class="page-header">
       <h2>🐳 Docker 环境</h2>
       <div class="docker-toolbar" v-if="activeTab !== 'hosts'">
-        <div class="cluster-selector-group">
-          <span class="toolbar-label"><el-icon><Monitor /></el-icon> 当前环境</span>
-          <el-select v-model="selectedHostId" placeholder="选择环境" @change="onHostChange" style="width: 150px" class="industrial-select" popper-class="industrial-popper">
+        <div class="toolbar-filter-bar">
+          <div class="toolbar-filter-pill toolbar-filter-pill--env">
+            <span class="toolbar-filter-label">环境</span>
+            <el-select v-model="selectedHostId" placeholder="选择环境" @change="onHostChange" class="industrial-select toolbar-filter-select" popper-class="industrial-popper">
             <el-option v-for="h in dockerHosts" :key="h.id" :label="h.name" :value="h.id">
-              <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
-                <span class="state-pulse" :class="h.status==='connected'?'running':'exited'"></span> {{ h.name }}
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
+                  <span class="state-pulse" :class="h.status==='connected'?'running':'exited'"></span>
+                  <span>{{ h.name }}</span>
+                </div>
+                <el-tag size="small" :type="h.status === 'connected' ? 'success' : 'info'">
+                  {{ h.status === 'connected' ? '在线' : '离线' }}
+                </el-tag>
               </div>
             </el-option>
-          </el-select>
+            </el-select>
+          </div>
         </div>
       </div>
     </div>
@@ -26,10 +34,44 @@
 
     <!-- ============ 环境管理 ============ -->
     <div v-if="activeTab === 'hosts'" class="tab-content">
-      <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
-        <el-button v-if="canManageDocker" type="primary" size="small" @click="openHostDialog()"><el-icon><Plus /></el-icon> 添加环境</el-button>
+      <div class="stats-grid docker-summary-grid" style="margin-bottom:16px;">
+        <div class="stat-card docker-summary-card">
+          <div class="stat-icon primary"><el-icon><Platform /></el-icon></div>
+          <div class="stat-info">
+            <div class="stat-value">{{ dockerHostStats.total }}</div>
+            <div class="stat-label">环境总数</div>
+          </div>
+        </div>
+        <div class="stat-card docker-summary-card">
+          <div class="stat-icon success"><el-icon><CircleCheck /></el-icon></div>
+          <div class="stat-info">
+            <div class="stat-value">{{ dockerHostStats.connected }}</div>
+            <div class="stat-label">已连接环境</div>
+          </div>
+        </div>
+        <div class="stat-card docker-summary-card">
+          <div class="stat-icon warning"><el-icon><WarningFilled /></el-icon></div>
+          <div class="stat-info">
+            <div class="stat-value">{{ dockerHostStats.attention }}</div>
+            <div class="stat-label">待处理环境</div>
+          </div>
+        </div>
+        <div class="stat-card docker-summary-card">
+          <div class="stat-icon info"><el-icon><Monitor /></el-icon></div>
+          <div class="stat-info">
+            <div class="stat-value docker-summary-value-sm">{{ dockerHostStats.selected }}</div>
+            <div class="stat-label">当前环境</div>
+          </div>
+        </div>
       </div>
-      <el-table :data="dockerHosts" stripe v-loading="loading" style="width:100%">
+      <div class="filter-bar" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <el-input v-model="hostSearchKeyword" clearable placeholder="搜索环境名称、IP、描述" style="max-width:320px" />
+        <div style="display:flex;gap:8px;">
+          <el-button size="small" @click="refreshView"><el-icon><RefreshRight /></el-icon> 刷新</el-button>
+          <el-button v-if="canManageDocker" type="primary" size="small" @click="openHostDialog()"><el-icon><Plus /></el-icon> 添加环境</el-button>
+        </div>
+      </div>
+      <el-table :data="filteredHosts" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="环境名称" min-width="160">
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:8px;">
@@ -66,7 +108,48 @@
         <div class="empty-icon">🐳</div>
         <div class="empty-text">请在右上角选择一个 Docker 环境</div>
       </div>
-      <el-table v-else :data="containers" stripe v-loading="loading" style="width:100%">
+      <template v-else>
+        <div class="stats-grid docker-summary-grid" style="margin-bottom:16px;">
+          <div class="stat-card docker-summary-card">
+            <div class="stat-icon primary"><el-icon><Box /></el-icon></div>
+            <div class="stat-info">
+              <div class="stat-value">{{ containerStats.total }}</div>
+              <div class="stat-label">容器总数</div>
+            </div>
+          </div>
+          <div class="stat-card docker-summary-card">
+            <div class="stat-icon success"><el-icon><VideoPlay /></el-icon></div>
+            <div class="stat-info">
+              <div class="stat-value">{{ containerStats.running }}</div>
+              <div class="stat-label">运行中</div>
+            </div>
+          </div>
+          <div class="stat-card docker-summary-card">
+            <div class="stat-icon warning"><el-icon><WarningFilled /></el-icon></div>
+            <div class="stat-info">
+              <div class="stat-value">{{ containerStats.attention }}</div>
+              <div class="stat-label">需要关注</div>
+            </div>
+          </div>
+          <div class="stat-card docker-summary-card">
+            <div class="stat-icon info"><el-icon><Files /></el-icon></div>
+            <div class="stat-info">
+              <div class="stat-value">{{ containerStats.uniqueImages }}</div>
+              <div class="stat-label">镜像种类</div>
+            </div>
+          </div>
+        </div>
+        <div class="filter-bar" style="margin-bottom:12px;">
+          <el-input v-model="containerKeyword" clearable placeholder="搜索容器名称、镜像、端口" style="max-width:320px" />
+          <el-select v-model="containerStateFilter" style="width:140px">
+            <el-option label="全部状态" value="all" />
+            <el-option label="运行中" value="running" />
+            <el-option label="已停止" value="stopped" />
+            <el-option label="需关注" value="attention" />
+          </el-select>
+          <el-button size="small" @click="refreshView"><el-icon><RefreshRight /></el-icon> 刷新</el-button>
+        </div>
+        <el-table :data="filteredContainers" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="容器名称" min-width="180">
           <template #default="{ row }">
             <div style="display:flex; align-items:center; gap:8px;">
@@ -96,7 +179,8 @@
             </el-popconfirm>
           </template>
         </el-table-column>
-      </el-table>
+        </el-table>
+      </template>
     </div>
 
     <!-- ============ 镜像管理 ============ -->
@@ -105,7 +189,46 @@
         <div class="empty-icon">📦</div>
         <div class="empty-text">请在右上角选择一个 Docker 环境</div>
       </div>
-      <el-table v-else :data="images" stripe v-loading="loading" style="width:100%">
+      <template v-else>
+        <div class="stats-grid docker-summary-grid" style="margin-bottom:16px;">
+          <div class="stat-card docker-summary-card">
+            <div class="stat-icon primary"><el-icon><Files /></el-icon></div>
+            <div class="stat-info">
+              <div class="stat-value">{{ imageStats.total }}</div>
+              <div class="stat-label">镜像总数</div>
+            </div>
+          </div>
+          <div class="stat-card docker-summary-card">
+            <div class="stat-icon success"><el-icon><CollectionTag /></el-icon></div>
+            <div class="stat-info">
+              <div class="stat-value">{{ imageStats.repositories }}</div>
+              <div class="stat-label">仓库数</div>
+            </div>
+          </div>
+          <div class="stat-card docker-summary-card">
+            <div class="stat-icon warning"><el-icon><WarningFilled /></el-icon></div>
+            <div class="stat-info">
+              <div class="stat-value">{{ imageStats.dangling }}</div>
+              <div class="stat-label">悬空镜像</div>
+            </div>
+          </div>
+          <div class="stat-card docker-summary-card">
+            <div class="stat-icon info"><el-icon><Monitor /></el-icon></div>
+            <div class="stat-info">
+              <div class="stat-value docker-summary-value-sm">{{ imageStats.version }}</div>
+              <div class="stat-label">Docker 版本</div>
+            </div>
+          </div>
+        </div>
+        <div class="filter-bar" style="margin-bottom:12px;">
+          <el-input v-model="imageKeyword" clearable placeholder="搜索仓库、标签、镜像 ID" style="max-width:320px" />
+          <el-tag v-if="imageSelection.length" type="info" size="large">已选 {{ imageSelection.length }} 个镜像</el-tag>
+          <el-button v-if="canManageDocker" size="small" type="warning" plain @click="pruneDanglingImages">清理悬空镜像</el-button>
+          <el-button v-if="canManageDocker" size="small" type="danger" plain :disabled="!imageSelection.length" @click="removeSelectedImages">批量删除</el-button>
+          <el-button size="small" @click="refreshView"><el-icon><RefreshRight /></el-icon> 刷新</el-button>
+        </div>
+        <el-table :data="filteredImages" stripe v-loading="loading" style="width:100%" @selection-change="handleImageSelectionChange">
+        <el-table-column v-if="canManageDocker" type="selection" width="48" />
         <el-table-column prop="repository" label="仓库" min-width="250" show-overflow-tooltip />
         <el-table-column prop="tag" label="标签" width="120" />
         <el-table-column prop="id" label="镜像 ID" width="160">
@@ -115,11 +238,21 @@
         </el-table-column>
         <el-table-column prop="size" label="大小" width="110" />
         <el-table-column prop="created" label="创建时间" min-width="180" show-overflow-tooltip />
-      </el-table>
+        </el-table>
+      </template>
     </div>
 
     <!-- ============ 容器日志弹窗 ============ -->
     <el-dialog v-model="logVisible" :title="'容器日志 — ' + logContainerName" width="90%" style="max-width:900px;" top="3vh" append-to-body destroy-on-close>
+      <div class="filter-bar" style="margin-bottom:12px;">
+        <el-select v-model="logTailLines" style="width:120px" @change="reloadContainerLogs">
+          <el-option :value="100" label="最近 100 行" />
+          <el-option :value="200" label="最近 200 行" />
+          <el-option :value="500" label="最近 500 行" />
+          <el-option :value="1000" label="最近 1000 行" />
+        </el-select>
+        <el-button size="small" @click="reloadContainerLogs" :disabled="!logContainerId"><el-icon><RefreshRight /></el-icon> 刷新日志</el-button>
+      </div>
       <pre class="log-output terminal-log">{{ logContent || '加载中...' }}</pre>
     </el-dialog>
 
@@ -156,6 +289,7 @@ import {
   getDockerContainers, getDockerImages,
   dockerContainerAction, dockerContainerRemove,
   getDockerContainerLogs, getDockerContainerInspect,
+  dockerRemoveImages, dockerPruneDanglingImages,
 } from '@/api/modules/container'
 
 const authStore = useAuthStore()
@@ -177,10 +311,65 @@ const loading = ref(false)
 // ====== Docker 环境列表 ======
 const dockerHosts = ref([])
 const selectedHostId = ref(null)
+const hostSearchKeyword = ref('')
 
 // ====== 数据 ======
 const containers = ref([])
 const images = ref([])
+const containerKeyword = ref('')
+const containerStateFilter = ref('all')
+const imageKeyword = ref('')
+const imageSelection = ref([])
+
+const selectedHost = computed(() => dockerHosts.value.find(item => item.id === selectedHostId.value) || null)
+const dockerHostStats = computed(() => ({
+  total: dockerHosts.value.length,
+  connected: dockerHosts.value.filter(item => item.status === 'connected').length,
+  attention: dockerHosts.value.filter(item => item.status !== 'connected').length,
+  selected: selectedHost.value?.name || '未选择',
+}))
+const filteredHosts = computed(() => {
+  const keyword = hostSearchKeyword.value.trim().toLowerCase()
+  if (!keyword) return dockerHosts.value
+  return dockerHosts.value.filter(item =>
+    [item.name, item.ip_address, item.description, item.docker_api_version].some(field => String(field || '').toLowerCase().includes(keyword))
+  )
+})
+const containerStats = computed(() => {
+  const total = containers.value.length
+  const running = containers.value.filter(item => item.state === 'running').length
+  const attention = containers.value.filter(item =>
+    ['restarting', 'dead'].includes(item.state) || String(item.status || '').toLowerCase().includes('unhealthy')
+  ).length
+  const uniqueImages = new Set(containers.value.map(item => item.image).filter(Boolean)).size
+  return { total, running, attention, uniqueImages }
+})
+const filteredContainers = computed(() => {
+  const keyword = containerKeyword.value.trim().toLowerCase()
+  return containers.value.filter(item => {
+    const matchesKeyword = !keyword || [item.name, item.image, item.ports, item.status].some(field =>
+      String(field || '').toLowerCase().includes(keyword)
+    )
+    if (!matchesKeyword) return false
+    if (containerStateFilter.value === 'all') return true
+    if (containerStateFilter.value === 'running') return item.state === 'running'
+    if (containerStateFilter.value === 'stopped') return ['exited', 'dead'].includes(item.state)
+    return ['restarting', 'dead'].includes(item.state) || String(item.status || '').toLowerCase().includes('unhealthy')
+  })
+})
+const imageStats = computed(() => ({
+  total: images.value.length,
+  repositories: new Set(images.value.map(item => item.repository).filter(item => item && item !== '<none>')).size,
+  dangling: images.value.filter(item => item.repository === '<none>' || item.tag === '<none>').length,
+  version: selectedHost.value?.docker_api_version || '未知',
+}))
+const filteredImages = computed(() => {
+  const keyword = imageKeyword.value.trim().toLowerCase()
+  if (!keyword) return images.value
+  return images.value.filter(item =>
+    [item.repository, item.tag, item.id, item.size].some(field => String(field || '').toLowerCase().includes(keyword))
+  )
+})
 
 // ====== Tab 切换逻辑 ======
 function switchTab(tab) {
@@ -196,10 +385,8 @@ async function fetchHosts() {
   try {
     const res = await getDockerHosts()
     dockerHosts.value = res.results || res
-    // 默认选中第一个
-    if (dockerHosts.value.length > 0 && !selectedHostId.value) {
-      selectedHostId.value = dockerHosts.value[0].id
-    }
+    const hasSelection = dockerHosts.value.some(item => item.id === selectedHostId.value)
+    selectedHostId.value = hasSelection ? selectedHostId.value : (dockerHosts.value[0]?.id || null)
   } catch (e) { /* */ }
   loading.value = false
 }
@@ -213,11 +400,24 @@ async function fetchCurrentTab() {
       containers.value = await getDockerContainers(id)
     } else if (activeTab.value === 'images') {
       images.value = await getDockerImages(id)
+      imageSelection.value = []
     }
   } catch (e) {
     ElMessage.error('获取数据失败')
   }
   loading.value = false
+}
+
+function refreshView() {
+  if (activeTab.value === 'hosts') {
+    fetchHosts()
+    return
+  }
+  fetchCurrentTab()
+}
+
+function handleImageSelectionChange(rows) {
+  imageSelection.value = rows || []
 }
 
 // ====== 容器状态映射 ======
@@ -251,14 +451,22 @@ async function removeContainer(row) {
 
 // ====== 日志 ======
 const logVisible = ref(false)
+const logContainerId = ref('')
 const logContainerName = ref('')
 const logContent = ref('')
 async function viewContainerLogs(row) {
+  logContainerId.value = row.id
   logContainerName.value = row.name
   logContent.value = ''
   logVisible.value = true
+  await reloadContainerLogs()
+}
+
+const logTailLines = ref(200)
+async function reloadContainerLogs() {
+  if (!logContainerId.value || !selectedHostId.value) return
   try {
-    const res = await getDockerContainerLogs(row.id, selectedHostId.value)
+    const res = await getDockerContainerLogs(logContainerId.value, selectedHostId.value, logTailLines.value)
     logContent.value = res.logs
   } catch (e) {
     logContent.value = '获取日志失败'
@@ -278,6 +486,28 @@ async function inspectContainer(row) {
     inspectContent.value = JSON.stringify(res, null, 2)
   } catch (e) {
     inspectContent.value = '获取详情失败'
+  }
+}
+
+async function removeSelectedImages() {
+  if (!canManageDocker.value || !selectedHostId.value || !imageSelection.value.length) return
+  try {
+    const res = await dockerRemoveImages(selectedHostId.value, imageSelection.value.map(item => item.id))
+    ElMessage.success(res.message || '镜像已删除')
+    await fetchCurrentTab()
+  } catch (e) {
+    ElMessage.error('批量删除镜像失败')
+  }
+}
+
+async function pruneDanglingImages() {
+  if (!canManageDocker.value || !selectedHostId.value) return
+  try {
+    const res = await dockerPruneDanglingImages(selectedHostId.value)
+    ElMessage.success(res.message || '悬空镜像已清理')
+    await fetchCurrentTab()
+  } catch (e) {
+    ElMessage.error('清理悬空镜像失败')
   }
 }
 
@@ -358,3 +588,135 @@ onMounted(() => {
   })
 })
 </script>
+
+<style scoped>
+.docker-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.toolbar-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 4px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+}
+
+.toolbar-filter-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.toolbar-filter-label {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  border: 1px solid transparent;
+  background: #f8fafc;
+}
+
+.toolbar-filter-pill--env .toolbar-filter-label {
+  color: #1d4ed8;
+  background: rgba(219, 234, 254, 0.9);
+  border-color: rgba(96, 165, 250, 0.28);
+}
+
+.toolbar-filter-select {
+  width: 180px;
+}
+
+:deep(.toolbar-filter-select .el-select__wrapper) {
+  min-height: 30px;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-radius: 999px;
+  background: rgba(241, 245, 249, 0.92);
+  box-shadow: none;
+  border: 1px solid transparent;
+}
+
+:deep(.toolbar-filter-select .el-select__selected-item) {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+:deep(.toolbar-filter-select.is-focus .el-select__wrapper) {
+  border-color: rgba(59, 130, 246, 0.42);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.docker-summary-grid {
+  gap: 12px;
+}
+
+.docker-summary-card {
+  padding: 14px 16px;
+  gap: 10px;
+  border-radius: 14px;
+}
+
+.docker-summary-card .stat-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  font-size: 18px;
+}
+
+.docker-summary-card .stat-value {
+  font-size: 20px;
+  line-height: 1.1;
+}
+
+.docker-summary-card .stat-label {
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.docker-summary-value-sm {
+  font-size: 18px;
+}
+
+@media (max-width: 900px) {
+  .docker-toolbar {
+    justify-content: flex-start;
+  }
+
+  .toolbar-filter-bar {
+    width: 100%;
+    border-radius: 16px;
+  }
+
+  .toolbar-filter-pill {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .toolbar-filter-select {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .docker-summary-grid {
+    gap: 10px;
+  }
+
+  .docker-summary-card {
+    padding: 12px 14px;
+  }
+}
+</style>
