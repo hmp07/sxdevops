@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="app-layout">
     <aside class="sidebar" :class="{ collapsed: appStore.sidebarCollapsed }">
       <div class="sidebar-logo">
@@ -134,22 +134,17 @@ const menuItems = [
     anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view'],
   },
   {
+    path: '/sql',
     title: 'SQL 审计',
     icon: 'DataAnalysis',
-    children: [
-      { path: '/sql/datasources', title: '数据源', icon: 'Coin', permission: 'sqlaudit.datasource.view' },
-      {
-        path: '/sql/orders',
-        title: 'SQL 工单',
-        icon: 'Tickets',
-        anyPermissions: ['sqlaudit.order.view', 'sqlaudit.order.submit', 'sqlaudit.order.review', 'sqlaudit.order.execute'],
-      },
-      {
-        path: '/sql/query',
-        title: 'SQL 查询',
-        icon: 'Search',
-        anyPermissions: ['sqlaudit.query.view', 'sqlaudit.query.execute'],
-      },
+    anyPermissions: [
+      'sqlaudit.datasource.view',
+      'sqlaudit.order.view',
+      'sqlaudit.order.submit',
+      'sqlaudit.order.review',
+      'sqlaudit.order.execute',
+      'sqlaudit.query.view',
+      'sqlaudit.query.execute',
     ],
   },
 ]
@@ -177,6 +172,9 @@ const visibleMenuItems = computed(() => menuItems
 const activeMenuPath = computed(() => {
   if (route.path.startsWith('/logs')) {
     return authStore.hasPermission('ops.log.query') ? '/logs/query' : '/logs/datasources'
+  }
+  if (route.path.startsWith('/sql')) {
+    return '/sql'
   }
   return route.path
 })

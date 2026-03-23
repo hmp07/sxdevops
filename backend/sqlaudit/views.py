@@ -1,4 +1,4 @@
-from rest_framework import viewsets, status
+﻿from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, action, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -7,7 +7,7 @@ from django.utils import timezone
 from .models import DataSource, SqlOrder, QueryOrder, SqlCheckResult
 from .serializers import (
     DataSourceSerializer, SqlOrderSerializer,
-    QueryOrderSerializer, SqlCheckResultSerializer,
+    QueryOrderSerializer,
 )
 from . import sql_checker
 from . import db_executor
@@ -22,17 +22,16 @@ class DataSourceViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     rbac_permissions = {
         'list': ['sqlaudit.datasource.view'],
         'retrieve': ['sqlaudit.datasource.view'],
-        'create': ['sqlaudit.datasource.manage'],
-        'update': ['sqlaudit.datasource.manage'],
-        'partial_update': ['sqlaudit.datasource.manage'],
-        'destroy': ['sqlaudit.datasource.manage'],
-        'test_connection': ['sqlaudit.datasource.manage'],
+        'create': ['sqlaudit.datasource.view', 'sqlaudit.datasource.manage'],
+        'update': ['sqlaudit.datasource.view', 'sqlaudit.datasource.manage'],
+        'partial_update': ['sqlaudit.datasource.view', 'sqlaudit.datasource.manage'],
+        'destroy': ['sqlaudit.datasource.view', 'sqlaudit.datasource.manage'],
+        'test_connection': ['sqlaudit.datasource.view', 'sqlaudit.datasource.manage'],
         'databases': ['sqlaudit.datasource.view'],
     }
 
     @action(detail=True, methods=['post'])
     def test_connection(self, request, pk=None):
-        """测试数据源连通性"""
         ds = self.get_object()
         success, message = db_executor.test_connection(ds)
         return Response({
@@ -42,7 +41,6 @@ class DataSourceViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'])
     def databases(self, request, pk=None):
-        """获取数据源中的数据库列表"""
         ds = self.get_object()
         databases = db_executor.get_databases(ds)
         return Response({'databases': databases})
@@ -53,22 +51,33 @@ class SqlOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = SqlOrder.objects.select_related('datasource').prefetch_related('check_results').all()
     serializer_class = SqlOrderSerializer
     search_fields = ['title', 'submitter', 'sql_content']
+    http_method_names = ['get', 'post', 'head', 'options']
     rbac_permissions = {
         'list': ['sqlaudit.order.view'],
         'retrieve': ['sqlaudit.order.view'],
-        'create': ['sqlaudit.order.submit'],
-        'update': ['sqlaudit.order.review'],
-        'partial_update': ['sqlaudit.order.review'],
-        'destroy': ['sqlaudit.order.review'],
-        'approve': ['sqlaudit.order.review'],
-        'reject': ['sqlaudit.order.review'],
-        'execute': ['sqlaudit.order.execute'],
+        'create': ['sqlaudit.datasource.view', 'sqlaudit.order.submit'],
+        'approve': ['sqlaudit.order.view', 'sqlaudit.order.review'],
+        'reject': ['sqlaudit.order.view', 'sqlaudit.order.review'],
+        'execute': ['sqlaudit.order.view', 'sqlaudit.order.execute'],
     }
 
     def perform_create(self, serializer):
-        order = serializer.save(submitter=self.request.user.username)
-        # 提交时自动执行 SQL 检查
-        results = sql_checker.check_sql(order.sql_content, order.sql_type)
+        order = serializer.save(
+            submitter=self.request.user.username,
+            status='pending',
+            reviewer='',
+            review_comment='',
+            reviewed_at=None,
+            execute_log='',
+            affected_rows=None,
+            duration_ms=None,
+            executed_at=None,
+        )
+        results = sql_checker.check_sql(
+            order.sql_content,
+            order.sql_type,
+            getattr(order.datasource, 'db_type', 'mysql'),
+        )
         for item in results:
             SqlCheckResult.objects.create(
                 order=order,
@@ -80,7 +89,6 @@ class SqlOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
-        """审核通过"""
         order = self.get_object()
         if order.status != 'pending':
             return Response(
@@ -96,7 +104,6 @@ class SqlOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
-        """审核驳回"""
         order = self.get_object()
         if order.status != 'pending':
             return Response(
@@ -112,7 +119,6 @@ class SqlOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def execute(self, request, pk=None):
-        """执行已审核通过的 SQL"""
         order = self.get_object()
         if order.status != 'approved':
             return Response(
@@ -142,15 +148,14 @@ class QueryOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = QueryOrder.objects.select_related('datasource').all()
     serializer_class = QueryOrderSerializer
     search_fields = ['submitter', 'sql_content']
-    http_method_names = ['get', 'post', 'head', 'options']  # 只允许查询和提交
+    http_method_names = ['get', 'post', 'head', 'options']
     rbac_permissions = {
         'list': ['sqlaudit.query.view'],
         'retrieve': ['sqlaudit.query.view'],
-        'create': ['sqlaudit.query.execute'],
+        'create': ['sqlaudit.datasource.view', 'sqlaudit.query.execute'],
     }
 
     def create(self, request, *args, **kwargs):
-        """提交查询并立即执行"""
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -166,11 +171,10 @@ class QueryOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 安全检查：只允许 SELECT
-        upper = sql_content.strip().upper()
-        if not upper.startswith('SELECT') and not upper.startswith('SHOW') and not upper.startswith('DESC'):
+        validation_error = db_executor.validate_query_content(ds, sql_content)
+        if validation_error:
             return Response(
-                {'error': '查询工单只允许 SELECT / SHOW / DESC 语句'},
+                {'error': validation_error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -178,7 +182,6 @@ class QueryOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             ds, database, sql_content,
         )
 
-        # 保存记录
         query_order = serializer.save(
             submitter=request.user.username,
             result_count=count if success else 0,
@@ -203,9 +206,9 @@ class QueryOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, build_rbac_permission('sqlaudit.order.submit')])
 def sql_check_api(request):
-    """独立的 SQL 检查接口（不创建工单）"""
     sql_content = request.data.get('sql_content', '')
     sql_type = request.data.get('sql_type', 'DML')
+    db_type = request.data.get('db_type', 'mysql')
 
     if not sql_content.strip():
         return Response(
@@ -213,7 +216,7 @@ def sql_check_api(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    results = sql_checker.check_sql(sql_content, sql_type)
+    results = sql_checker.check_sql(sql_content, sql_type, db_type)
     return Response({
         'results': [item.to_dict() for item in results],
     })

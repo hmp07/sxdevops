@@ -1,10 +1,9 @@
-<template>
+﻿<template>
   <div class="fade-in">
-    <div class="page-header">
+    <div v-if="!embedded" class="page-header">
       <h2>SQL 查询</h2>
     </div>
 
-    <!-- 查询面板 -->
     <div class="table-card" style="margin-bottom: 20px;">
       <div class="query-controls">
         <div class="query-selects">
@@ -13,7 +12,7 @@
             <el-option v-for="ds in datasources" :key="ds.id" :label="ds.name" :value="ds.id">
               <span>{{ ds.name }}</span>
               <span style="color:var(--text-secondary); margin-left:8px; font-size:12px;">
-                {{ ds.host }}:{{ ds.port }}
+                {{ getDatasourceTypeLabel(ds.db_type) }} / {{ ds.host }}:{{ ds.port }}
               </span>
             </el-option>
           </el-select>
@@ -31,13 +30,13 @@
 
       <div class="sql-editor-wrapper" style="margin-top:12px;">
         <textarea v-model="sqlContent" class="sql-editor"
-          placeholder="输入 SELECT / SHOW / DESC 查询语句..." rows="6"
+          :placeholder="queryPlaceholder" rows="6"
           @keydown.ctrl.enter="handleQuery"></textarea>
       </div>
+      <div class="query-hint">{{ queryHint }}</div>
     </div>
 
-    <!-- 查询结果 -->
-    <div class="table-card" v-if="queryResult" style="margin-bottom:20px;">
+    <div class="table-card" v-if="queryResult || queryError" style="margin-bottom:20px;">
       <div class="query-result-header">
         <h3 style="margin:0;">查询结果</h3>
         <div class="result-meta" v-if="queryResult">
@@ -57,16 +56,20 @@
       </el-table>
     </div>
 
-    <!-- 查询历史 -->
-    <div class="table-card">
+    <div v-if="canViewQueries" class="table-card">
       <div class="page-header" style="margin-bottom:0; padding:0;">
         <h3 style="margin:0;">查询历史</h3>
       </div>
 
       <el-table :data="history" stripe v-loading="historyLoading" style="width: 100%; margin-top:12px;" size="small">
         <el-table-column prop="datasource_name" label="数据源" width="130" />
+        <el-table-column label="类型" width="110">
+          <template #default="{ row }">
+            <el-tag size="small">{{ getDatasourceTypeLabel(row.datasource_db_type) }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="database" label="数据库" width="120" />
-        <el-table-column prop="sql_content" label="SQL" min-width="250" show-overflow-tooltip />
+        <el-table-column prop="sql_content" label="查询内容" min-width="250" show-overflow-tooltip />
         <el-table-column prop="submitter" label="操作人" width="90" />
         <el-table-column prop="result_count" label="结果行数" width="100" />
         <el-table-column prop="duration_ms" label="耗时" width="90">
@@ -90,6 +93,14 @@ import { computed, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getDataSources, getDataSourceDatabases, submitQuery, getQueryOrders } from '@/api/modules/sqlaudit'
 import { useAuthStore } from '@/stores/auth'
+import { getDatasourceTypeLabel, getQueryPlaceholder } from '@/utils/sqlaudit'
+
+defineProps({
+  embedded: {
+    type: Boolean,
+    default: false,
+  },
+})
 
 const authStore = useAuthStore()
 const datasources = ref([])
@@ -108,7 +119,14 @@ const history = ref([])
 const historyLoading = ref(false)
 const historyPage = ref(1)
 const historyTotal = ref(0)
+const canViewQueries = computed(() => authStore.hasPermission('sqlaudit.query.view'))
 const canExecuteQueries = computed(() => authStore.hasPermission('sqlaudit.query.execute'))
+const currentDatasource = computed(() => datasources.value.find(ds => ds.id === selectedDs.value) || null)
+const currentDatasourceType = computed(() => currentDatasource.value?.db_type || 'mysql')
+const queryPlaceholder = computed(() => getQueryPlaceholder(currentDatasourceType.value))
+const queryHint = computed(() => currentDatasourceType.value === 'mongodb'
+  ? 'MongoDB 查询支持 find / aggregate / count / distinct 四种命令格式'
+  : 'MySQL / PolarDB 查询仅允许 SELECT / SHOW / DESC 语句')
 
 const formatTime = (t) => t ? new Date(t).toLocaleString('zh-CN') : ''
 
@@ -150,15 +168,15 @@ const handleQuery = async () => {
       count: res.count,
       duration_ms: res.duration_ms,
     }
-    fetchHistory()
+    if (canViewQueries.value) fetchHistory()
   } catch (e) {
     queryError.value = e.response?.data?.error || '查询失败'
-    // 即使失败也可能有 order 记录
-    fetchHistory()
+    if (canViewQueries.value) fetchHistory()
   } finally { querying.value = false }
 }
 
 const fetchHistory = async () => {
+  if (!canViewQueries.value) return
   historyLoading.value = true
   try {
     const res = await getQueryOrders({ page: historyPage.value })
@@ -170,6 +188,15 @@ const fetchHistory = async () => {
 
 onMounted(() => {
   loadDatasources()
-  fetchHistory()
+  if (canViewQueries.value) fetchHistory()
 })
 </script>
+
+<style scoped>
+.query-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+</style>

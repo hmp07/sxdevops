@@ -1,7 +1,7 @@
-<template>
+﻿<template>
   <div class="fade-in">
-    <div class="page-header">
-      <h2>数据源管理</h2>
+    <div v-if="!embedded || canManageSqlDatasources" class="page-header" :style="embedded ? 'justify-content:flex-end;' : ''">
+      <h2 v-if="!embedded">数据源管理</h2>
       <el-button v-if="canManageSqlDatasources" type="primary" @click="openDialog()">
         <el-icon><Plus /></el-icon> 新增数据源
       </el-button>
@@ -15,13 +15,20 @@
 
       <el-table :data="items" stripe v-loading="loading" style="width: 100%">
         <el-table-column prop="name" label="名称" min-width="140" />
+        <el-table-column label="类型" width="120">
+          <template #default="{ row }">
+            <el-tag size="small">{{ getDatasourceTypeLabel(row.db_type) }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="连接地址" min-width="200">
           <template #default="{ row }">
             <span>{{ row.host }}:{{ row.port }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="user" label="用户名" width="120" />
-        <el-table-column prop="charset" label="字符集" width="100" />
+        <el-table-column label="字符集" width="100">
+          <template #default="{ row }">{{ row.db_type === 'mongodb' ? '-' : row.charset }}</template>
+        </el-table-column>
         <el-table-column prop="is_active" label="状态" width="90">
           <template #default="{ row }">
             <el-tag :type="row.is_active ? 'success' : 'danger'" size="small">
@@ -51,9 +58,13 @@
       </div>
     </div>
 
-    <!-- 新增 / 编辑对话框 -->
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑数据源' : '新增数据源'" width="90%" style="max-width:560px;" top="5vh" append-to-body destroy-on-close>
       <el-form :model="form" label-width="90px">
+        <el-form-item label="数据库类型">
+          <el-select v-model="form.db_type" style="width:100%" @change="handleTypeChange">
+            <el-option v-for="option in DATASOURCE_TYPE_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="名称">
           <el-input v-model="form.name" placeholder="例如 prod-db-master" />
         </el-form-item>
@@ -64,14 +75,14 @@
           <el-input-number v-model="form.port" :min="1" :max="65535" style="width:100%" />
         </el-form-item>
         <el-form-item label="用户名">
-          <el-input v-model="form.user" placeholder="例如 root" />
+          <el-input v-model="form.user" :placeholder="form.db_type === 'mongodb' ? '例如 admin' : '例如 root'" />
         </el-form-item>
         <el-form-item label="密码">
           <el-input v-model="form.password" type="password" show-password
             :placeholder="editingId ? '留空则不修改' : '请输入密码'" />
         </el-form-item>
         <el-form-item label="字符集">
-          <el-select v-model="form.charset" style="width:100%">
+          <el-select v-model="form.charset" style="width:100%" :disabled="form.db_type === 'mongodb'">
             <el-option label="utf8mb4" value="utf8mb4" />
             <el-option label="utf8" value="utf8" />
             <el-option label="latin1" value="latin1" />
@@ -102,6 +113,18 @@ import {
   deleteDataSource, testDataSourceConnection,
 } from '@/api/modules/sqlaudit'
 import { useAuthStore } from '@/stores/auth'
+import {
+  DATASOURCE_TYPE_OPTIONS,
+  getDatasourceDefaultPort,
+  getDatasourceTypeLabel,
+} from '@/utils/sqlaudit'
+
+defineProps({
+  embedded: {
+    type: Boolean,
+    default: false,
+  },
+})
 
 const authStore = useAuthStore()
 const items = ref([])
@@ -115,7 +138,7 @@ const dialogVisible = ref(false)
 const editingId = ref(null)
 const saving = ref(false)
 const defaultForm = {
-  name: '', host: '', port: 3306, user: 'root',
+  db_type: 'mysql', name: '', host: '', port: 3306, user: 'root',
   password: '', charset: 'utf8mb4', is_active: true, remark: '',
 }
 const form = ref({ ...defaultForm })
@@ -137,6 +160,7 @@ const openDialog = (row) => {
   if (row) {
     editingId.value = row.id
     form.value = {
+      db_type: row.db_type || 'mysql',
       name: row.name, host: row.host, port: row.port,
       user: row.user, password: '', charset: row.charset,
       is_active: row.is_active, remark: row.remark,
@@ -148,11 +172,22 @@ const openDialog = (row) => {
   dialogVisible.value = true
 }
 
+const handleTypeChange = (nextType) => {
+  const currentPort = form.value.port
+  const useDefaultPort = !editingId.value || currentPort === 3306 || currentPort === 27017
+  form.value.db_type = nextType
+  if (useDefaultPort) {
+    form.value.port = getDatasourceDefaultPort(nextType)
+  }
+  if (nextType === 'mongodb') {
+    form.value.charset = 'utf8mb4'
+  }
+}
+
 const handleSave = async () => {
   saving.value = true
   try {
     const data = { ...form.value }
-    // 编辑时如果密码为空则不传
     if (editingId.value && !data.password) {
       delete data.password
     }
@@ -195,3 +230,5 @@ const handleTest = async (row) => {
 
 onMounted(fetchData)
 </script>
+
+

@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router'
+﻿import { createRouter, createWebHistory } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import AppLayout from '@/layout/AppLayout.vue'
 import { pinia } from '@/stores'
@@ -118,26 +118,37 @@ const routes = [
         },
       },
       {
-        path: 'sql/datasources',
-        name: 'SqlDatasources',
-        component: () => import('@/views/SqlDatasources.vue'),
-        meta: { title: '数据源', icon: 'Coin', permission: 'sqlaudit.datasource.view' },
-      },
-      {
-        path: 'sql/orders',
-        name: 'SqlOrders',
-        component: () => import('@/views/SqlOrders.vue'),
+        path: 'sql',
+        name: 'SqlAudit',
+        component: () => import('@/views/SqlAudit.vue'),
         meta: {
-          title: 'SQL 工单',
-          icon: 'Tickets',
-          anyPermissions: ['sqlaudit.order.view', 'sqlaudit.order.submit', 'sqlaudit.order.review', 'sqlaudit.order.execute'],
+          title: 'SQL 审计',
+          icon: 'DataAnalysis',
+          anyPermissions: [
+            'sqlaudit.datasource.view',
+            'sqlaudit.order.view',
+            'sqlaudit.order.submit',
+            'sqlaudit.order.review',
+            'sqlaudit.order.execute',
+            'sqlaudit.query.view',
+            'sqlaudit.query.execute',
+          ],
         },
       },
       {
+        path: 'sql/datasources',
+        redirect: { path: '/sql', query: { tab: 'datasources' } },
+        meta: { hidden: true },
+      },
+      {
+        path: 'sql/orders',
+        redirect: { path: '/sql', query: { tab: 'orders' } },
+        meta: { hidden: true },
+      },
+      {
         path: 'sql/query',
-        name: 'SqlQuery',
-        component: () => import('@/views/SqlQuery.vue'),
-        meta: { title: 'SQL 查询', icon: 'Search', anyPermissions: ['sqlaudit.query.view', 'sqlaudit.query.execute'] },
+        redirect: { path: '/sql', query: { tab: 'query' } },
+        meta: { hidden: true },
       },
     ],
   },
@@ -184,3 +195,4 @@ router.beforeEach(async (to) => {
 })
 
 export default router
+

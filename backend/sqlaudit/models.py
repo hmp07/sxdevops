@@ -1,10 +1,16 @@
-from django.db import models
-from django.utils import timezone
+﻿from django.db import models
 
 
 class DataSource(models.Model):
-    """MySQL 数据源"""
+    """数据库数据源"""
+    DB_TYPE_CHOICES = [
+        ('mysql', 'MySQL'),
+        ('mongodb', 'MongoDB'),
+        ('polardb', 'PolarDB'),
+    ]
+
     name = models.CharField('名称', max_length=128, unique=True)
+    db_type = models.CharField('数据库类型', max_length=16, choices=DB_TYPE_CHOICES, default='mysql')
     host = models.CharField('主机地址', max_length=256)
     port = models.PositiveIntegerField('端口', default=3306)
     user = models.CharField('用户名', max_length=128)

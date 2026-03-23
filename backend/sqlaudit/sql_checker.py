@@ -1,14 +1,15 @@
-"""
+﻿"""
 SQL 语法检查规则引擎
 纯 Python 实现，检测常见 SQL 安全和规范问题。
 """
+import json
 import re
 
 
 class CheckItem:
     """单条检查结果"""
     def __init__(self, level, rule_name, message, line_no=None):
-        self.level = level          # error / warning / info
+        self.level = level
         self.rule_name = rule_name
         self.message = message
         self.line_no = line_no
@@ -22,13 +23,15 @@ class CheckItem:
         }
 
 
-def check_sql(sql_content, sql_type='DML'):
+def check_sql(sql_content, sql_type='DML', db_type='mysql'):
     """
     对 SQL 文本进行语法/安全检查。
     返回 CheckItem 列表。
     """
+    if db_type == 'mongodb':
+        return _check_mongodb_command(sql_content, sql_type)
+
     results = []
-    # 按分号切分多条语句
     statements = _split_statements(sql_content)
 
     for idx, stmt in enumerate(statements, 1):
@@ -38,8 +41,6 @@ def check_sql(sql_content, sql_type='DML'):
 
         upper = stmt_stripped.upper()
 
-        # —— 通用规则 ——
-        # 1. 禁止无 WHERE 的 DELETE
         if upper.startswith('DELETE') and 'WHERE' not in upper:
             results.append(CheckItem(
                 'error', 'NO_WHERE_DELETE',
@@ -47,7 +48,6 @@ def check_sql(sql_content, sql_type='DML'):
                 line_no=idx,
             ))
 
-        # 2. 禁止无 WHERE 的 UPDATE
         if upper.startswith('UPDATE') and 'WHERE' not in upper:
             results.append(CheckItem(
                 'error', 'NO_WHERE_UPDATE',
@@ -55,7 +55,6 @@ def check_sql(sql_content, sql_type='DML'):
                 line_no=idx,
             ))
 
-        # 3. 检测 SELECT *
         if re.search(r'\bSELECT\s+\*', upper):
             results.append(CheckItem(
                 'warning', 'SELECT_STAR',
@@ -63,7 +62,6 @@ def check_sql(sql_content, sql_type='DML'):
                 line_no=idx,
             ))
 
-        # 4. INSERT 无显式列名
         if upper.startswith('INSERT') and re.search(r'INSERT\s+INTO\s+\S+\s+VALUES', upper):
             results.append(CheckItem(
                 'warning', 'INSERT_NO_COLUMNS',
@@ -71,7 +69,6 @@ def check_sql(sql_content, sql_type='DML'):
                 line_no=idx,
             ))
 
-        # 5. 禁止 TRUNCATE
         if upper.startswith('TRUNCATE'):
             results.append(CheckItem(
                 'error', 'TRUNCATE_TABLE',
@@ -79,7 +76,6 @@ def check_sql(sql_content, sql_type='DML'):
                 line_no=idx,
             ))
 
-        # 6. 禁止 DROP TABLE (DML 模式下)
         if sql_type == 'DML' and upper.startswith('DROP'):
             results.append(CheckItem(
                 'error', 'DROP_IN_DML',
@@ -87,7 +83,6 @@ def check_sql(sql_content, sql_type='DML'):
                 line_no=idx,
             ))
 
-        # 7. DDL 表名规范
         if sql_type == 'DDL' and upper.startswith('CREATE TABLE'):
             table_match = re.search(r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?', upper)
             if table_match:
@@ -99,7 +94,6 @@ def check_sql(sql_content, sql_type='DML'):
                         line_no=idx,
                     ))
 
-        # 8. 超长 SQL 警告
         if len(stmt_stripped) > 10000:
             results.append(CheckItem(
                 'warning', 'SQL_TOO_LONG',
@@ -107,7 +101,6 @@ def check_sql(sql_content, sql_type='DML'):
                 line_no=idx,
             ))
 
-        # 9. 检查是否包含注释型注入模式
         if re.search(r';\s*--', stmt_stripped) or re.search(r'/\*.*\*/', stmt_stripped):
             results.append(CheckItem(
                 'info', 'COMMENT_PATTERN',
@@ -115,13 +108,67 @@ def check_sql(sql_content, sql_type='DML'):
                 line_no=idx,
             ))
 
-    # 如果全部通过
     if not results:
         results.append(CheckItem(
             'info', 'ALL_PASSED',
             '所有检查项已通过',
         ))
 
+    return results
+
+
+def _check_mongodb_command(sql_content, sql_type):
+    command = (sql_content or '').strip()
+    if not command:
+        return [CheckItem('error', 'EMPTY_COMMAND', 'MongoDB 命令不能为空')]
+
+    action, separator, payload = command.partition(' ')
+    if not separator or not payload.strip():
+        return [CheckItem('error', 'INVALID_FORMAT', 'MongoDB 命令格式应为：动作 + JSON 参数')]
+
+    try:
+        payload_data = json.loads(payload.strip())
+    except json.JSONDecodeError as exc:
+        return [CheckItem('error', 'INVALID_JSON', f'MongoDB 命令 JSON 解析失败: {exc}')]
+
+    action = action.strip().lower()
+    dml_actions = {'insertone', 'insertmany', 'updateone', 'updatemany', 'deleteone', 'deletemany'}
+    ddl_actions = {'createcollection', 'dropcollection', 'createindex', 'dropindex'}
+    allowed_actions = dml_actions if sql_type == 'DML' else ddl_actions
+    results = []
+
+    if action not in allowed_actions:
+        results.append(CheckItem(
+            'error', 'INVALID_COMMAND_TYPE',
+            f'{sql_type} 工单不支持 {action} 命令',
+        ))
+
+    if action in {'updateone', 'updatemany'} and not payload_data.get('filter'):
+        results.append(CheckItem(
+            'error', 'NO_FILTER_UPDATE',
+            'MongoDB update 命令必须提供非空 filter 条件',
+        ))
+
+    if action in {'deleteone', 'deletemany'} and not payload_data.get('filter'):
+        results.append(CheckItem(
+            'error', 'NO_FILTER_DELETE',
+            'MongoDB delete 命令必须提供非空 filter 条件',
+        ))
+
+    if action == 'insertmany' and len(payload_data.get('documents', [])) > 1000:
+        results.append(CheckItem(
+            'warning', 'INSERT_MANY_LARGE_BATCH',
+            'insertMany 单次写入文档较多，建议拆分批次',
+        ))
+
+    if action in {'dropcollection', 'dropindex'}:
+        results.append(CheckItem(
+            'warning', 'DESTRUCTIVE_DDL',
+            f'{action} 属于高风险变更，请确认影响范围',
+        ))
+
+    if not results:
+        results.append(CheckItem('info', 'ALL_PASSED', '所有检查项已通过'))
     return results
 
 
@@ -146,7 +193,6 @@ def _split_statements(sql_content):
             continue
         current.append(char)
 
-    # 最后一条
     remaining = ''.join(current).strip()
     if remaining:
         statements.append(remaining)
