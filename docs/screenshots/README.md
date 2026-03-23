@@ -11,6 +11,10 @@ README 首页当前已接入 4 张真实页面截图：
 - `logs-or-sql.png`
 - `iac-orchestration.png`
 
+同时补充了 1 张扩展展示截图：
+
+- `k8s-pod-terminal.png`
+
 这些 PNG 已按 README 展示场景做过统一高亮标注，更适合直接用于仓库首页导览。
 
 最近一次已按本地演示环境刷新为 2026-03-21 的真实页面截图；其中 `logs-or-sql.png` 当前更偏向展示日志趋势图与查询结果区，便于直接体现排障链路。
@@ -67,6 +71,17 @@ README 首页当前已接入 4 张真实页面截图：
 推荐说明文案：
 
 > IaC 资源编排：按模块设计云资源，生成 Terraform 配置并联动执行、同步 CMDB。
+
+### 5. k8s-pod-terminal.png
+
+建议包含：
+- Pod Terminal 弹窗
+- 终端连接状态
+- 一条代表性的预置命令输出
+
+推荐说明文案：
+
+> K8s Pod Terminal：在浏览器内直接进入 Pod Shell，支持预置命令、会话日志导出与独立 RBAC 权限控制。
 
 ## 使用示例
 
