@@ -1,24 +1,32 @@
 import threading
-from rest_framework import viewsets, status
+
+from django.utils.text import slugify
+from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import ServiceTemplate, ServiceDeployment
-from .serializers import (
-    ServiceTemplateSerializer,
-    ServiceDeploymentSerializer,
-    DeployRequestSerializer,
-)
-from . import deployer
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
+
+from . import deployer
+from .models import ServiceDeployment, ServiceTemplate
+from .serializers import (
+    DeployRequestSerializer,
+    ServiceDeploymentSerializer,
+    ServiceTemplateSerializer,
+)
+
+
+def _default_release_name(template):
+    return slugify(template.name) or f'service-{template.pk}'
 
 
 class ServiceTemplateViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
-    """服务模板 — 只读列表 + 详情"""
+    """服务模板，只读列表与详情"""
+
     queryset = ServiceTemplate.objects.filter(is_active=True)
     serializer_class = ServiceTemplateSerializer
-    pagination_class = None  # 模板数量少，不分页
+    pagination_class = None
     rbac_permissions = {
         'list': ['marketplace.template.view'],
         'retrieve': ['marketplace.template.view'],
@@ -27,7 +35,8 @@ class ServiceTemplateViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet)
 
 class ServiceDeploymentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     """服务部署实例"""
-    queryset = ServiceDeployment.objects.select_related('template', 'host')
+
+    queryset = ServiceDeployment.objects.select_related('template', 'host', 'cluster')
     serializer_class = ServiceDeploymentSerializer
     rbac_permissions = {
         'list': ['marketplace.deployment.view'],
@@ -44,21 +53,18 @@ class ServiceDeploymentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def stop(self, request, pk=None):
-        """停止服务"""
         dep = self.get_object()
         deployer.stop_service(dep)
         return Response(ServiceDeploymentSerializer(dep).data)
 
     @action(detail=True, methods=['post'])
     def start(self, request, pk=None):
-        """启动已停止的服务"""
         dep = self.get_object()
         deployer.start_service(dep)
         return Response(ServiceDeploymentSerializer(dep).data)
 
     @action(detail=True, methods=['post'])
     def remove(self, request, pk=None):
-        """卸载服务"""
         dep = self.get_object()
         result = deployer.remove_service(dep)
         if result is None:
@@ -67,17 +73,16 @@ class ServiceDeploymentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'])
     def logs(self, request, pk=None):
-        """获取容器日志"""
         dep = self.get_object()
         tail = int(request.query_params.get('tail', 100))
-        log_text = deployer.get_service_logs(dep, tail=tail)
-        return Response({'logs': log_text})
+        return Response({'logs': deployer.get_service_logs(dep, tail=tail)})
 
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, build_rbac_permission('marketplace.deployment.manage')])
 def deploy_service_view(request):
     """发起部署"""
+
     ser = DeployRequestSerializer(data=request.data)
     ser.is_valid(raise_exception=True)
     data = ser.validated_data
@@ -87,25 +92,64 @@ def deploy_service_view(request):
     except ServiceTemplate.DoesNotExist:
         return Response({'detail': '模板不存在'}, status=status.HTTP_404_NOT_FOUND)
 
-    from ops.models import Host
-    try:
-        host = Host.objects.get(pk=data['host_id'])
-    except Host.DoesNotExist:
-        return Response({'detail': '主机不存在'}, status=status.HTTP_404_NOT_FOUND)
+    deploy_mode = data['deploy_mode']
+    if not template.supports_deploy_mode(deploy_mode):
+        return Response({'detail': '当前模板暂不支持所选部署模式'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # 检查是否已部署
-    if ServiceDeployment.objects.filter(template=template, host=host).exists():
-        return Response({'detail': f'{template.name} 已在 {host.hostname} 上部署'}, status=status.HTTP_400_BAD_REQUEST)
+    dep_kwargs = {
+        'template': template,
+        'deploy_mode': deploy_mode,
+        'version': data['version'],
+        'env_config': data.get('env_config', {}),
+        'deployer': request.user.username,
+        'replicas': data.get('replicas', 1),
+    }
 
-    dep = ServiceDeployment.objects.create(
-        template=template,
-        host=host,
-        version=data['version'],
-        env_config=data.get('env_config', {}),
-        deployer=request.user.username,
-    )
+    if deploy_mode == 'docker_compose':
+        from ops.models import Host
 
-    # 后台线程执行部署（传 ID 而非 ORM 对象，避免线程中 DB 连接问题）
+        try:
+            host = Host.objects.get(pk=data['host_id'])
+        except Host.DoesNotExist:
+            return Response({'detail': '目标主机不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+        if ServiceDeployment.objects.filter(
+            template=template,
+            host=host,
+            deploy_mode='docker_compose',
+        ).exists():
+            return Response(
+                {'detail': f'{template.name} 已在 {host.hostname} 上部署'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        dep_kwargs['host'] = host
+    else:
+        from ops.models import K8sCluster
+
+        try:
+            cluster = K8sCluster.objects.get(pk=data['cluster_id'])
+        except K8sCluster.DoesNotExist:
+            return Response({'detail': '目标集群不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+        namespace = data.get('namespace') or 'default'
+        if ServiceDeployment.objects.filter(
+            template=template,
+            cluster=cluster,
+            namespace=namespace,
+            deploy_mode='k8s',
+        ).exists():
+            return Response(
+                {'detail': f'{template.name} 已在 {cluster.name} 的 {namespace} 命名空间部署'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        dep_kwargs.update({
+            'cluster': cluster,
+            'namespace': namespace,
+            'release_name': data.get('release_name') or _default_release_name(template),
+        })
+
+    dep = ServiceDeployment.objects.create(**dep_kwargs)
+
     thread = threading.Thread(target=deployer.deploy_service, args=(dep.id,), daemon=True)
     thread.start()
 

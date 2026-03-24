@@ -3,8 +3,148 @@ from django.core.management import call_command
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 from datetime import timedelta
-from ops.models import Host, Deployment, Alert, LogEntry
+from ops.models import Host, Deployment, Alert, LogEntry, K8sCluster
+from marketplace.models import ServiceDeployment, ServiceTemplate
 from cmdb.demo_seed import seed_cmdb_demo
+
+
+def seed_marketplace_demo(stdout, hosts):
+    stdout.write('正在生成工具市场演示数据...')
+    call_command('seed_templates')
+    ServiceDeployment.objects.all().delete()
+
+    cluster_main, _ = K8sCluster.objects.update_or_create(
+        name='demo-k8s-cluster',
+        defaults={
+            'api_server': 'https://demo-k8s-cluster.example.local:6443',
+            'kubeconfig': 'demo',
+            'status': 'connected',
+            'description': '工具市场演示 Kubernetes 集群',
+        },
+    )
+    cluster_dev, _ = K8sCluster.objects.update_or_create(
+        name='dev-k8s-cluster',
+        defaults={
+            'api_server': 'https://dev-k8s-cluster.example.local:6443',
+            'kubeconfig': 'demo',
+            'status': 'connected',
+            'description': '开发环境演示 Kubernetes 集群',
+        },
+    )
+
+    template_map = {
+        item.name: item
+        for item in ServiceTemplate.objects.filter(
+            name__in=['Redis', 'MongoDB', 'Nginx', 'Grafana', 'Java', 'Python', 'Node.js']
+        )
+    }
+    host_map = {host.hostname: host for host in hosts}
+
+    demo_deployments = [
+        {
+            'template': template_map['Redis'],
+            'deploy_mode': 'docker_compose',
+            'host': host_map['redis-01'],
+            'version': '7.0',
+            'status': 'running',
+            'env_config': {'port': '6379', 'password': 'redis@2024'},
+            'deployer': 'ops_demo',
+            'deploy_dir': '/opt/agdevops/redis',
+            'deploy_log': '[INFO] 部署模式: Docker Compose 单机\n[✓] SSH 连接成功\n[✓] 上传 docker-compose.yml\n[✓] 部署成功',
+        },
+        {
+            'template': template_map['MongoDB'],
+            'deploy_mode': 'docker_compose',
+            'host': host_map['db-master'],
+            'version': '7.0',
+            'status': 'stopped',
+            'env_config': {'port': '27017', 'root_username': 'admin', 'root_password': 'mongo@2024'},
+            'deployer': 'admin',
+            'deploy_dir': '/opt/agdevops/mongodb',
+            'deploy_log': '[INFO] 部署模式: Docker Compose 单机\n[✓] 首次部署成功\n[✓] 当前实例已停止，等待重新启动',
+        },
+        {
+            'template': template_map['Nginx'],
+            'deploy_mode': 'docker_compose',
+            'host': host_map['nginx-lb-01'],
+            'version': '1.25',
+            'status': 'failed',
+            'env_config': {'http_port': '80', 'https_port': '443'},
+            'deployer': 'zhangsan',
+            'deploy_dir': '/opt/agdevops/nginx',
+            'deploy_log': '[INFO] 部署模式: Docker Compose 单机\n[✗] 端口 80 已被占用，部署失败',
+        },
+        {
+            'template': template_map['Grafana'],
+            'deploy_mode': 'k8s',
+            'cluster': cluster_main,
+            'namespace': 'monitoring',
+            'release_name': 'grafana-demo',
+            'replicas': 1,
+            'version': '10.3',
+            'status': 'running',
+            'env_config': {'port': '3000'},
+            'deployer': 'ops_demo',
+            'deploy_dir': 'k8s://demo-k8s-cluster/monitoring/grafana-demo',
+            'deploy_log': '[INFO] 部署模式: Kubernetes\n[✓] 使用现有命名空间: monitoring\n[✓] 已创建 Deployment/grafana-demo\n[✓] 部署成功',
+        },
+        {
+            'template': template_map['Java'],
+            'deploy_mode': 'k8s',
+            'cluster': cluster_dev,
+            'namespace': 'devenv',
+            'release_name': 'java-devbox',
+            'replicas': 1,
+            'version': '3.9.9-eclipse-temurin-21',
+            'status': 'running',
+            'env_config': {
+                'workspace': '/workspace',
+                'maven_mirror_url': 'https://maven.aliyun.com/repository/public',
+                'maven_opts': '-Xms256m -Xmx512m',
+            },
+            'deployer': 'dev_demo',
+            'deploy_dir': 'k8s://dev-k8s-cluster/devenv/java-devbox',
+            'deploy_log': '[INFO] 部署模式: Kubernetes\n[✓] 已创建 PVC/java-devbox-workspace\n[✓] 已创建 Deployment/java-devbox\n[✓] 部署成功',
+        },
+        {
+            'template': template_map['Python'],
+            'deploy_mode': 'k8s',
+            'cluster': cluster_dev,
+            'namespace': 'devenv',
+            'release_name': 'python-devbox',
+            'replicas': 1,
+            'version': '3.12',
+            'status': 'running',
+            'env_config': {
+                'workspace': '/workspace',
+                'pip_index_url': 'https://pypi.tuna.tsinghua.edu.cn/simple',
+                'pip_trusted_host': 'pypi.tuna.tsinghua.edu.cn',
+            },
+            'deployer': 'dev_demo',
+            'deploy_dir': 'k8s://dev-k8s-cluster/devenv/python-devbox',
+            'deploy_log': '[INFO] 部署模式: Kubernetes\n[✓] 已创建 PVC/python-devbox-workspace\n[✓] 已创建 Deployment/python-devbox\n[✓] 部署成功',
+        },
+        {
+            'template': template_map['Node.js'],
+            'deploy_mode': 'k8s',
+            'cluster': cluster_dev,
+            'namespace': 'frontend-dev',
+            'release_name': 'nodejs-devbox',
+            'replicas': 1,
+            'version': '20',
+            'status': 'deploying',
+            'env_config': {
+                'workspace': '/workspace',
+                'npm_registry': 'https://registry.npmmirror.com',
+            },
+            'deployer': 'dev_demo',
+            'deploy_dir': 'k8s://dev-k8s-cluster/frontend-dev/nodejs-devbox',
+            'deploy_log': '[INFO] 部署模式: Kubernetes\n[✓] 已创建命名空间: frontend-dev\n[✓] 正在拉取 node:20 镜像...',
+        },
+    ]
+
+    for item in demo_deployments:
+        ServiceDeployment.objects.create(**item)
 
 
 class Command(BaseCommand):
@@ -12,6 +152,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         self.stdout.write('正在清除旧数据...')
+        ServiceDeployment.objects.all().delete()
         Host.objects.all().delete()
         Deployment.objects.all().delete()
         Alert.objects.all().delete()
@@ -143,6 +284,7 @@ class Command(BaseCommand):
         ))
 
         self.stdout.write('正在生成 RBAC 演示账号...')
+        seed_marketplace_demo(self.stdout, hosts)
         call_command('seed_rbac_demo')
 
         self.stdout.write('正在生成 CMDB 演示数据...')
