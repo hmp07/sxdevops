@@ -5,10 +5,10 @@
         <div class="release-hero-title-row release-hero-title-inline">
           <span class="release-header-icon"><el-icon><Promotion /></el-icon></span>
           <h2>多云环境</h2>
-          <p class="subtitle inline-subtitle">统一多云资源管理平台，覆盖资源拓扑、批量动作、成本趋势和真实 SDK 状态。</p>
+          <p class="subtitle inline-subtitle">多云资源统一管理平台，覆盖资源拓扑、批量动作、成本趋势和真实 SDK 状态。</p>
         </div>
         <h2>多云环境</h2>
-        <p class="page-subtitle">统一多云资源管理平台，覆盖资源拓扑、批量动作、成本趋势和真实 SDK 状态。</p>
+        <p class="page-subtitle">多云资源统一管理平台，覆盖资源拓扑、批量动作、成本趋势和真实 SDK 状态。</p>
       </div>
       <div class="hero-actions">
         <el-button @click="refreshAll"><el-icon><RefreshRight /></el-icon>刷新</el-button>

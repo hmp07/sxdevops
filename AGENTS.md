@@ -16,6 +16,16 @@ This repo is split into `backend/` and `frontend/`. `backend/` is a Django proje
 ## Coding Style & Naming Conventions
 Follow existing conventions: Python uses 4-space indentation, snake_case modules, and app-local helpers. Vue components in `frontend/src/views/` and `frontend/src/layout/` use PascalCase filenames such as `NginxManage.vue`; API and store modules use lower-case filenames such as `request.js` and `app.js`. No formatter or linter is committed, so match the surrounding file and remove unused imports.
 
+## Frontend Page Header Convention
+For new management or console-style pages, default to the same top structure already used by `MultiCloudManage`, `Deployments`, `MiddlewareManage`, `NginxManage`, `K8sManage`, and `ContainerManage`:
+
+- Use a top `hero` section with the main title on the first row only.
+- Do not add a second explanatory text row under the title unless the user explicitly asks for it.
+- Follow the `hero + stats cards + compact alert strip + tabs/content` pattern.
+- Reuse the `release-stat-card` visual style for the top metric cards instead of older icon-box summary cards.
+- Keep a compact `运行提示` strip near the top when the page has operational hints, warnings, or current-context reminders.
+- If the page has context filters such as environment, cluster, namespace, or domain, place them in a compact toolbar below the tabs or in the top control area, not in an old-style `page-header`.
+
 ## Testing Guidelines
 Backend tests use Django's built-in `TestCase`; add coverage in the nearest app-level `tests.py` or a `test_*.py` module. Name tests by behavior, for example `test_refresh_info_marks_host_offline_on_ssh_failure`. Frontend has no automated test suite yet, so every UI change should at minimum pass `npm run build` and a manual browser check.
 

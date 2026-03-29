@@ -25,11 +25,81 @@
     </div>
 
     <!-- 主 Tab 栏 (Pill Tab Theme: Blue) -->
+    <section class="hero panel docker-hero">
+      <div class="release-hero-copy">
+        <div class="release-hero-title-row release-hero-title-inline">
+          <span class="release-header-icon docker-header-icon"><el-icon><Platform /></el-icon></span>
+          <h2>Docker 环境</h2>
+          <p class="subtitle inline-subtitle">统一管理 Docker 主机、容器与镜像资源，支持连接测试、日志查看和批量镜像治理。</p>
+        </div>
+      </div>
+      <div class="hero-actions">
+        <el-button @click="refreshView"><el-icon><RefreshRight /></el-icon>刷新</el-button>
+        <el-button v-if="canManageDocker && activeTab === 'hosts'" type="primary" @click="openHostDialog()"><el-icon><Plus /></el-icon>新增环境</el-button>
+      </div>
+    </section>
+
+    <div class="stats-grid release-stats docker-top-stats">
+      <div v-for="card in summaryCards" :key="card.label" class="stat-card release-stat-card" :class="card.tone">
+        <div class="stat-value">{{ card.value }}</div>
+        <div class="stat-label">{{ card.label }}</div>
+        <div class="docker-stat-meta">{{ card.meta }}</div>
+      </div>
+    </div>
+
+    <div v-if="activeTips.length" class="docker-alert-strip">
+      <span class="docker-alert-strip__label">运行提示</span>
+      <el-tooltip
+        v-for="(tip, index) in activeTips.slice(0, 2)"
+        :key="index"
+        :content="tip"
+        placement="top"
+        effect="light"
+        :show-after="120"
+      >
+        <el-tag size="small" effect="light" type="info" class="docker-alert-strip__tag">
+          {{ tip }}
+        </el-tag>
+      </el-tooltip>
+      <el-popover v-if="activeTips.length > 2" placement="bottom-end" :width="320" trigger="hover">
+        <template #reference>
+          <el-button link type="primary">+{{ activeTips.length - 2 }} 更多</el-button>
+        </template>
+        <div class="alert-popover">
+          <div v-for="(tip, index) in activeTips" :key="`docker-tip-${index}`" class="alert-popover__item">
+            <el-tag size="small" type="info">提示</el-tag>
+            <span>{{ tip }}</span>
+          </div>
+        </div>
+      </el-popover>
+    </div>
+
     <div class="neo-tabs theme-blue">
       <button v-for="tab in mainTabs" :key="tab.key" class="neo-tab-btn" :class="{ active: activeTab === tab.key }" @click="switchTab(tab.key)">
         <el-icon style="margin-right:4px;"><component :is="tab.icon" /></el-icon>
         {{ tab.label }}
       </button>
+    </div>
+
+    <div v-if="false && activeTab !== 'hosts'" class="docker-toolbar toolbar-shell">
+      <div class="toolbar-filter-bar">
+        <div class="toolbar-filter-pill toolbar-filter-pill--env">
+          <span class="toolbar-filter-label">环境</span>
+          <el-select v-model="selectedHostId" placeholder="选择环境" @change="onHostChange" class="industrial-select toolbar-filter-select" popper-class="industrial-popper">
+            <el-option v-for="h in dockerHosts" :key="h.id" :label="h.name" :value="h.id">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
+                  <span class="state-pulse" :class="h.status==='connected'?'running':'exited'"></span>
+                  <span>{{ h.name }}</span>
+                </div>
+                <el-tag size="small" :type="h.status === 'connected' ? 'success' : 'info'">
+                  {{ h.status === 'connected' ? '在线' : '离线' }}
+                </el-tag>
+              </div>
+            </el-option>
+          </el-select>
+        </div>
+      </div>
     </div>
 
     <!-- ============ 环境管理 ============ -->
@@ -139,7 +209,7 @@
             </div>
           </div>
         </div>
-        <div class="filter-bar" style="margin-bottom:12px;">
+        <div class="filter-bar filter-bar--context" style="margin-bottom:12px;">
           <el-input v-model="containerKeyword" clearable placeholder="搜索容器名称、镜像、端口" style="max-width:320px" />
           <el-select v-model="containerStateFilter" style="width:140px">
             <el-option label="全部状态" value="all" />
@@ -147,6 +217,22 @@
             <el-option label="已停止" value="stopped" />
             <el-option label="需关注" value="attention" />
           </el-select>
+          <div class="filter-inline-context filter-inline-context--push">
+            <span class="filter-inline-label">当前环境</span>
+            <el-select v-model="selectedHostId" placeholder="选择环境" @change="onHostChange" class="industrial-select toolbar-filter-select filter-inline-select" popper-class="industrial-popper">
+              <el-option v-for="h in dockerHosts" :key="h.id" :label="h.name" :value="h.id">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                  <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
+                    <span class="state-pulse" :class="h.status==='connected'?'running':'exited'"></span>
+                    <span>{{ h.name }}</span>
+                  </div>
+                  <el-tag size="small" :type="h.status === 'connected' ? 'success' : 'info'">
+                    {{ h.status === 'connected' ? '在线' : '离线' }}
+                  </el-tag>
+                </div>
+              </el-option>
+            </el-select>
+          </div>
           <el-button size="small" @click="refreshView"><el-icon><RefreshRight /></el-icon> 刷新</el-button>
         </div>
         <el-table :data="filteredContainers" stripe v-loading="loading" style="width:100%">
@@ -220,8 +306,24 @@
             </div>
           </div>
         </div>
-        <div class="filter-bar" style="margin-bottom:12px;">
+        <div class="filter-bar filter-bar--context" style="margin-bottom:12px;">
           <el-input v-model="imageKeyword" clearable placeholder="搜索仓库、标签、镜像 ID" style="max-width:320px" />
+          <div class="filter-inline-context filter-inline-context--push">
+            <span class="filter-inline-label">当前环境</span>
+            <el-select v-model="selectedHostId" placeholder="选择环境" @change="onHostChange" class="industrial-select toolbar-filter-select filter-inline-select" popper-class="industrial-popper">
+              <el-option v-for="h in dockerHosts" :key="h.id" :label="h.name" :value="h.id">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                  <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
+                    <span class="state-pulse" :class="h.status==='connected'?'running':'exited'"></span>
+                    <span>{{ h.name }}</span>
+                  </div>
+                  <el-tag size="small" :type="h.status === 'connected' ? 'success' : 'info'">
+                    {{ h.status === 'connected' ? '在线' : '离线' }}
+                  </el-tag>
+                </div>
+              </el-option>
+            </el-select>
+          </div>
           <el-tag v-if="imageSelection.length" type="info" size="large">已选 {{ imageSelection.length }} 个镜像</el-tag>
           <el-button v-if="canManageDocker" size="small" type="warning" plain @click="pruneDanglingImages">清理悬空镜像</el-button>
           <el-button v-if="canManageDocker" size="small" type="danger" plain :disabled="!imageSelection.length" @click="removeSelectedImages">批量删除</el-button>
@@ -363,6 +465,38 @@ const imageStats = computed(() => ({
   dangling: images.value.filter(item => item.repository === '<none>' || item.tag === '<none>').length,
   version: selectedHost.value?.docker_api_version || '未知',
 }))
+const summaryCards = computed(() => {
+  if (activeTab.value === 'hosts') {
+    return [
+      { label: '环境总数', value: dockerHostStats.value.total, meta: 'Docker 主机', tone: '' },
+      { label: '已连接', value: dockerHostStats.value.connected, meta: '可运维环境', tone: 'success-card' },
+      { label: '待处理', value: dockerHostStats.value.attention, meta: '需排查环境', tone: 'warning-card' },
+      { label: '当前环境', value: dockerHostStats.value.selected, meta: '当前上下文', tone: 'context-card' },
+    ]
+  }
+  if (activeTab.value === 'containers') {
+    return [
+      { label: '容器总数', value: containerStats.value.total, meta: '当前环境容器', tone: '' },
+      { label: '运行中', value: containerStats.value.running, meta: '在线实例', tone: 'success-card' },
+      { label: '需关注', value: containerStats.value.attention, meta: '重启 / 不健康', tone: 'warning-card' },
+      { label: '镜像种类', value: containerStats.value.uniqueImages, meta: '镜像覆盖', tone: 'danger-card' },
+    ]
+  }
+  return [
+    { label: '镜像总数', value: imageStats.value.total, meta: '当前环境镜像', tone: '' },
+    { label: '仓库数', value: imageStats.value.repositories, meta: '镜像仓库', tone: 'success-card' },
+    { label: '悬空镜像', value: imageStats.value.dangling, meta: '建议清理', tone: 'warning-card' },
+    { label: 'Docker 版本', value: imageStats.value.version, meta: '目标主机版本', tone: 'danger-card' },
+  ]
+})
+const activeTips = computed(() => {
+  if (activeTab.value !== 'hosts' && !selectedHostId.value) return ['请选择一个 Docker 环境后再查看容器或镜像数据。']
+  return {
+    hosts: ['新增环境后建议先执行连接测试，再进入容器或镜像管理。'],
+    containers: ['容器操作会作用到当前选中的 Docker 环境。', '查看日志和详情前建议先确认容器状态是否正常。'],
+    images: ['批量删除镜像前请先确认当前环境选择无误。', '悬空镜像清理适合在发布完成后执行。'],
+  }[activeTab.value] || []
+})
 const filteredImages = computed(() => {
   const keyword = imageKeyword.value.trim().toLowerCase()
   if (!keyword) return images.value
@@ -590,6 +724,36 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.page-header { display: none; }
+.panel { background: linear-gradient(180deg, #fff 0%, #f8fbff 100%); border: 1px solid #dbe4f0; border-radius: 24px; box-shadow: 0 14px 34px rgba(15,23,42,.06); padding: 14px 22px; }
+.hero { background: linear-gradient(135deg, #fff7ed 0%, #f8fbff 100%); display: flex; gap: 12px; justify-content: space-between; }
+.hero h2 { color: #0f172a; margin: 0; }
+.subtitle { color: #475569; margin: 10px 0 0; max-width: 620px; }
+.hero-actions { display: flex; gap: 12px; }
+.release-hero-title-row { display: flex; align-items: center; gap: 12px; }
+.release-hero-title-inline { flex-wrap: wrap; }
+.inline-subtitle { margin: 0; max-width: none; font-size: 13px; line-height: 1.45; }
+.release-header-icon { width: 42px; height: 42px; border-radius: 14px; display: inline-flex; align-items: center; justify-content: center; font-size: 20px; color: #fff; background: linear-gradient(135deg, #409eff, #36cfc9); box-shadow: 0 10px 20px rgba(64,158,255,.2); }
+.docker-header-icon { background: linear-gradient(135deg, #2563eb, #14b8a6); }
+.docker-hero { margin-bottom: 16px; }
+.release-stats { gap: 16px; }
+.docker-top-stats { margin-bottom: 16px; }
+.release-stat-card { position: relative; min-height: 76px; background: linear-gradient(145deg, #ffffff 0%, #f6faff 100%); border: 1px solid rgba(148,163,184,.18); box-shadow: 0 16px 34px rgba(15,23,42,.07); text-align: left; padding: 12px 16px; overflow: hidden; width: 100%; color: inherit; }
+.release-stat-card::after { content: ''; position: absolute; inset: auto -24px -30px auto; width: 108px; height: 108px; border-radius: 50%; background: radial-gradient(circle, rgba(64,158,255,.16) 0%, rgba(64,158,255,0) 70%); }
+.warning-card::after { background: radial-gradient(circle, rgba(245,158,11,.18) 0%, rgba(245,158,11,0) 70%); }
+.success-card::after { background: radial-gradient(circle, rgba(16,185,129,.18) 0%, rgba(16,185,129,0) 70%); }
+.danger-card::after { background: radial-gradient(circle, rgba(239,68,68,.18) 0%, rgba(239,68,68,0) 70%); }
+.release-stat-card .stat-value { font-size: 26px; line-height: 1.05; color: #0f172a; }
+.release-stat-card .stat-label { margin-top: 4px; color: #64748b; }
+.release-stat-card.context-card { border-color: rgba(148, 163, 184, 0.18); background: linear-gradient(145deg, #ffffff 0%, #f8fafc 100%); }
+.release-stat-card.context-card::after { background: radial-gradient(circle, rgba(148, 163, 184, 0.16) 0%, rgba(148, 163, 184, 0) 72%); }
+.docker-stat-meta { margin-top: 6px; color: #94a3b8; font-size: 12px; }
+.docker-alert-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; padding: 10px 12px; border-radius: 12px; background: rgba(248,250,252,.88); border: 1px solid rgba(148,163,184,.18); }
+.docker-alert-strip__label { font-size: 12px; font-weight: 700; color: #475569; }
+.docker-alert-strip__tag { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+.alert-popover { display: flex; flex-direction: column; gap: 8px; }
+.alert-popover__item { display: flex; gap: 8px; align-items: flex-start; color: #334155; line-height: 1.5; }
+.toolbar-shell { margin-bottom: 16px; }
 .docker-toolbar {
   display: flex;
   justify-content: flex-end;
@@ -602,11 +766,11 @@ onMounted(() => {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  padding: 4px 10px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+  padding: 8px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
 }
 
 .toolbar-filter-pill {
@@ -617,14 +781,16 @@ onMounted(() => {
 }
 
 .toolbar-filter-label {
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
   font-size: 12px;
   font-weight: 700;
-  padding: 4px 10px;
+  padding: 5px 10px;
   border-radius: 999px;
   letter-spacing: 0.02em;
   line-height: 1;
-  border: 1px solid transparent;
+  border: 1px solid rgba(203, 213, 225, 0.74);
   background: #f8fafc;
 }
 
@@ -639,13 +805,13 @@ onMounted(() => {
 }
 
 :deep(.toolbar-filter-select .el-select__wrapper) {
-  min-height: 30px;
+  min-height: 34px;
   padding-top: 0;
   padding-bottom: 0;
-  border-radius: 999px;
-  background: rgba(241, 245, 249, 0.92);
+  border-radius: 14px;
+  background: #fff;
   box-shadow: none;
-  border: 1px solid transparent;
+  border: 1px solid rgba(203, 213, 225, 0.74);
 }
 
 :deep(.toolbar-filter-select .el-select__selected-item) {
@@ -660,38 +826,47 @@ onMounted(() => {
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
-.docker-summary-grid {
-  gap: 12px;
-}
-
-.docker-summary-card {
-  padding: 14px 16px;
+.filter-bar--context {
+  display: flex;
+  align-items: center;
   gap: 10px;
-  border-radius: 14px;
+  flex-wrap: wrap;
 }
 
-.docker-summary-card .stat-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  font-size: 18px;
+.filter-inline-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
-.docker-summary-card .stat-value {
-  font-size: 20px;
-  line-height: 1.1;
+.filter-inline-context--push {
+  margin-left: auto;
 }
 
-.docker-summary-card .stat-label {
-  margin-top: 2px;
+.filter-inline-label {
+  flex-shrink: 0;
   font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+  line-height: 1;
 }
 
-.docker-summary-value-sm {
-  font-size: 18px;
+.filter-inline-select {
+  width: 220px;
 }
+
+.docker-summary-grid { display: none; }
 
 @media (max-width: 900px) {
+  .hero {
+    flex-direction: column;
+  }
+
+  .hero-actions {
+    justify-content: flex-start;
+  }
+
   .docker-toolbar {
     justify-content: flex-start;
   }
@@ -706,17 +881,24 @@ onMounted(() => {
     justify-content: space-between;
   }
 
-  .toolbar-filter-select {
+  .filter-inline-context {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .filter-inline-context--push {
+    margin-left: 0;
+  }
+
+  .filter-inline-select {
     flex: 1;
+    width: auto;
     min-width: 0;
   }
 
-  .docker-summary-grid {
-    gap: 10px;
-  }
-
-  .docker-summary-card {
-    padding: 12px 14px;
+  .toolbar-filter-select {
+    flex: 1;
+    min-width: 0;
   }
 }
 </style>

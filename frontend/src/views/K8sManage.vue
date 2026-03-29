@@ -45,11 +45,109 @@
     </div>
 
     <!-- 主 Tab 栏 (Pill Tab Theme: Blue) -->
+    <section class="hero panel k8s-hero">
+      <div class="release-hero-copy">
+        <div class="release-hero-title-row release-hero-title-inline">
+          <span class="release-header-icon k8s-header-icon"><el-icon><Monitor /></el-icon></span>
+          <h2>K8s 集群管理</h2>
+          <p class="subtitle inline-subtitle">统一查看集群、节点、工作负载、网络与存储资源，并支持连接测试和运维操作。</p>
+        </div>
+      </div>
+      <div class="hero-actions">
+        <el-button @click="refreshView"><el-icon><RefreshRight /></el-icon>刷新</el-button>
+        <el-button v-if="canManageK8s && activeTab === 'clusters'" type="primary" @click="openClusterDialog()"><el-icon><Plus /></el-icon>新增集群</el-button>
+      </div>
+    </section>
+
+    <div class="stats-grid release-stats k8s-top-stats">
+      <div v-for="card in summaryCards" :key="card.label" class="stat-card release-stat-card" :class="card.tone">
+        <div class="stat-value">{{ card.value }}</div>
+        <div class="stat-label">{{ card.label }}</div>
+        <div class="k8s-stat-meta">{{ card.meta }}</div>
+      </div>
+    </div>
+
+    <div v-if="activeTips.length" class="k8s-hero-alert-strip">
+      <span class="k8s-alert-strip__label">运行提示</span>
+      <el-tooltip
+        v-for="(alert, index) in activeTips.slice(0, 2)"
+        :key="index"
+        :content="alert.message"
+        placement="top"
+        effect="light"
+        :show-after="120"
+      >
+        <el-tag
+          :type="summaryAlertTagType(alert.level)"
+          effect="light"
+          class="k8s-alert-strip__tag"
+        >
+          {{ compactAlertMessage(alert.message) }}
+        </el-tag>
+      </el-tooltip>
+      <el-popover v-if="activeTips.length > 2" placement="bottom-end" :width="320" trigger="hover">
+        <template #reference>
+          <el-button link type="primary">+{{ activeTips.length - 2 }} 更多</el-button>
+        </template>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div
+            v-for="(alert, index) in activeTips"
+            :key="`top-all-${index}`"
+            style="display:flex;gap:8px;align-items:flex-start;"
+          >
+            <el-tag size="small" :type="summaryAlertTagType(alert.level)">{{ alert.level }}</el-tag>
+            <span style="line-height:1.5;color:#334155;">{{ alert.message }}</span>
+          </div>
+        </div>
+      </el-popover>
+    </div>
+
     <div class="neo-tabs theme-blue">
       <button v-for="tab in mainTabs" :key="tab.key" class="neo-tab-btn" :class="{ active: activeTab === tab.key }" @click="switchTab(tab.key)">
         <el-icon style="margin-right:4px;"><component :is="tab.icon" /></el-icon>
         {{ tab.label }}
       </button>
+    </div>
+
+    <div v-if="false" class="k8s-toolbar toolbar-shell">
+      <div class="toolbar-filter-bar">
+        <div class="toolbar-filter-pill toolbar-filter-pill--cluster">
+          <span class="toolbar-filter-label">集群</span>
+          <el-select
+            v-model="selectedClusterId"
+            placeholder="选择集群"
+            @change="onClusterChange"
+            class="industrial-select toolbar-filter-select"
+            popper-class="industrial-popper"
+          >
+            <el-option v-for="c in clusters" :key="c.id" :label="c.name" :value="c.id">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
+                  <span class="state-pulse" :class="c.status==='connected'?'running':'exited'"></span>
+                  <span>{{ c.name }}</span>
+                </div>
+                <el-tag size="small" :type="c.status === 'connected' ? 'success' : 'info'">
+                  {{ c.status === 'connected' ? '在线' : '离线' }}
+                </el-tag>
+              </div>
+            </el-option>
+          </el-select>
+        </div>
+
+        <div v-if="needsNamespace" class="toolbar-filter-pill toolbar-filter-pill--namespace">
+          <span class="toolbar-filter-label">命名空间</span>
+          <el-select
+            v-model="selectedNamespace"
+            placeholder="命名空间"
+            @change="fetchCurrentTab"
+            class="industrial-select toolbar-filter-select"
+            popper-class="industrial-popper"
+          >
+            <el-option label="全部命名空间" value="_all" />
+            <el-option v-for="ns in namespaces" :key="ns.name" :label="ns.name" :value="ns.name" />
+          </el-select>
+        </div>
+      </div>
     </div>
 
     <div v-if="activeTab !== 'clusters' && selectedClusterId && !selectedClusterConnected" class="empty-state">
@@ -93,24 +191,68 @@
         </div>
       </div>
 
-      <div class="filter-bar" style="margin-bottom:12px;">
+      <div class="filter-bar filter-bar--context" style="margin-bottom:12px;">
         <el-input v-model="tableSearchKeyword" clearable placeholder="搜索当前列表名称、镜像、IP 或描述" style="max-width:360px" />
-        <el-tag size="large" :type="summary.status === 'connected' ? 'success' : 'danger'">{{ selectedCluster?.name || '未选择集群' }}</el-tag>
-        <el-tag v-if="needsNamespace && selectedNamespace !== '_all'" size="large" type="info">NS: {{ selectedNamespace }}</el-tag>
+        <div class="filter-inline-group filter-inline-group--push">
+          <div class="filter-inline-context">
+            <span class="filter-inline-label">当前集群</span>
+            <el-select
+              v-model="selectedClusterId"
+              placeholder="选择集群"
+              @change="onClusterChange"
+              class="industrial-select toolbar-filter-select filter-inline-select"
+              popper-class="industrial-popper"
+            >
+              <el-option v-for="c in clusters" :key="c.id" :label="c.name" :value="c.id">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                  <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
+                    <span class="state-pulse" :class="c.status==='connected'?'running':'exited'"></span>
+                    <span>{{ c.name }}</span>
+                  </div>
+                  <el-tag size="small" :type="c.status === 'connected' ? 'success' : 'info'">
+                    {{ c.status === 'connected' ? '在线' : '离线' }}
+                  </el-tag>
+                </div>
+              </el-option>
+            </el-select>
+          </div>
+          <div v-if="needsNamespace" class="filter-inline-context">
+            <span class="filter-inline-label">命名空间</span>
+            <el-select
+              v-model="selectedNamespace"
+              placeholder="选择命名空间"
+              @change="fetchCurrentTab"
+              class="industrial-select toolbar-filter-select filter-inline-select"
+              popper-class="industrial-popper"
+            >
+              <el-option label="全部命名空间" value="_all" />
+              <el-option v-for="ns in namespaces" :key="ns.name" :label="ns.name" :value="ns.name" />
+            </el-select>
+          </div>
+        </div>
+        <el-tag size="large" :type="summary.status === 'connected' ? 'success' : 'danger'">{{ summary.status === 'connected' ? '已连接' : '未连接' }}</el-tag>
+        <el-tag v-if="false && needsNamespace && selectedNamespace !== '_all'" size="large" type="info">NS: {{ selectedNamespace }}</el-tag>
         <el-tag v-if="summary.pvcs_pending" size="large" type="warning">PVC Pending {{ summary.pvcs_pending }}</el-tag>
       </div>
 
       <div v-if="summary.alerts?.length" class="k8s-alert-strip">
         <span class="k8s-alert-strip__label">运行提示</span>
-        <el-tag
+        <el-tooltip
           v-for="(alert, index) in summary.alerts.slice(0, 2)"
           :key="index"
-          :type="summaryAlertTagType(alert.level)"
+          :content="alert.message"
+          placement="top"
           effect="light"
-          class="k8s-alert-strip__tag"
+          :show-after="120"
         >
-          {{ compactAlertMessage(alert.message) }}
-        </el-tag>
+          <el-tag
+            :type="summaryAlertTagType(alert.level)"
+            effect="light"
+            class="k8s-alert-strip__tag"
+          >
+            {{ compactAlertMessage(alert.message) }}
+          </el-tag>
+        </el-tooltip>
         <el-popover v-if="summary.alerts.length > 2" placement="bottom-end" :width="320" trigger="hover">
           <template #reference>
             <el-button link type="primary">+{{ summary.alerts.length - 2 }} 更多</el-button>
@@ -965,6 +1107,30 @@ function createEmptySummary() {
 }
 
 const summary = ref(createEmptySummary())
+const summaryCards = computed(() => {
+  if (activeTab.value === 'clusters') {
+    const connected = clusters.value.filter(item => item.status === 'connected').length
+    return [
+      { label: '集群数', value: clusters.value.length, meta: '纳管集群', tone: '' },
+      { label: '已连接', value: connected, meta: '可访问集群', tone: 'success-card' },
+      { label: '离线集群', value: Math.max(clusters.value.length - connected, 0), meta: '待排查目标', tone: 'warning-card' },
+      { label: '当前集群', value: selectedCluster.value?.name || '未选择', meta: '活动上下文', tone: 'context-card' },
+    ]
+  }
+  return [
+    { label: 'Ready 节点', value: `${summary.value.nodes_ready}/${summary.value.nodes_total}`, meta: '节点健康度', tone: '' },
+    { label: 'Pod 总数', value: summary.value.pods_total, meta: '运行实例', tone: 'success-card' },
+    { label: '异常 Pod', value: summary.value.pods_abnormal, meta: '需要处理', tone: 'warning-card' },
+    { label: '工作负载', value: summary.value.workloads_total, meta: 'Deployment / Job 等', tone: 'danger-card' },
+  ]
+})
+const activeTips = computed(() => {
+  if (activeTab.value !== 'clusters' && summary.value.alerts?.length) return summary.value.alerts
+  return [
+    { level: 'info', message: '切换集群后会同步刷新当前资源视图和命名空间范围。' },
+    { level: 'warning', message: '变更前建议先测试集群连接，再执行 YAML、日志或重启操作。' },
+  ]
+})
 const podSearchFields = [
   'name',
   'namespace',
@@ -1862,11 +2028,11 @@ onBeforeUnmount(() => { disposeExecTerminal() })
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  padding: 4px 10px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+  padding: 8px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
 }
 
 .toolbar-filter-pill {
@@ -1877,14 +2043,16 @@ onBeforeUnmount(() => { disposeExecTerminal() })
 }
 
 .toolbar-filter-label {
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
   font-size: 12px;
   font-weight: 700;
-  padding: 4px 10px;
+  padding: 5px 10px;
   border-radius: 999px;
   letter-spacing: 0.02em;
   line-height: 1;
-  border: 1px solid transparent;
+  border: 1px solid rgba(203, 213, 225, 0.74);
   background: #f8fafc;
 }
 
@@ -1905,13 +2073,13 @@ onBeforeUnmount(() => { disposeExecTerminal() })
 }
 
 :deep(.toolbar-filter-select .el-select__wrapper) {
-  min-height: 30px;
+  min-height: 34px;
   padding-top: 0;
   padding-bottom: 0;
-  border-radius: 999px;
-  background: rgba(241, 245, 249, 0.92);
+  border-radius: 14px;
+  background: #fff;
   box-shadow: none;
-  border: 1px solid transparent;
+  border: 1px solid rgba(203, 213, 225, 0.74);
 }
 
 :deep(.toolbar-filter-select .el-select__selected-item) {
@@ -1926,31 +2094,93 @@ onBeforeUnmount(() => { disposeExecTerminal() })
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
-.k8s-summary-grid {
-  gap: 12px;
+.page-header { display: none; }
+.panel { background: linear-gradient(180deg, #fff 0%, #f8fbff 100%); border: 1px solid #dbe4f0; border-radius: 24px; box-shadow: 0 14px 34px rgba(15,23,42,.06); padding: 14px 22px; }
+.hero { background: linear-gradient(135deg, #fff7ed 0%, #f8fbff 100%); display: flex; gap: 12px; justify-content: space-between; }
+.hero h2 { color: #0f172a; margin: 0; }
+.subtitle { color: #475569; margin: 10px 0 0; max-width: 620px; }
+.hero-actions { display: flex; gap: 12px; }
+.release-hero-title-row { display: flex; align-items: center; gap: 12px; }
+.release-hero-title-inline { flex-wrap: wrap; }
+.inline-subtitle { margin: 0; max-width: none; font-size: 13px; line-height: 1.45; }
+.release-header-icon { width: 42px; height: 42px; border-radius: 14px; display: inline-flex; align-items: center; justify-content: center; font-size: 20px; color: #fff; background: linear-gradient(135deg, #409eff, #36cfc9); box-shadow: 0 10px 20px rgba(64,158,255,.2); }
+.k8s-header-icon { background: linear-gradient(135deg, #2563eb, #0ea5e9); }
+.k8s-hero { margin-bottom: 16px; }
+.release-stats { gap: 16px; }
+.k8s-top-stats { margin-bottom: 16px; }
+.release-stat-card { position: relative; min-height: 76px; background: linear-gradient(145deg, #ffffff 0%, #f6faff 100%); border: 1px solid rgba(148,163,184,.18); box-shadow: 0 16px 34px rgba(15,23,42,.07); text-align: left; padding: 12px 16px; overflow: hidden; width: 100%; color: inherit; }
+.release-stat-card::after { content: ''; position: absolute; inset: auto -24px -30px auto; width: 108px; height: 108px; border-radius: 50%; background: radial-gradient(circle, rgba(64,158,255,.16) 0%, rgba(64,158,255,0) 70%); }
+.warning-card::after { background: radial-gradient(circle, rgba(245,158,11,.18) 0%, rgba(245,158,11,0) 70%); }
+.success-card::after { background: radial-gradient(circle, rgba(16,185,129,.18) 0%, rgba(16,185,129,0) 70%); }
+.danger-card::after { background: radial-gradient(circle, rgba(239,68,68,.18) 0%, rgba(239,68,68,0) 70%); }
+.release-stat-card .stat-value { font-size: 26px; line-height: 1.05; color: #0f172a; }
+.release-stat-card .stat-label { margin-top: 4px; color: #64748b; }
+.release-stat-card.context-card { border-color: rgba(148, 163, 184, 0.18); background: linear-gradient(145deg, #ffffff 0%, #f8fafc 100%); }
+.release-stat-card.context-card::after { background: radial-gradient(circle, rgba(148, 163, 184, 0.16) 0%, rgba(148, 163, 184, 0) 72%); }
+.k8s-stat-meta { margin-top: 6px; color: #94a3b8; font-size: 12px; }
+.toolbar-shell { margin-bottom: 16px; }
+.k8s-summary-grid { display: none; }
+.k8s-alert-strip { display: none; }
+.filter-bar :deep(.el-tag--large) {
+  border-radius: 999px;
+  padding: 0 12px;
+  height: 34px;
+  border: 1px solid rgba(203, 213, 225, 0.72);
+  background: #fff;
+  color: #334155;
+  font-weight: 600;
+}
+.filter-bar :deep(.el-tag--success) {
+  background: rgba(240, 253, 244, 0.92);
+  border-color: rgba(134, 239, 172, 0.72);
+  color: #166534;
+}
+.filter-bar :deep(.el-tag--danger) {
+  background: rgba(254, 242, 242, 0.92);
+  border-color: rgba(252, 165, 165, 0.72);
+  color: #b91c1c;
+}
+.filter-bar :deep(.el-tag--warning) {
+  background: rgba(255, 251, 235, 0.94);
+  border-color: rgba(253, 224, 71, 0.72);
+  color: #b45309;
 }
 
-.k8s-summary-card {
-  padding: 14px 16px;
+.filter-bar--context {
+  display: flex;
+  align-items: center;
   gap: 10px;
-  border-radius: 14px;
+  flex-wrap: wrap;
 }
 
-.k8s-summary-card .stat-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  font-size: 18px;
+.filter-inline-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
-.k8s-summary-card .stat-value {
-  font-size: 20px;
-  line-height: 1.1;
+.filter-inline-group--push {
+  margin-left: auto;
 }
 
-.k8s-summary-card .stat-label {
-  margin-top: 2px;
+.filter-inline-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.filter-inline-label {
+  flex-shrink: 0;
   font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+  line-height: 1;
+}
+
+.filter-inline-select {
+  width: 220px;
 }
 
 .config-editor-note {
@@ -1992,7 +2222,7 @@ onBeforeUnmount(() => { disposeExecTerminal() })
   line-height: 1.6;
 }
 
-.k8s-alert-strip {
+.k8s-hero-alert-strip {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2031,17 +2261,37 @@ onBeforeUnmount(() => { disposeExecTerminal() })
     justify-content: space-between;
   }
 
+  .filter-inline-group,
+  .filter-inline-context {
+    width: 100%;
+  }
+
+  .filter-inline-group--push {
+    margin-left: 0;
+  }
+
+  .filter-inline-context {
+    justify-content: space-between;
+  }
+
+  .filter-inline-select {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+  }
+
   .toolbar-filter-select {
     flex: 1;
     min-width: 0;
   }
 
-  .k8s-summary-grid {
-    gap: 10px;
+  .hero {
+    flex-direction: column;
   }
 
-  .k8s-summary-card {
-    padding: 12px 14px;
+  .hero-actions {
+    justify-content: flex-start;
   }
+
 }
 </style>

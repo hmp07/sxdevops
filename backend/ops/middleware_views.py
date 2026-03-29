@@ -97,6 +97,39 @@ MIDDLEWARE_DEMO_TEMPLATE = {
     },
 }
 
+MIDDLEWARE_IMPORT_TEMPLATES = {
+    'redis': {
+        'clusters': {
+            'ha-read': {'name': 'read-cache-template', 'environment': 'test', 'status': 'healthy', 'mode': 'Redis Cluster', 'slot_coverage': '16384/16384', 'memory_total_gb': 64, 'ops_per_sec': 15600, 'hit_rate': 99.4},
+            'session': {'name': 'session-cache-template', 'environment': 'dev', 'status': 'healthy', 'mode': 'Sentinel', 'slot_coverage': 'N/A', 'memory_total_gb': 24, 'ops_per_sec': 4200, 'hit_rate': 98.3},
+        },
+        'instances': {
+            'master': {'cluster': 'order-cache', 'name': 'redis-template-master', 'environment': 'test', 'role': 'master', 'endpoint': '10.88.0.10:6379', 'version': '7.2.4', 'status': 'healthy', 'memory_usage': 46, 'qps': 3600, 'connections': 180, 'replication_delay_ms': 0, 'persistence': 'AOF + RDB'},
+            'replica': {'cluster': 'order-cache', 'name': 'redis-template-replica', 'environment': 'test', 'role': 'replica', 'endpoint': '10.88.0.11:6379', 'version': '7.2.4', 'status': 'healthy', 'memory_usage': 41, 'qps': 3200, 'connections': 150, 'replication_delay_ms': 12, 'persistence': 'AOF + RDB'},
+        },
+    },
+    'rocketmq': {
+        'clusters': {
+            'trade': {'name': 'trade-template', 'environment': 'test', 'status': 'healthy', 'nameserver_count': 2, 'tps': 6800, 'topic_count': 42},
+            'audit': {'name': 'audit-template', 'environment': 'dev', 'status': 'warning', 'nameserver_count': 2, 'tps': 1600, 'topic_count': 18},
+        },
+        'instances': {
+            'master': {'cluster': 'trade-mq', 'name': 'broker-template-master', 'environment': 'test', 'role': 'master', 'endpoint': '10.89.0.20:10911', 'version': '5.2.0', 'status': 'healthy', 'tps': 3600, 'topic_count': 28, 'disk_usage': 46, 'consumer_lag': 0},
+            'slave': {'cluster': 'trade-mq', 'name': 'broker-template-slave', 'environment': 'test', 'role': 'slave', 'endpoint': '10.89.0.21:10911', 'version': '5.2.0', 'status': 'healthy', 'tps': 3200, 'topic_count': 28, 'disk_usage': 40, 'consumer_lag': 80},
+        },
+    },
+    'elasticsearch': {
+        'clusters': {
+            'search': {'name': 'search-template', 'environment': 'test', 'health': 'green', 'storage': '2.4TB', 'qps': 4200},
+            'logs': {'name': 'logs-template', 'environment': 'dev', 'health': 'yellow', 'storage': '1.1TB', 'qps': 2100},
+        },
+        'instances': {
+            'hot': {'cluster': 'search-prod', 'name': 'es-template-hot', 'role': 'data_hot,ingest', 'endpoint': '10.90.0.11:9200', 'status': 'online', 'heap_usage': 42, 'cpu_usage': 24, 'disk_usage': 38},
+            'warm': {'cluster': 'search-prod', 'name': 'es-template-warm', 'role': 'data_warm', 'endpoint': '10.90.0.12:9200', 'status': 'online', 'heap_usage': 36, 'cpu_usage': 18, 'disk_usage': 34},
+        },
+    },
+}
+
 
 def _get_demo_state():
     cached = cache.get(MIDDLEWARE_DEMO_CACHE_KEY)
@@ -124,6 +157,15 @@ def _append_event(events, level, title, detail):
 
 def _build_id(prefix):
     return f"{prefix}-{int(timezone.now().timestamp() * 1000)}"
+
+
+def _ensure_unique_name(existing_names, base_name):
+    candidate = base_name
+    counter = 2
+    while candidate in existing_names:
+        candidate = f'{base_name}-{counter}'
+        counter += 1
+    return candidate
 
 
 def _module_status(alerts):
@@ -210,6 +252,12 @@ def _sync_es(state):
         cluster['indices'] = len(indices)
 
 
+def _remove_by_id(items, item_id):
+    before = len(items)
+    items[:] = [item for item in items if item['id'] != item_id]
+    return len(items) != before
+
+
 def _redis_create_cluster(state, payload):
     name = str(payload.get('name', '')).strip()
     if not name:
@@ -230,6 +278,49 @@ def _redis_create_cluster(state, payload):
     _append_event(state['redis']['events'], 'info', f'{name} created', 'A new Redis demo cluster was added.')
     _sync_redis(state)
     return state, f'Redis cluster {name} created.'
+
+
+def _redis_update_cluster(state, target_id, payload):
+    cluster = _find_by_id(state['redis']['clusters'], target_id)
+    if not cluster:
+        return None, 'Redis cluster not found.'
+    old_name = cluster['name']
+    new_name = str(payload.get('name', old_name)).strip() or old_name
+    if new_name != old_name and any(item['name'] == new_name for item in state['redis']['clusters']):
+        return None, 'Redis cluster name already exists.'
+    cluster.update({
+        'name': new_name,
+        'environment': payload.get('environment', cluster['environment']),
+        'status': payload.get('status', cluster['status']),
+        'mode': payload.get('mode', cluster['mode']),
+        'slot_coverage': payload.get('slot_coverage', cluster['slot_coverage']),
+        'memory_total_gb': int(payload.get('memory_total_gb') or cluster['memory_total_gb']),
+        'ops_per_sec': int(payload.get('ops_per_sec') or cluster['ops_per_sec']),
+        'hit_rate': float(payload.get('hit_rate') or cluster['hit_rate']),
+    })
+    if new_name != old_name:
+        for item in state['redis']['instances']:
+            if item['cluster'] == old_name:
+                item['cluster'] = new_name
+        for item in state['redis']['hot_keys']:
+            if item['cluster'] == old_name:
+                item['cluster'] = new_name
+    _append_event(state['redis']['events'], 'info', f'{new_name} updated', 'Redis cluster configuration was updated.')
+    _sync_redis(state)
+    return state, f'Redis cluster {new_name} updated.'
+
+
+def _redis_delete_cluster(state, target_id):
+    cluster = _find_by_id(state['redis']['clusters'], target_id)
+    if not cluster:
+        return None, 'Redis cluster not found.'
+    cluster_name = cluster['name']
+    _remove_by_id(state['redis']['clusters'], target_id)
+    state['redis']['instances'][:] = [item for item in state['redis']['instances'] if item['cluster'] != cluster_name]
+    state['redis']['hot_keys'][:] = [item for item in state['redis']['hot_keys'] if item['cluster'] != cluster_name]
+    _append_event(state['redis']['events'], 'warning', f'{cluster_name} removed', 'Redis cluster and related demo objects were deleted.')
+    _sync_redis(state)
+    return state, f'Redis cluster {cluster_name} deleted.'
 
 
 def _redis_create_instance(state, payload):
@@ -263,12 +354,78 @@ def _redis_create_instance(state, payload):
     return state, f'Redis instance {name} created.'
 
 
+def _redis_update_instance(state, target_id, payload):
+    target = _find_by_id(state['redis']['instances'], target_id)
+    if not target:
+        return None, 'Redis instance not found.'
+    cluster_name = str(payload.get('cluster', target['cluster'])).strip() or target['cluster']
+    if not any(item['name'] == cluster_name for item in state['redis']['clusters']):
+        return None, 'Target Redis cluster does not exist.'
+    role = payload.get('role', target['role'])
+    if role == 'master':
+        duplicate_master = next((item for item in state['redis']['instances'] if item['cluster'] == cluster_name and item['role'] == 'master' and item['id'] != target_id), None)
+        if duplicate_master:
+            return None, 'Redis cluster already has another master instance.'
+    target.update({
+        'cluster': cluster_name,
+        'environment': payload.get('environment', target['environment']),
+        'name': payload.get('name', target['name']) or target['name'],
+        'role': role,
+        'endpoint': payload.get('endpoint', target['endpoint']),
+        'version': payload.get('version', target['version']),
+        'status': payload.get('status', target['status']),
+        'memory_usage': int(payload.get('memory_usage') or target['memory_usage']),
+        'qps': int(payload.get('qps') or target['qps']),
+        'connections': int(payload.get('connections') or target['connections']),
+        'replication_delay_ms': int(payload.get('replication_delay_ms') or target['replication_delay_ms']),
+        'persistence': payload.get('persistence', target['persistence']),
+        'last_sync': _now_label(),
+    })
+    _append_event(state['redis']['events'], 'info', f"{target['name']} updated", 'Redis instance configuration was updated.')
+    _sync_redis(state)
+    return state, f"Redis instance {target['name']} updated."
+
+
+def _redis_delete_instance(state, target_id):
+    target = _find_by_id(state['redis']['instances'], target_id)
+    if not target:
+        return None, 'Redis instance not found.'
+    instance_name = target['name']
+    _remove_by_id(state['redis']['instances'], target_id)
+    _append_event(state['redis']['events'], 'warning', f'{instance_name} removed', 'Redis instance was deleted from demo state.')
+    _sync_redis(state)
+    return state, f'Redis instance {instance_name} deleted.'
+
+
+def _redis_import_template(state, payload):
+    scope = payload.get('scope', 'cluster')
+    template_key = payload.get('template_key')
+    template = deepcopy(MIDDLEWARE_IMPORT_TEMPLATES['redis']['clusters' if scope == 'cluster' else 'instances'].get(template_key))
+    if not template:
+        return None, 'Redis template not found.'
+    if scope == 'cluster':
+        template['name'] = _ensure_unique_name([item['name'] for item in state['redis']['clusters']], template['name'])
+        return _redis_create_cluster(state, template)
+    template['name'] = _ensure_unique_name([item['name'] for item in state['redis']['instances']], template['name'])
+    return _redis_create_instance(state, template)
+
+
 def _redis_action(state, target_id, action_name, payload=None):
     payload = payload or {}
     if action_name == 'create_cluster':
         return _redis_create_cluster(state, payload)
+    if action_name == 'import_template':
+        return _redis_import_template(state, payload)
+    if action_name == 'update_cluster':
+        return _redis_update_cluster(state, target_id, payload)
+    if action_name == 'delete_cluster':
+        return _redis_delete_cluster(state, target_id)
     if action_name == 'create_instance':
         return _redis_create_instance(state, payload)
+    if action_name == 'update_instance':
+        return _redis_update_instance(state, target_id, payload)
+    if action_name == 'delete_instance':
+        return _redis_delete_instance(state, target_id)
     target = _find_by_id(state['redis']['instances'], target_id)
     if not target:
         return None, 'Redis instance not found.'
@@ -324,6 +481,45 @@ def _rocketmq_create_cluster(state, payload):
     return state, f'RocketMQ cluster {name} created.'
 
 
+def _rocketmq_update_cluster(state, target_id, payload):
+    cluster = _find_by_id(state['rocketmq']['clusters'], target_id)
+    if not cluster:
+        return None, 'RocketMQ cluster not found.'
+    old_name = cluster['name']
+    new_name = str(payload.get('name', old_name)).strip() or old_name
+    if new_name != old_name and any(item['name'] == new_name for item in state['rocketmq']['clusters']):
+        return None, 'RocketMQ cluster name already exists.'
+    cluster.update({
+        'name': new_name,
+        'environment': payload.get('environment', cluster['environment']),
+        'status': payload.get('status', cluster['status']),
+        'nameserver_count': int(payload.get('nameserver_count') or cluster['nameserver_count']),
+        'tps': int(payload.get('tps') or cluster['tps']),
+        'topic_count': int(payload.get('topic_count') or cluster['topic_count']),
+    })
+    if new_name != old_name:
+        for collection in ('brokers', 'consumer_groups', 'topics'):
+            for item in state['rocketmq'][collection]:
+                if item['cluster'] == old_name:
+                    item['cluster'] = new_name
+    _append_event(state['rocketmq']['events'], 'info', f'{new_name} updated', 'RocketMQ cluster configuration was updated.')
+    _sync_rocketmq(state)
+    return state, f'RocketMQ cluster {new_name} updated.'
+
+
+def _rocketmq_delete_cluster(state, target_id):
+    cluster = _find_by_id(state['rocketmq']['clusters'], target_id)
+    if not cluster:
+        return None, 'RocketMQ cluster not found.'
+    cluster_name = cluster['name']
+    _remove_by_id(state['rocketmq']['clusters'], target_id)
+    for collection in ('brokers', 'consumer_groups', 'topics'):
+        state['rocketmq'][collection][:] = [item for item in state['rocketmq'][collection] if item['cluster'] != cluster_name]
+    _append_event(state['rocketmq']['events'], 'warning', f'{cluster_name} removed', 'RocketMQ cluster and related demo objects were deleted.')
+    _sync_rocketmq(state)
+    return state, f'RocketMQ cluster {cluster_name} deleted.'
+
+
 def _rocketmq_create_broker(state, payload):
     cluster_name = str(payload.get('cluster', '')).strip()
     name = str(payload.get('name', '')).strip()
@@ -350,12 +546,71 @@ def _rocketmq_create_broker(state, payload):
     return state, f'RocketMQ broker {name} created.'
 
 
+def _rocketmq_update_broker(state, target_id, payload):
+    target = _find_by_id(state['rocketmq']['brokers'], target_id)
+    if not target:
+        return None, 'RocketMQ broker not found.'
+    cluster_name = str(payload.get('cluster', target['cluster'])).strip() or target['cluster']
+    if not any(item['name'] == cluster_name for item in state['rocketmq']['clusters']):
+        return None, 'Target RocketMQ cluster does not exist.'
+    target.update({
+        'cluster': cluster_name,
+        'environment': payload.get('environment', target['environment']),
+        'name': payload.get('name', target['name']) or target['name'],
+        'role': payload.get('role', target['role']),
+        'endpoint': payload.get('endpoint', target['endpoint']),
+        'version': payload.get('version', target['version']),
+        'status': payload.get('status', target['status']),
+        'tps': int(payload.get('tps') or target['tps']),
+        'topic_count': int(payload.get('topic_count') or target['topic_count']),
+        'disk_usage': int(payload.get('disk_usage') or target['disk_usage']),
+        'consumer_lag': int(payload.get('consumer_lag') or target['consumer_lag']),
+    })
+    _append_event(state['rocketmq']['events'], 'info', f"{target['name']} updated", 'RocketMQ broker configuration was updated.')
+    _sync_rocketmq(state)
+    return state, f"RocketMQ broker {target['name']} updated."
+
+
+def _rocketmq_delete_broker(state, target_id):
+    target = _find_by_id(state['rocketmq']['brokers'], target_id)
+    if not target:
+        return None, 'RocketMQ broker not found.'
+    broker_name = target['name']
+    _remove_by_id(state['rocketmq']['brokers'], target_id)
+    _append_event(state['rocketmq']['events'], 'warning', f'{broker_name} removed', 'RocketMQ broker was deleted from demo state.')
+    _sync_rocketmq(state)
+    return state, f'RocketMQ broker {broker_name} deleted.'
+
+
+def _rocketmq_import_template(state, payload):
+    scope = payload.get('scope', 'cluster')
+    template_key = payload.get('template_key')
+    template = deepcopy(MIDDLEWARE_IMPORT_TEMPLATES['rocketmq']['clusters' if scope == 'cluster' else 'instances'].get(template_key))
+    if not template:
+        return None, 'RocketMQ template not found.'
+    if scope == 'cluster':
+        template['name'] = _ensure_unique_name([item['name'] for item in state['rocketmq']['clusters']], template['name'])
+        return _rocketmq_create_cluster(state, template)
+    template['name'] = _ensure_unique_name([item['name'] for item in state['rocketmq']['brokers']], template['name'])
+    return _rocketmq_create_broker(state, template)
+
+
 def _rocketmq_action(state, target_id, action_name, payload=None):
     payload = payload or {}
     if action_name == 'create_cluster':
         return _rocketmq_create_cluster(state, payload)
+    if action_name == 'import_template':
+        return _rocketmq_import_template(state, payload)
+    if action_name == 'update_cluster':
+        return _rocketmq_update_cluster(state, target_id, payload)
+    if action_name == 'delete_cluster':
+        return _rocketmq_delete_cluster(state, target_id)
     if action_name == 'create_instance':
         return _rocketmq_create_broker(state, payload)
+    if action_name == 'update_instance':
+        return _rocketmq_update_broker(state, target_id, payload)
+    if action_name == 'delete_instance':
+        return _rocketmq_delete_broker(state, target_id)
     target = _find_by_id(state['rocketmq']['brokers'], target_id)
     if not target:
         return None, 'RocketMQ broker not found.'
@@ -403,6 +658,44 @@ def _elasticsearch_create_cluster(state, payload):
     return state, f'Elasticsearch cluster {name} created.'
 
 
+def _elasticsearch_update_cluster(state, target_id, payload):
+    cluster = _find_by_id(state['elasticsearch']['clusters'], target_id)
+    if not cluster:
+        return None, 'Elasticsearch cluster not found.'
+    old_name = cluster['name']
+    new_name = str(payload.get('name', old_name)).strip() or old_name
+    if new_name != old_name and any(item['name'] == new_name for item in state['elasticsearch']['clusters']):
+        return None, 'Elasticsearch cluster name already exists.'
+    cluster.update({
+        'name': new_name,
+        'environment': payload.get('environment', cluster['environment']),
+        'health': payload.get('health', cluster['health']),
+        'storage': payload.get('storage', cluster['storage']),
+        'qps': int(payload.get('qps') or cluster['qps']),
+    })
+    if new_name != old_name:
+        for collection in ('nodes', 'indices', 'tasks'):
+            for item in state['elasticsearch'][collection]:
+                if item['cluster'] == old_name:
+                    item['cluster'] = new_name
+    _append_event(state['elasticsearch']['events'], 'info', f'{new_name} updated', 'Elasticsearch cluster configuration was updated.')
+    _sync_es(state)
+    return state, f'Elasticsearch cluster {new_name} updated.'
+
+
+def _elasticsearch_delete_cluster(state, target_id):
+    cluster = _find_by_id(state['elasticsearch']['clusters'], target_id)
+    if not cluster:
+        return None, 'Elasticsearch cluster not found.'
+    cluster_name = cluster['name']
+    _remove_by_id(state['elasticsearch']['clusters'], target_id)
+    for collection in ('nodes', 'indices', 'tasks'):
+        state['elasticsearch'][collection][:] = [item for item in state['elasticsearch'][collection] if item['cluster'] != cluster_name]
+    _append_event(state['elasticsearch']['events'], 'warning', f'{cluster_name} removed', 'Elasticsearch cluster and related demo objects were deleted.')
+    _sync_es(state)
+    return state, f'Elasticsearch cluster {cluster_name} deleted.'
+
+
 def _elasticsearch_create_node(state, payload):
     cluster_name = str(payload.get('cluster', '')).strip()
     name = str(payload.get('name', '')).strip()
@@ -426,12 +719,68 @@ def _elasticsearch_create_node(state, payload):
     return state, f'Elasticsearch node {name} created.'
 
 
+def _elasticsearch_update_node(state, target_id, payload):
+    target = _find_by_id(state['elasticsearch']['nodes'], target_id)
+    if not target:
+        return None, 'Elasticsearch node not found.'
+    cluster_name = str(payload.get('cluster', target['cluster'])).strip() or target['cluster']
+    if not any(item['name'] == cluster_name for item in state['elasticsearch']['clusters']):
+        return None, 'Target Elasticsearch cluster does not exist.'
+    target.update({
+        'cluster': cluster_name,
+        'name': payload.get('name', target['name']) or target['name'],
+        'role': payload.get('role', target['role']),
+        'endpoint': payload.get('endpoint', target['endpoint']),
+        'status': payload.get('status', target['status']),
+        'heap_usage': int(payload.get('heap_usage') or target['heap_usage']),
+        'cpu_usage': int(payload.get('cpu_usage') or target['cpu_usage']),
+        'disk_usage': int(payload.get('disk_usage') or target['disk_usage']),
+    })
+    _append_event(state['elasticsearch']['events'], 'info', f"{target['name']} updated", 'Elasticsearch node configuration was updated.')
+    _sync_es(state)
+    return state, f"Elasticsearch node {target['name']} updated."
+
+
+def _elasticsearch_delete_node(state, target_id):
+    target = _find_by_id(state['elasticsearch']['nodes'], target_id)
+    if not target:
+        return None, 'Elasticsearch node not found.'
+    node_name = target['name']
+    _remove_by_id(state['elasticsearch']['nodes'], target_id)
+    _append_event(state['elasticsearch']['events'], 'warning', f'{node_name} removed', 'Elasticsearch node was deleted from demo state.')
+    _sync_es(state)
+    return state, f'Elasticsearch node {node_name} deleted.'
+
+
+def _elasticsearch_import_template(state, payload):
+    scope = payload.get('scope', 'cluster')
+    template_key = payload.get('template_key')
+    template = deepcopy(MIDDLEWARE_IMPORT_TEMPLATES['elasticsearch']['clusters' if scope == 'cluster' else 'instances'].get(template_key))
+    if not template:
+        return None, 'Elasticsearch template not found.'
+    if scope == 'cluster':
+        template['name'] = _ensure_unique_name([item['name'] for item in state['elasticsearch']['clusters']], template['name'])
+        return _elasticsearch_create_cluster(state, template)
+    template['name'] = _ensure_unique_name([item['name'] for item in state['elasticsearch']['nodes']], template['name'])
+    return _elasticsearch_create_node(state, template)
+
+
 def _elasticsearch_action(state, target_id, action_name, payload=None):
     payload = payload or {}
     if action_name == 'create_cluster':
         return _elasticsearch_create_cluster(state, payload)
+    if action_name == 'import_template':
+        return _elasticsearch_import_template(state, payload)
+    if action_name == 'update_cluster':
+        return _elasticsearch_update_cluster(state, target_id, payload)
+    if action_name == 'delete_cluster':
+        return _elasticsearch_delete_cluster(state, target_id)
     if action_name == 'create_instance':
         return _elasticsearch_create_node(state, payload)
+    if action_name == 'update_instance':
+        return _elasticsearch_update_node(state, target_id, payload)
+    if action_name == 'delete_instance':
+        return _elasticsearch_delete_node(state, target_id)
     if action_name == 'restart_node':
         target = _find_by_id(state['elasticsearch']['nodes'], target_id)
         if not target:
@@ -483,9 +832,9 @@ def middleware_action(request):
     action_name = request.data.get('action')
     target_id = request.data.get('target_id')
     payload = request.data.get('payload') or {}
-    is_create_action = str(action_name or '').startswith('create_')
-    if not module_name or not action_name or (not is_create_action and not target_id):
-        return Response({'detail': 'module and action are required, and target_id is required for non-create actions.'}, status=400)
+    is_targetless_action = str(action_name or '').startswith('create_') or action_name == 'import_template'
+    if not module_name or not action_name or (not is_targetless_action and not target_id):
+        return Response({'detail': 'module and action are required, and target_id is required for update, delete and runtime actions.'}, status=400)
     state = _get_demo_state()
     if module_name == 'redis':
         state, message = _redis_action(state, target_id, action_name, payload)

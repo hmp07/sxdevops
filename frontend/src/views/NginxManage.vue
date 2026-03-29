@@ -40,11 +40,81 @@
     </div>
 
     <!-- 主 Tab 栏 (Pill Tab Theme: Green) -->
+    <section class="hero panel nginx-hero">
+      <div class="release-hero-copy">
+        <div class="release-hero-title-row release-hero-title-inline">
+          <span class="release-header-icon nginx-header-icon"><el-icon><Location /></el-icon></span>
+          <h2>Nginx 管理</h2>
+          <p class="subtitle inline-subtitle">统一管理环境、证书、域名和路由配置，覆盖预览、发布与远端推送演示链路。</p>
+        </div>
+      </div>
+      <div class="hero-actions">
+        <el-button :loading="loading" @click="refreshAll"><el-icon><RefreshRight /></el-icon>刷新</el-button>
+        <el-button v-if="canManageNginx" type="primary" @click="openEnvDialog()"><el-icon><Plus /></el-icon>新增环境</el-button>
+      </div>
+    </section>
+
+    <div class="stats-grid release-stats nginx-stats">
+      <div v-for="card in summaryCards" :key="card.label" class="stat-card release-stat-card" :class="card.tone">
+        <div class="stat-value">{{ card.value }}</div>
+        <div class="stat-label">{{ card.label }}</div>
+        <div class="nginx-stat-meta">{{ card.meta }}</div>
+      </div>
+    </div>
+
+    <div class="middleware-alert-strip nginx-alert-strip">
+      <span class="middleware-alert-strip__label">运行提示</span>
+      <el-tooltip
+        v-for="(tip, index) in activeTips.slice(0, 2)"
+        :key="`${activeTab}-${index}`"
+        :content="tip"
+        placement="top"
+        effect="light"
+        :show-after="120"
+      >
+        <el-tag size="small" effect="light" type="info" class="middleware-alert-strip__tag">
+          {{ tip }}
+        </el-tag>
+      </el-tooltip>
+      <el-popover v-if="activeTips.length > 2" placement="bottom-end" :width="320" trigger="hover">
+        <template #reference>
+          <el-button link type="primary">+{{ activeTips.length - 2 }} 更多</el-button>
+        </template>
+        <div class="alert-popover">
+          <div v-for="(tip, index) in activeTips" :key="`nginx-tip-${index}`" class="alert-popover__item">
+            <el-tag size="small" type="info">提示</el-tag>
+            <span>{{ tip }}</span>
+          </div>
+        </div>
+      </el-popover>
+    </div>
+
     <div class="neo-tabs theme-blue">
       <button v-for="tab in mainTabs" :key="tab.key" class="neo-tab-btn" :class="{ active: activeTab === tab.key }" @click="switchTab(tab.key)">
         <el-icon style="margin-right:4px;"><component :is="tab.icon" /></el-icon>
         {{ tab.label }}
       </button>
+    </div>
+
+    <div v-if="false && (activeTab === 'domains' || activeTab === 'routes')" class="k8s-toolbar toolbar-shell">
+      <div class="toolbar-filter-bar">
+        <div class="toolbar-filter-pill toolbar-filter-pill--env">
+          <span class="toolbar-filter-label"><el-icon><Monitor /></el-icon> 环境</span>
+          <el-select v-model="filterEnvId" placeholder="选择环境" @change="onEnvChange" class="industrial-select toolbar-filter-select" popper-class="industrial-popper">
+            <el-option v-for="e in envs" :key="e.id" :label="e.name" :value="e.id">
+              <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
+                <span class="state-pulse" :class="e.status==='connected'?'running':'exited'"></span> {{ e.name }}
+              </div>
+            </el-option>
+          </el-select>
+        </div>
+        <div v-if="activeTab === 'routes' && filterEnvId" class="toolbar-filter-pill toolbar-filter-pill--domain">
+          <span class="toolbar-filter-label"><el-icon><Connection /></el-icon> 域名</span>
+          <el-select v-model="filterDomainId" placeholder="选择域名" @change="onDomainChange" class="industrial-select toolbar-filter-select" popper-class="industrial-popper">
+            <el-option v-for="d in filteredDomains" :key="d.id" :label="`${d.domain}:${d.listen_port}`" :value="d.id" />
+          </el-select>
+        </div>
+      </div>
     </div>
 
     <!-- ============ 环境管理 ============ -->
@@ -87,9 +157,21 @@
 
     <!-- ============ 域名管理 ============ -->
     <div v-if="activeTab === 'domains'" class="tab-content">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-        <el-alert title="提示：修改配置和调整启用状态后，请点击【发布配置】实际生效" type="info" :closable="false" show-icon style="padding:4px 12px; width:auto; background:var(--bg-main);" />
-        <el-button v-if="canManageNginx" type="primary" size="small" @click="openDomainDialog()" :disabled="!filterEnvId"><el-icon><Plus /></el-icon> 添加域名</el-button>
+      <div class="content-toolbar">
+        <el-alert title="提示：修改配置和调整启用状态后，请点击【发布配置】实际生效" type="info" :closable="false" show-icon class="content-toolbar__alert" style="padding:4px 12px; width:auto; background:var(--bg-main);" />
+        <div class="content-toolbar__actions content-toolbar__actions--push">
+          <div class="filter-inline-context">
+            <span class="filter-inline-label">当前环境</span>
+            <el-select v-model="filterEnvId" placeholder="选择环境" @change="onEnvChange" class="industrial-select toolbar-filter-select filter-inline-select" popper-class="industrial-popper">
+              <el-option v-for="e in envs" :key="e.id" :label="e.name" :value="e.id">
+                <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
+                  <span class="state-pulse" :class="e.status==='connected'?'running':'exited'"></span> {{ e.name }}
+                </div>
+              </el-option>
+            </el-select>
+          </div>
+          <el-button v-if="canManageNginx" type="primary" size="small" @click="openDomainDialog()" :disabled="!filterEnvId"><el-icon><Plus /></el-icon> 添加域名</el-button>
+        </div>
       </div>
       <el-table :data="filteredDomains" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="domain" label="域名/IP" min-width="180">
@@ -132,9 +214,27 @@
 
     <!-- ============ 路由配置 ============ -->
     <div v-if="activeTab === 'routes'" class="tab-content">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-        <el-alert title="提示：配置完路由后，请到【域名管理】选择对应域名【预览】并确认，无误后点击【发布配置】生效" type="info" :closable="false" show-icon style="padding:4px 12px; width:auto; background:var(--bg-main);" />
-        <el-button v-if="canManageNginx" type="primary" size="small" @click="openRouteDialog()" :disabled="!filterDomainId"><el-icon><Plus /></el-icon> 添加路由</el-button>
+      <div class="content-toolbar">
+        <el-alert title="提示：配置完路由后，请到【域名管理】选择对应域名【预览】并确认，无误后点击【发布配置】生效" type="info" :closable="false" show-icon class="content-toolbar__alert content-toolbar__alert--nowrap" style="padding:4px 12px; width:auto; background:var(--bg-main);" />
+        <div class="content-toolbar__actions content-toolbar__actions--push">
+          <div class="filter-inline-context">
+            <span class="filter-inline-label">当前环境</span>
+            <el-select v-model="filterEnvId" placeholder="选择环境" @change="onEnvChange" class="industrial-select toolbar-filter-select filter-inline-select" popper-class="industrial-popper">
+              <el-option v-for="e in envs" :key="e.id" :label="e.name" :value="e.id">
+                <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
+                  <span class="state-pulse" :class="e.status==='connected'?'running':'exited'"></span> {{ e.name }}
+                </div>
+              </el-option>
+            </el-select>
+          </div>
+          <div v-if="filterEnvId" class="filter-inline-context">
+            <span class="filter-inline-label">域名</span>
+            <el-select v-model="filterDomainId" placeholder="选择域名" @change="onDomainChange" class="industrial-select toolbar-filter-select filter-inline-select" popper-class="industrial-popper">
+              <el-option v-for="d in filteredDomains" :key="d.id" :label="`${d.domain}:${d.listen_port}`" :value="d.id" />
+            </el-select>
+          </div>
+          <el-button v-if="canManageNginx" type="primary" size="small" @click="openRouteDialog()" :disabled="!filterDomainId"><el-icon><Plus /></el-icon> 添加路由</el-button>
+        </div>
       </div>
       <div v-if="!filterEnvId || !filterDomainId" style="text-align:center;padding:40px;color:#94a3b8;">
         请先在右上角选择<strong>环境</strong>和<strong>域名</strong>
@@ -361,7 +461,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import { useRouteTabState } from '@/composables/useRouteTabState'
-import { Location, Connection, Plus, Monitor, Lock, FolderOpened } from '@element-plus/icons-vue'
+import { Location, Connection, Plus, Monitor, Lock, FolderOpened, RefreshRight } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
 import {
   getNginxEnvironments, createNginxEnvironment, updateNginxEnvironment, deleteNginxEnvironment, testNginxConnection,
@@ -399,6 +499,18 @@ const filteredDomains = computed(() => {
   if (!filterEnvId.value) return []
   return domains.value.filter(d => d.environment === filterEnvId.value)
 })
+const summaryCards = computed(() => [
+  { label: '环境数', value: envs.value.length, meta: 'Nginx 环境', tone: '' },
+  { label: '已连接', value: envs.value.filter(item => item.status === 'connected').length, meta: '连通环境', tone: 'success-card' },
+  { label: '域名数', value: domains.value.length, meta: '站点入口', tone: 'warning-card' },
+  { label: '证书 / 路由', value: `${certs.value.length} / ${routes.value.length}`, meta: '证书与路由', tone: 'danger-card' },
+])
+const activeTips = computed(() => ({
+  envs: ['新增或编辑环境后，建议先执行连接测试再进行配置操作。'],
+  domains: ['修改配置或启用状态后，需要执行发布配置才会在目标环境生效。', '建议先预览生成配置，再进行正式发布。'],
+  routes: ['新增路由后，先在域名管理中预览配置并确认，再执行发布。', '切换环境后请重新确认当前域名与路由归属关系。'],
+  certs: ['证书关联环境后会自动推送到目标 ssl 目录。', '更新证书内容后可执行重新推送，确保远端文件同步。'],
+}[activeTab.value] || []))
 
 const envDialog = ref(false)
 const domainDialog = ref(false)
@@ -468,6 +580,19 @@ async function fetchCerts() {
     certs.value = res.results || res
   } catch (e) { ElMessage.error('获取证书失败') }
   loading.value = false
+}
+
+async function refreshAll() {
+  await Promise.all([
+    fetchEnvs(),
+    fetchCerts(),
+    getNginxDomains().then(res => { domains.value = res.results || res }).catch(() => {}),
+  ])
+  if (activeTab.value === 'domains' && filterEnvId.value) await fetchDomains()
+  if (activeTab.value === 'routes') {
+    if (filterEnvId.value) await fetchDomains()
+    if (filterDomainId.value) await fetchRoutes()
+  }
 }
 
 function onEnvChange() {
@@ -669,6 +794,35 @@ async function handlePushAll(row) {
 </script>
 
 <style scoped>
+.nginx-page { display: flex; flex-direction: column; gap: 0; }
+.page-header { display: none; }
+.panel { background: linear-gradient(180deg, #fff 0%, #f8fbff 100%); border: 1px solid #dbe4f0; border-radius: 24px; box-shadow: 0 14px 34px rgba(15,23,42,.06); padding: 14px 22px; }
+.hero { background: linear-gradient(135deg, #fff7ed 0%, #f8fbff 100%); display: flex; gap: 12px; justify-content: space-between; }
+.hero h2 { color: #0f172a; margin: 0; }
+.subtitle { color: #475569; margin: 10px 0 0; max-width: 620px; }
+.hero-actions { display: flex; gap: 12px; }
+.release-hero-title-row { display: flex; align-items: center; gap: 12px; }
+.release-hero-title-inline { flex-wrap: wrap; }
+.inline-subtitle { margin: 0; max-width: none; font-size: 13px; line-height: 1.45; }
+.release-header-icon { width: 42px; height: 42px; border-radius: 14px; display: inline-flex; align-items: center; justify-content: center; font-size: 20px; color: #fff; background: linear-gradient(135deg, #409eff, #36cfc9); box-shadow: 0 10px 20px rgba(64,158,255,.2); }
+.nginx-header-icon { background: linear-gradient(135deg, #2563eb, #14b8a6); }
+.nginx-hero { margin-bottom: 16px; }
+.release-stats { gap: 16px; }
+.nginx-stats { margin-bottom: 16px; }
+.release-stat-card { position: relative; min-height: 76px; background: linear-gradient(145deg, #ffffff 0%, #f6faff 100%); border: 1px solid rgba(148,163,184,.18); box-shadow: 0 16px 34px rgba(15,23,42,.07); text-align: left; padding: 12px 16px; overflow: hidden; width: 100%; color: inherit; }
+.release-stat-card::after { content: ''; position: absolute; inset: auto -24px -30px auto; width: 108px; height: 108px; border-radius: 50%; background: radial-gradient(circle, rgba(64,158,255,.16) 0%, rgba(64,158,255,0) 70%); }
+.warning-card::after { background: radial-gradient(circle, rgba(245,158,11,.18) 0%, rgba(245,158,11,0) 70%); }
+.success-card::after { background: radial-gradient(circle, rgba(16,185,129,.18) 0%, rgba(16,185,129,0) 70%); }
+.danger-card::after { background: radial-gradient(circle, rgba(239,68,68,.18) 0%, rgba(239,68,68,0) 70%); }
+.release-stat-card .stat-value { font-size: 26px; line-height: 1.05; color: #0f172a; }
+.release-stat-card .stat-label { margin-top: 4px; color: #64748b; }
+.nginx-stat-meta { margin-top: 6px; color: #94a3b8; font-size: 12px; }
+.middleware-alert-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; padding: 10px 12px; border-radius: 12px; background: rgba(248,250,252,.88); border: 1px solid rgba(148,163,184,.18); }
+.middleware-alert-strip__label { font-size: 12px; font-weight: 700; color: #475569; }
+.middleware-alert-strip__tag { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+.alert-popover { display: flex; flex-direction: column; gap: 8px; }
+.alert-popover__item { display: flex; gap: 8px; align-items: flex-start; color: #334155; line-height: 1.5; }
+.toolbar-shell { margin-bottom: 16px; }
 .w-full { width: 100%; }
 
 .k8s-toolbar {
@@ -683,11 +837,11 @@ async function handlePushAll(row) {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  padding: 4px 10px;
-  border: 1px solid rgba(74, 222, 128, 0.24);
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgba(240, 253, 244, 0.96) 0%, rgba(220, 252, 231, 0.92) 100%);
-  box-shadow: 0 8px 20px rgba(22, 163, 74, 0.08);
+  padding: 8px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
 }
 
 .toolbar-filter-pill {
@@ -704,12 +858,12 @@ async function handlePushAll(row) {
   flex-shrink: 0;
   font-size: 12px;
   font-weight: 700;
-  padding: 4px 10px;
+  padding: 5px 10px;
   border-radius: 999px;
   letter-spacing: 0.02em;
   line-height: 1;
-  border: 1px solid rgba(203, 213, 225, 0.8);
-  background: #ffffff;
+  border: 1px solid rgba(203, 213, 225, 0.74);
+  background: #f8fafc;
 }
 
 .toolbar-filter-pill--env .toolbar-filter-label {
@@ -733,13 +887,13 @@ async function handlePushAll(row) {
 }
 
 :deep(.toolbar-filter-select .el-select__wrapper) {
-  min-height: 30px;
+  min-height: 34px;
   padding-top: 0;
   padding-bottom: 0;
-  border-radius: 999px;
+  border-radius: 14px;
   background: #ffffff;
   box-shadow: none;
-  border: 1px solid rgba(203, 213, 225, 0.8);
+  border: 1px solid rgba(203, 213, 225, 0.74);
 }
 
 :deep(.toolbar-filter-select .el-select__selected-item) {
@@ -754,6 +908,66 @@ async function handlePushAll(row) {
   box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.1);
 }
 
+.filter-inline-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.content-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.content-toolbar__alert {
+  max-width: 620px;
+}
+
+.content-toolbar__alert--nowrap {
+  flex: 1 1 auto;
+  max-width: none;
+  min-width: 0;
+}
+
+:deep(.content-toolbar__alert--nowrap .el-alert__title) {
+  white-space: nowrap;
+}
+
+:deep(.content-toolbar__alert--nowrap .el-alert__content) {
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.content-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.content-toolbar__actions--push {
+  margin-left: auto;
+}
+
+.filter-inline-label {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+  line-height: 1;
+}
+
+.filter-inline-select {
+  width: 220px;
+}
+
 /* 多行 alert 的 icon 顶部对齐微调 */
 :deep(.cert-alert) {
   align-items: flex-start;
@@ -763,12 +977,39 @@ async function handlePushAll(row) {
 }
 
 @media (max-width: 768px) {
+  .hero {
+    flex-direction: column;
+  }
+
+  .hero-actions {
+    justify-content: flex-start;
+  }
+
   .toolbar-filter-bar {
     width: 100%;
     justify-content: flex-end;
   }
 
   .toolbar-filter-pill {
+    width: 100%;
+  }
+
+  .filter-inline-context {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .content-toolbar__alert,
+  .content-toolbar__actions {
+    width: 100%;
+    max-width: none;
+  }
+
+  .content-toolbar__actions--push {
+    margin-left: 0;
+  }
+
+  .filter-inline-select {
     width: 100%;
   }
 

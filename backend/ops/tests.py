@@ -938,3 +938,52 @@ class MiddlewareViewsTests(TestCase):
         self.assertTrue(any(item['name'] == 'es-search-07' for item in data['nodes']))
         updated_cluster = next(item for item in data['clusters'] if item['name'] == 'search-prod')
         self.assertEqual(updated_cluster['nodes'], 3)
+
+    def test_update_rocketmq_cluster_renames_related_records(self):
+        response = self.client.post(
+            '/api/middleware/action/',
+            {
+                'module': 'rocketmq',
+                'target_id': 'rmq-cls-audit',
+                'action': 'update_cluster',
+                'payload': {
+                    'name': 'audit-mq-v2',
+                    'environment': 'prod',
+                    'status': 'healthy',
+                    'nameserver_count': 3,
+                },
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()['data']['rocketmq']
+        self.assertTrue(any(item['name'] == 'audit-mq-v2' for item in data['clusters']))
+        self.assertTrue(any(item['cluster'] == 'audit-mq-v2' for item in data['brokers']))
+
+    def test_delete_redis_cluster_removes_instances(self):
+        response = self.client.post(
+            '/api/middleware/action/',
+            {'module': 'redis', 'target_id': 'redis-cls-member', 'action': 'delete_cluster'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()['data']['redis']
+        self.assertFalse(any(item['id'] == 'redis-cls-member' for item in data['clusters']))
+        self.assertFalse(any(item['cluster'] == 'member-session' for item in data['instances']))
+
+    def test_import_rocketmq_instance_template_creates_demo_broker(self):
+        response = self.client.post(
+            '/api/middleware/action/',
+            {
+                'module': 'rocketmq',
+                'action': 'import_template',
+                'payload': {
+                    'scope': 'instance',
+                    'template_key': 'slave',
+                },
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        brokers = response.json()['data']['rocketmq']['brokers']
+        self.assertTrue(any(item['name'].startswith('broker-template-slave') for item in brokers))
