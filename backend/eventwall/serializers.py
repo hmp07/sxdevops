@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import EventRecord
+from .models import EventRecord, EventSource
 
 
 class EventRecordSerializer(serializers.ModelSerializer):
@@ -58,3 +58,87 @@ class EventRecordSerializer(serializers.ModelSerializer):
 
     def get_related_count(self, obj):
         return len(obj.related_resources or [])
+
+
+class EventSourceSerializer(serializers.ModelSerializer):
+    source_kind_display = serializers.CharField(source='get_source_kind_display', read_only=True)
+    source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    auth_type_display = serializers.CharField(source='get_auth_type_display', read_only=True)
+    webhook_path = serializers.SerializerMethodField()
+    recent_event_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EventSource
+        fields = [
+            'id',
+            'code',
+            'name',
+            'source_kind',
+            'source_kind_display',
+            'source_type',
+            'source_type_display',
+            'description',
+            'enabled',
+            'status',
+            'status_display',
+            'endpoint_url',
+            'auth_type',
+            'auth_type_display',
+            'token_preview',
+            'config',
+            'field_mapping',
+            'last_sync_at',
+            'last_event_at',
+            'last_error',
+            'webhook_path',
+            'recent_event_count',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = [
+            'token_preview',
+            'last_sync_at',
+            'last_event_at',
+            'last_error',
+            'created_at',
+            'updated_at',
+        ]
+
+    def get_webhook_path(self, obj):
+        if obj.source_kind != EventSource.KIND_EXTERNAL:
+            return ''
+        return f'/api/event-sources/{obj.code}/ingest/'
+
+    def get_recent_event_count(self, obj):
+        counts = self.context.get('recent_event_counts') or {}
+        return counts.get(obj.code, 0)
+
+
+class EventSourceTokenSerializer(serializers.Serializer):
+    token = serializers.CharField(read_only=True)
+    token_preview = serializers.CharField(read_only=True)
+
+
+class EventSourceIngestSerializer(serializers.Serializer):
+    event_id = serializers.CharField(max_length=128, required=False, allow_blank=True)
+    occurred_at = serializers.DateTimeField(required=False)
+    title = serializers.CharField(max_length=255)
+    summary = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    detail = serializers.CharField(required=False, allow_blank=True)
+    event_type = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    action = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    result = serializers.ChoiceField(choices=EventRecord.RESULT_CHOICES, required=False, default=EventRecord.RESULT_SUCCESS)
+    severity = serializers.ChoiceField(choices=EventRecord.SEVERITY_CHOICES, required=False, default=EventRecord.SEVERITY_INFO)
+    actor = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    business_line = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    environment = serializers.CharField(max_length=32, required=False, allow_blank=True)
+    application = serializers.CharField(max_length=128, required=False, allow_blank=True)
+    resource_type = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    resource_id = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    resource_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    correlation_id = serializers.CharField(max_length=128, required=False, allow_blank=True)
+    tags = serializers.ListField(child=serializers.CharField(max_length=64), required=False)
+    related_resources = serializers.ListField(child=serializers.DictField(), required=False)
+    changes = serializers.DictField(required=False)
+    metadata = serializers.DictField(required=False)

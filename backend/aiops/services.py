@@ -1453,7 +1453,7 @@ def query_events(session, user_message, user, query='', limit=8):
         'items': [f'{event.title} / {event.module} / {event.result}' for event in events],
     }] if events else []
     _finish_tool_invocation(invocation, {'count': len(events)}, started_at, success=True)
-    return {'sections': sections, 'citations': [{'title': '事件总览', 'path': '/events/overview'}], 'events': events}
+    return {'sections': sections, 'citations': [{'title': '事件墙', 'path': '/events/wall'}], 'events': events}
 
 
 def query_logs(session, user_message, user, query='', limit=6):

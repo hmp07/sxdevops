@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <section class="event-tabs-shell">
     <button
       v-for="item in tabs"
@@ -8,22 +8,25 @@
       :class="{ active: route.path === item.path }"
       @click="go(item.path)"
     >
-      <span class="event-tab__title">{{ item.title }}</span>
-      <span class="event-tab__desc">{{ item.desc }}</span>
+      <span>{{ item.title }}</span>
+      <em>{{ item.desc }}</em>
     </button>
   </section>
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const authStore = useAuthStore()
 
-const tabs = [
-  { path: '/events/overview', title: '事件总览', desc: '总量、风险与活跃对象' },
-  { path: '/events/wall', title: '事件流', desc: '筛选关键操作明细' },
-]
+const tabs = computed(() => [
+  { path: '/events/wall', title: '事件墙', desc: '故障窗口与变更定位', permission: 'eventwall.view' },
+  { path: '/events/sources', title: '事件源', desc: '内置采集与外部接入', permission: 'eventwall.source.view' },
+].filter(item => authStore.hasPermission(item.permission)))
 
 function go(path) {
   if (route.path !== path) {
@@ -34,78 +37,66 @@ function go(path) {
 
 <style scoped>
 .event-tabs-shell {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: -4px;
-  padding: 4px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, .88);
-  border: 1px solid rgba(226, 232, 240, .95);
-  box-shadow: 0 14px 30px rgba(15, 23, 42, .05);
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid #dee0e3;
+  border-radius: 8px;
+  background: #fff;
 }
 
 .event-tab {
-  position: relative;
-  min-height: 58px;
-  padding: 8px 11px 8px 13px;
-  border: 1px solid rgba(148, 163, 184, .12);
-  border-radius: 14px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  min-width: 168px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #4e5969;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  justify-content: center;
-  gap: 3px;
+  gap: 2px;
   text-align: left;
   cursor: pointer;
-  transition: .18s ease box-shadow, .18s ease transform, .18s ease border-color, .18s ease background;
-}
-
-.event-tab::after {
-  content: '';
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 3px;
-  border-radius: 14px;
-  background: linear-gradient(180deg, rgba(15, 118, 110, .12) 0%, rgba(234, 88, 12, .03) 100%);
 }
 
 .event-tab:hover {
-  transform: translateY(-1px);
-  border-color: rgba(59, 130, 246, .24);
-  box-shadow: 0 12px 20px rgba(37, 99, 235, .08);
+  background: #f7f8fa;
 }
 
 .event-tab.active {
-  border-color: rgba(59, 130, 246, .28);
-  background: linear-gradient(180deg, #fdfefe 0%, #eef6ff 100%);
-  box-shadow: 0 14px 24px rgba(59, 130, 246, .1);
+  background: #e8f0ff;
+  color: #245bdb;
 }
 
-.event-tab.active::after {
-  background: linear-gradient(180deg, #0f766e 0%, #ea580c 100%);
-}
-
-.event-tab__title {
+.event-tab span {
   font-size: 13px;
   font-weight: 700;
-  line-height: 1.1;
-  color: #0f172a;
+  line-height: 1.2;
 }
 
-.event-tab__desc {
-  font-size: 11px;
-  line-height: 1.35;
-  color: #64748b;
+.event-tab em {
+  font-size: 12px;
+  font-style: normal;
+  color: #8f959e;
+  line-height: 1.3;
 }
 
-@media (max-width: 960px) {
+.event-tab.active em {
+  color: #245bdb;
+}
+
+@media (max-width: 700px) {
   .event-tabs-shell {
-    grid-template-columns: 1fr;
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .event-tab {
+    min-width: 0;
   }
 }
 </style>
-
-
-

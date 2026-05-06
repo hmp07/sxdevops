@@ -1,11 +1,11 @@
 ﻿<template>
   <div class="fade-in">
     <section class="hero panel">
-      <div class="release-hero-copy">
-        <div class="release-hero-title-row release-hero-title-inline">
-          <span class="users-header-icon"><el-icon><User /></el-icon></span>
+      <div class="hero-copy">
+        <div class="hero-title-row">
+          <span class="hero-icon"><el-icon><User /></el-icon></span>
           <h2>用户管理</h2>
-          <p class="page-desc inline-subtitle">统一维护用户、用户组、角色与权限字典，支持内置权限同步与账号治理。</p>
+          <p class="page-inline-desc">统一维护用户、用户组、角色与权限字典，支持内置权限同步与账号治理。</p>
         </div>
       </div>
       <div class="hero-actions">
@@ -621,72 +621,73 @@ onMounted(async () => {
 
 <style scoped>
 .panel {
-  background: linear-gradient(135deg, rgba(239,246,255,.96) 0%, rgba(236,254,255,.94) 52%, rgba(248,250,252,.98) 100%);
-  border: 1px solid rgba(96,165,250,.18);
-  border-radius: 24px;
-  box-shadow: 0 16px 36px rgba(14,165,233,.08);
-  padding: 14px 22px;
+  background: linear-gradient(180deg, #ffffff 0%, #fffdf8 100%);
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04);
+  padding: 12px 14px;
+}
+
+.hero,
+.hero-copy,
+.hero-title-row,
+.hero-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hero-copy {
+  gap: 4px;
 }
 
 .hero {
-  display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
   margin-bottom: 8px;
 }
 
-.release-hero-title-row {
-  display: flex;
+.hero-title-row {
   align-items: center;
   gap: 12px;
 }
 
-.release-hero-title-inline {
-  flex-wrap: wrap;
-}
-
-.hero h2 {
+.hero-title-row h2 {
+  font-size: 23px;
+  line-height: 1.1;
   margin: 0;
   color: #0f172a;
 }
 
-.users-header-icon {
+.hero-icon {
   width: 42px;
   height: 42px;
-  border-radius: 14px;
+  border-radius: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 20px;
   color: #fff;
-  background: linear-gradient(135deg, #0ea5e9, #2563eb);
-  box-shadow: 0 10px 20px rgba(37,99,235,.2);
+  background: linear-gradient(135deg, #0f766e, #0ea5e9);
 }
 
-.page-desc {
+.page-inline-desc {
   margin: 0;
-  color: #475569;
+  color: #64748b;
   font-size: 13px;
-  line-height: 1.45;
-}
-
-.inline-subtitle {
-  max-width: none;
+  line-height: 1.5;
 }
 
 .hero-actions {
-  display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
   justify-content: flex-end;
 }
 
 .hero-actions :deep(.el-button) {
-  min-height: 38px;
-  padding: 0 16px;
-  border-radius: 12px;
+  min-height: 32px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-weight: 500;
 }
 
 .filter-bar {
@@ -698,7 +699,7 @@ onMounted(async () => {
 }
 
 .table-card {
-  border-radius: 20px;
+  border-radius: 12px;
   background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,252,.92));
   box-shadow: 0 18px 36px rgba(15,23,42,.06);
 }

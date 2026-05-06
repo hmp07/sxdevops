@@ -1,7 +1,16 @@
 import request from '../request'
 
-export const getEventWallOverview = (params) => request.get('/events/overview/', { params })
+export const getEventWallAnalysis = (params) => request.get('/events/analysis_wall/', { params })
+export const getOperationAuditEvents = (params) => request.get('/events/operation_audit/', { params })
+export const pruneOperationAuditEvents = (data) => request.post('/events/prune_operation_audit/', data)
 export const getEventWallEvents = (params) => request.get('/events/', { params })
 export const getEventWallEvent = (id) => request.get(`/events/${id}/`)
 export const getEventWallAssociations = (params) => request.get('/events/associations/', { params })
 export const getEventWallFilterOptions = (params) => request.get('/events/filter_options/', { params })
+export const getEventSources = (params) => request.get('/event-sources/', { params })
+export const getEventSourceSummary = () => request.get('/event-sources/summary/')
+export const getEventSourceIngestSpec = () => request.get('/event-sources/ingest_spec/')
+export const createEventSource = (data) => request.post('/event-sources/', data)
+export const updateEventSource = (code, data) => request.patch(`/event-sources/${code}/`, data)
+export const toggleEventSource = (code) => request.post(`/event-sources/${code}/toggle_enabled/`)
+export const issueEventSourceToken = (code) => request.post(`/event-sources/${code}/issue_token/`)

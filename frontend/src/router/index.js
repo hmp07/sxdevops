@@ -321,29 +321,39 @@ const routes = [
       },
       {
         path: 'events',
-        redirect: '/events/overview',
+        redirect: '/events/wall',
         meta: { hidden: true, permission: 'eventwall.view' },
       },
       {
-        path: 'events/overview',
-        name: 'EventWallOverview',
-        component: () => import('@/views/EventWallOverview.vue'),
-        meta: { title: '事件总览', icon: 'DataLine', permission: 'eventwall.view' },
+        path: 'events/wall',
+        name: 'EventWall',
+        component: () => import('@/views/EventWall.vue'),
+        meta: { title: '事件墙', icon: 'Aim', permission: 'eventwall.view' },
       },
       {
-        path: 'events/wall',
-        name: 'EventWallStream',
-        component: () => import('@/views/EventWallStream.vue'),
-        meta: { title: '事件流', icon: 'Tickets', permission: 'eventwall.view' },
+        path: 'events/overview',
+        redirect: '/events/wall',
+        meta: { hidden: true, permission: 'eventwall.view' },
+      },
+      {
+        path: 'events/wall-v2',
+        redirect: '/events/wall',
+        meta: { hidden: true, permission: 'eventwall.view' },
+      },
+      {
+        path: 'events/sources',
+        name: 'EventSources',
+        component: () => import('@/views/EventSources.vue'),
+        meta: { title: '事件源', icon: 'Share', permission: 'eventwall.source.view' },
       },
       {
         path: 'events/audit',
-        redirect: '/events/overview',
+        redirect: '/events/wall',
         meta: { hidden: true, permission: 'eventwall.view' },
       },
       {
         path: 'events/analysis',
-        redirect: '/events/overview',
+        redirect: '/events/wall',
         meta: { hidden: true, permission: 'eventwall.view' },
       },
       {
@@ -353,8 +363,14 @@ const routes = [
         meta: {
           title: '用户管理',
           icon: 'User',
-          anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view'],
+          anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view', 'rbac.audit.view'],
         },
+      },
+      {
+        path: 'users/audit',
+        name: 'OperationAudit',
+        component: () => import('@/views/OperationAudit.vue'),
+        meta: { title: '操作审计', icon: 'DocumentChecked', permission: 'rbac.audit.view' },
       },
       {
         path: 'aiops/chat',

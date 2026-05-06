@@ -2520,7 +2520,7 @@ def _system_posture_data_sources(access, catalog=None, grafana=None, logs=None, 
             'status': 'warning',
             'count': EventRecord.objects.count(),
             'description': '变更、同步与审计事件',
-            'path': '/events/overview',
+            'path': '/events/wall',
         })
     sources.append({
         'id': 'system-posture',
@@ -2574,7 +2574,7 @@ def _system_posture_quick_actions(system, access=None):
     if access.get('alerts'):
         actions.append({'key': 'alert', 'title': '查看告警', 'path': '/alerts', 'query': {}})
     if access.get('eventwall'):
-        actions.append({'key': 'events', 'title': '查看事件', 'path': '/events/overview', 'query': {}})
+        actions.append({'key': 'events', 'title': '查看事件', 'path': '/events/wall', 'query': {}})
     if access.get('grafana'):
         actions.append({'key': 'grafana', 'title': '查看看板', 'path': '/observability/grafana', 'query': {}})
     return actions
@@ -2653,7 +2653,7 @@ def _system_posture_timeline(template):
                 'title': event.title,
                 'summary': event.summary or event.detail or event.resource_name or event.application,
                 'time': event.occurred_at.isoformat() if event.occurred_at else '',
-                'path': '/events/overview',
+                'path': '/events/wall',
                 'status': event.result,
                 'tone': 'danger' if event.result in {EventRecord.RESULT_FAILED, EventRecord.RESULT_REJECTED} else 'warning' if event.result in {EventRecord.RESULT_PENDING, EventRecord.RESULT_PARTIAL} else 'info',
                 'meta': event.category or event.action or '事件墙',
@@ -3127,7 +3127,7 @@ def observability_system_posture(request):
     if access.get('grafana'):
         navigation.append({'title': '监控看板', 'path': '/observability/grafana', 'description': '打开 Grafana 推荐看板。', 'tone': 'accent'})
     if access.get('eventwall'):
-        navigation.append({'title': '事件总览', 'path': '/events/overview', 'description': '查看变更、同步和审计事件。', 'tone': 'success'})
+        navigation.append({'title': '事件墙', 'path': '/events/wall', 'description': '查看变更、同步和审计事件。', 'tone': 'success'})
 
     selected_changes = selected_system.get('timeline') or []
     return Response({

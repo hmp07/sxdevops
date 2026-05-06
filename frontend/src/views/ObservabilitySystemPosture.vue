@@ -398,7 +398,7 @@
             </div>
             <div class="evidence-column">
               <div class="evidence-title">事件</div>
-              <button v-for="item in selectedSystem.recent_events || []" :key="item.id" class="evidence-item" @click="go('/events/overview')">
+              <button v-for="item in selectedSystem.recent_events || []" :key="item.id" class="evidence-item" @click="go('/events/wall')">
                 <strong>{{ item.title }}</strong>
                 <span>{{ item.summary || item.resource_name }}</span>
               </button>

@@ -173,7 +173,7 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import AIOpsChatWidget from '@/components/aiops/AIOpsChatWidget.vue'
 import { getDashboardStats, getDeployments, getTransactionTickets } from '@/api/modules/ops'
-import { getEventWallOverview } from '@/api/modules/eventwall'
+import { getEventWallAnalysis } from '@/api/modules/eventwall'
 import { getResourceRequests } from '@/api/modules/cmdb'
 
 const route = useRoute()
@@ -340,8 +340,8 @@ const menuItems = [
     title: '事件墙',
     icon: 'Tickets',
     children: [
-      { path: '/events/overview', title: '事件总览', icon: 'DataLine', permission: 'eventwall.view' },
-      { path: '/events/wall', title: '事件流', icon: 'Tickets', permission: 'eventwall.view' },
+      { path: '/events/wall', title: '事件墙', icon: 'Aim', permission: 'eventwall.view' },
+      { path: '/events/sources', title: '事件源', icon: 'Share', permission: 'eventwall.source.view' },
     ],
   },
   {
@@ -359,10 +359,17 @@ const menuItems = [
     ],
   },
   {
-    path: '/users',
     title: '用户管理',
     icon: 'User',
-    anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view'],
+    children: [
+      {
+        path: '/users',
+        title: '用户管理',
+        icon: 'User',
+        anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view'],
+      },
+      { path: '/users/audit', title: '操作审计', icon: 'DocumentChecked', permission: 'rbac.audit.view' },
+    ],
   },
 ]
 
@@ -443,7 +450,7 @@ const notificationSections = computed(() => {
   const sectionRouteMap = {
     approval: '/workorders/releases',
     alert: '/alerts',
-    event: '/events/overview',
+    event: '/events/wall',
   }
   return sectionOrder
     .map((key) => ({
@@ -552,7 +559,7 @@ function buildEventNotificationItem(item) {
     title: item.title || '事件墙动态',
     description: item.summary || item.detail || item.resource_name || '请进入事件墙查看详情',
     time: item.occurred_at,
-    route: '/events/overview',
+    route: '/events/wall',
     tag: meta.tag,
     tagType: meta.tagType,
     dotTone: item.result === 'failed' ? 'danger' : item.result === 'partial' || item.result === 'pending' ? 'warning' : 'info',
@@ -600,7 +607,7 @@ async function loadNotifications() {
     }
 
     if (authStore.hasPermission('eventwall.view')) {
-      tasks.push(getEventWallOverview({ days: 7 }))
+      tasks.push(getEventWallAnalysis({ limit: 80 }))
     } else {
       tasks.push(Promise.resolve(null))
     }
@@ -641,7 +648,7 @@ async function loadNotifications() {
     }
 
     if (eventOverview) {
-      const priorityEvents = Array.isArray(eventOverview.priority_events) ? eventOverview.priority_events : []
+      const priorityEvents = Array.isArray(eventOverview.suspects) ? eventOverview.suspects : []
       items.push(...priorityEvents.slice(0, 4).map(buildEventNotificationItem))
       total += priorityEvents.length
     }

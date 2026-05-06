@@ -66,6 +66,8 @@ PERMISSION_DEFINITIONS = [
     ('sqlaudit.query.view', '查看 SQL 查询记录', 'sqlaudit', '查看 SQL 查询历史'),
     ('sqlaudit.query.execute', '执行 SQL 查询', 'sqlaudit', '提交只读 SQL 查询'),
     ('eventwall.view', '查看事件墙', 'eventwall', '查看平台事件流、关联链路与审计概览'),
+    ('eventwall.source.view', '查看事件源', 'eventwall', '查看平台内置与外部接入事件源、接入规范和健康状态'),
+    ('eventwall.source.manage', '管理事件源', 'eventwall', '维护外部事件源配置、启停状态和接入令牌'),
     ('aiops.chat.view', '查看 AIOps 机器人', 'aiops', '在页面右下角打开 AIOps 智能助手并发起对话'),
     ('aiops.chat.analyze', '使用 AIOps 关联分析', 'aiops', '基于资源、告警、日志、事件和变更做关联分析'),
     ('aiops.task.generate', '生成 AIOps 任务草稿', 'aiops', '通过机器人生成主机巡检、命令和执行草稿'),
@@ -81,6 +83,8 @@ PERMISSION_DEFINITIONS = [
     ('rbac.group.view', '查看用户组', 'rbac', '查看用户组与成员关系'),
     ('rbac.group.manage', '管理用户组', 'rbac', '新增、编辑、删除用户组'),
     ('rbac.permission.view', '查看权限字典', 'rbac', '查看系统权限清单'),
+    ('rbac.audit.view', '查看操作审计', 'rbac', '查看平台关键操作、执行动作和配置变更审计记录'),
+    ('rbac.audit.manage', '管理操作审计', 'rbac', '按保留策略批量清理操作审计记录'),
 ]
 
 
@@ -108,7 +112,8 @@ BUILTIN_ROLES = [
             'ops.middleware.view', 'ops.middleware.manage',
             'ops.nginx.view', 'ops.nginx.manage', 'ops.iac.view', 'ops.iac.manage', 'ops.iac.execute',
             'ops.multicloud.view', 'ops.multicloud.manage', 'ops.multicloud.sync',
-            'eventwall.view',
+            'eventwall.view', 'eventwall.source.view', 'eventwall.source.manage',
+            'rbac.audit.view',
             'aiops.chat.view', 'aiops.chat.analyze', 'aiops.task.generate', 'aiops.task.execute', 'aiops.config.view', 'aiops.audit.view', 'aiops.audit.manage',
             'cmdb.dashboard.view', 'cmdb.ci.view',
             'cmdb.ci.manage', 'cmdb.topology.view', 'cmdb.cost.view', 'cmdb.request.submit',
@@ -123,7 +128,7 @@ BUILTIN_ROLES = [
         'permissions': [
             'ops.dashboard.view', 'ops.host.view', 'ops.host.schedule.view', 'ops.deployment.view', 'ops.ticket.view', 'ops.alert.view', 'ops.alert.config.view',
             'ops.log.query', 'ops.log.datasource.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.system_posture.view', 'ops.observability.link.view', 'ops.grafana.view', 'ops.middleware.view',
-            'ops.iac.view', 'ops.iac.manage', 'ops.iac.execute', 'ops.multicloud.view', 'eventwall.view',
+            'ops.iac.view', 'ops.iac.manage', 'ops.iac.execute', 'ops.multicloud.view', 'eventwall.view', 'eventwall.source.view',
             'aiops.chat.view', 'aiops.chat.analyze', 'aiops.task.generate',
             'cmdb.dashboard.view', 'cmdb.ci.view',
             'cmdb.topology.view', 'cmdb.cost.view', 'cmdb.request.submit', 'marketplace.template.view',
@@ -137,7 +142,7 @@ BUILTIN_ROLES = [
         'description': '查看日志、安全告警并审核 SQL 工单。',
         'permissions': [
             'ops.dashboard.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.log.datasource.view', 'ops.log.query', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.system_posture.view', 'ops.observability.link.view', 'ops.grafana.view',
-            'ops.multicloud.view', 'eventwall.view', 'aiops.chat.view', 'aiops.chat.analyze',
+            'ops.multicloud.view', 'eventwall.view', 'eventwall.source.view', 'rbac.audit.view', 'aiops.chat.view', 'aiops.chat.analyze',
             'cmdb.dashboard.view', 'cmdb.topology.view', 'cmdb.cost.view', 'sqlaudit.datasource.view',
             'sqlaudit.order.view', 'sqlaudit.order.review', 'sqlaudit.query.view',
         ],
@@ -153,8 +158,8 @@ BUILTIN_ROLES = [
             'cmdb.dashboard.view', 'cmdb.ci.view', 'cmdb.topology.view',
             'cmdb.cost.view', 'marketplace.template.view', 'marketplace.deployment.view',
             'sqlaudit.datasource.view', 'sqlaudit.order.view', 'sqlaudit.query.view',
-            'eventwall.view', 'aiops.chat.view', 'aiops.config.view',
-            'rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view',
+            'eventwall.view', 'eventwall.source.view', 'aiops.chat.view', 'aiops.config.view',
+            'rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view', 'rbac.audit.view',
         ],
     },
 ]
