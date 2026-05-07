@@ -1034,11 +1034,13 @@ class LogEntry(models.Model):
 
 
 class SystemPostureSystem(models.Model):
+    STATUS_UNKNOWN = 'unknown'
     STATUS_HEALTHY = 'healthy'
     STATUS_WARNING = 'warning'
     STATUS_CRITICAL = 'critical'
     STATUS_OFFLINE = 'offline'
     STATUS_CHOICES = [
+        (STATUS_UNKNOWN, '未知'),
         (STATUS_HEALTHY, '健康'),
         (STATUS_WARNING, '告警'),
         (STATUS_CRITICAL, '故障'),
@@ -1051,7 +1053,7 @@ class SystemPostureSystem(models.Model):
     tier = models.CharField('分层', max_length=64, blank=True, default='')
     owner = models.CharField('负责人', max_length=64, blank=True, default='')
     summary = models.CharField('摘要', max_length=255, blank=True, default='')
-    base_status = models.CharField('基础状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_HEALTHY)
+    base_status = models.CharField('基础状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_UNKNOWN)
     health_score = models.PositiveSmallIntegerField(
         '健康分',
         null=True,

@@ -1254,6 +1254,23 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(delete_response.status_code, 204)
         self.assertFalse(SystemPostureSystem.objects.filter(id=system_id).exists())
 
+    def test_system_posture_custom_card_without_structure_stays_unknown(self):
+        create_response = self.client.post(
+            '/api/observability/system-posture/systems/',
+            {'name': 'Minimal Posture Card'},
+            format='json',
+        )
+        self.assertEqual(create_response.status_code, 201)
+        system_id = create_response.json()['id']
+
+        overview_response = self.client.get(f'/api/observability/system-posture/?system=custom-{system_id}')
+        self.assertEqual(overview_response.status_code, 200)
+        selected = overview_response.json()['selected_system']
+        self.assertEqual(selected['status'], 'unknown')
+        self.assertIsNone(selected['health_score'])
+        self.assertEqual(selected['children'], [])
+        self.assertEqual(selected['dependencies'], [])
+
     def test_builtin_system_posture_card_can_be_overridden_and_hidden(self):
         override = SystemPostureSystem.objects.create(
             name='电商交易核心',

@@ -149,7 +149,7 @@ export const updateSystemPostureEnvironment = (id, data) => request.patch(`/obse
 export const deleteSystemPostureEnvironment = (id) => request.delete(`/observability/system-posture/environments/${id}/`)
 export const getSystemPostureSystems = (params) => request.get('/observability/system-posture/systems/', { params })
 export const createSystemPostureSystem = (data) => request.post('/observability/system-posture/systems/', data)
-export const updateSystemPostureSystem = (id, data) => request.put(`/observability/system-posture/systems/${id}/`, data)
+export const updateSystemPostureSystem = (id, data) => request.patch(`/observability/system-posture/systems/${id}/`, data)
 export const deleteSystemPostureSystem = (id) => request.delete(`/observability/system-posture/systems/${id}/`)
 export const getObservabilityDataSourceLinks = (params) => request.get('/observability/datasource-links/', { params })
 export const createObservabilityDataSourceLink = (data) => request.post('/observability/datasource-links/', data)

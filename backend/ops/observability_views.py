@@ -549,6 +549,7 @@ def _alert_module_summary():
 
 
 FIREMAP_STATUS_META = {
+    'unknown': {'label': '未知', 'tone': 'info', 'rank': 0},
     'healthy': {'label': '健康', 'tone': 'success', 'rank': 1},
     'warning': {'label': '告警', 'tone': 'warning', 'rank': 2},
     'critical': {'label': '故障', 'tone': 'danger', 'rank': 3},
@@ -921,7 +922,7 @@ def _system_posture_builtin_form(template):
         'tier': template.get('tier') or '',
         'owner': template.get('owner') or '',
         'summary': template.get('summary') or '',
-        'base_status': template.get('base_status') or 'healthy',
+        'base_status': template.get('base_status') or 'unknown',
         'health_score': template.get('health_score'),
         'keywords': template.get('keywords') or [],
         'north_star': template.get('north_star') or {},
@@ -948,50 +949,6 @@ def _system_posture_system_to_template(system, builtin_backed=False):
     rule_config = system.rule_config if isinstance(system.rule_config, dict) else {}
     keywords = system.keywords if isinstance(system.keywords, list) else []
     playbook = system.playbook if isinstance(system.playbook, list) else []
-
-    if not service_specs:
-        service_id = f'{system_id}-{slug}-core'
-        interface_id = f'{system_id}-{slug}-api'
-        service_specs = [
-            {
-                'id': service_id,
-                'name': f'{system.name} 核心服务',
-                'role': system.tier or '核心链路',
-                'base_status': system.base_status,
-                'metrics': metrics or [north_star],
-                'interfaces': [
-                    {
-                        'id': interface_id,
-                        'name': f'{system.name} 关键接口',
-                        'base_status': system.base_status,
-                        'hint': system.summary or '从核心指标继续下钻定位接口层异常。',
-                        'metrics': metrics or [north_star],
-                    }
-                ],
-            }
-        ]
-
-    if not dependencies:
-        dependencies = [
-            {
-                'id': f'{system_id}-{slug}-gateway',
-                'name': '入口网关',
-                'role': 'upstream',
-                'kind': '网关',
-                'base_status': 'healthy' if system.base_status == 'healthy' else 'warning',
-                'metrics': [{'label': '可用率', 'value': 99.9, 'target': 99.5, 'unit': '%', 'direction': 'higher'}],
-                'impact': '入口侧稳定性会影响该系统的外部可用性。',
-            },
-            {
-                'id': f'{system_id}-{slug}-storage',
-                'name': '数据存储',
-                'role': 'downstream',
-                'kind': '数据库',
-                'base_status': 'healthy',
-                'metrics': [{'label': 'P95', 'value': 48, 'target': 80, 'unit': 'ms', 'direction': 'lower'}],
-                'impact': '存储延迟会直接放大接口耗时。',
-            },
-        ]
 
     form_payload = {
         'id': system.id,
@@ -1025,21 +982,21 @@ def _system_posture_system_to_template(system, builtin_backed=False):
         'builtin_backed': builtin_backed,
         'name': system.name,
         'environment': system.environment or 'prod',
-        'domain': system.domain or '未分组',
-        'tier': system.tier or '业务系统',
-        'owner': system.owner or '未设置',
-        'summary': system.summary or '自定义系统态势卡片，支持按关键字对齐告警、日志、Trace 和事件。',
+        'domain': system.domain,
+        'tier': system.tier,
+        'owner': system.owner,
+        'summary': system.summary,
         'base_status': system.base_status,
         'health_score': system.health_score,
-        'keywords': keywords or [system.name, system.domain, system.owner],
+        'keywords': keywords,
         'north_star': north_star,
         'metrics': metrics,
         'service_specs': service_specs,
         'dependencies': dependencies,
         'rule_config': rule_config,
-        'playbook': playbook or ['确认北极星指标是否持续异常。', '沿层级下钻定位服务与接口。', '回到日志、Trace 与变更证据核对时间线。'],
-        'focus_service_id': system.focus_service_id or (service_specs[0].get('id') if service_specs else ''),
-        'focus_interface_id': system.focus_interface_id or ((service_specs[0].get('interfaces') or [{}])[0].get('id') if service_specs else ''),
+        'playbook': playbook,
+        'focus_service_id': system.focus_service_id,
+        'focus_interface_id': system.focus_interface_id,
         'focus_keyword': system.focus_keyword or system.name,
         'form': form_payload,
     }
@@ -1074,11 +1031,11 @@ def _system_posture_templates():
 
 
 def _status_rank(status):
-    return FIREMAP_STATUS_META.get(status, FIREMAP_STATUS_META['healthy'])['rank']
+    return FIREMAP_STATUS_META.get(status, FIREMAP_STATUS_META['unknown'])['rank']
 
 
 def _status_tone(status):
-    return FIREMAP_STATUS_META.get(status, FIREMAP_STATUS_META['healthy'])['tone']
+    return FIREMAP_STATUS_META.get(status, FIREMAP_STATUS_META['unknown'])['tone']
 
 
 def _metric_status(metric):
@@ -1089,7 +1046,8 @@ def _metric_status(metric):
         value = float(metric.get('value'))
         target = float(metric.get('target'))
     except (TypeError, ValueError):
-        return metric.get('base_status') or 'healthy'
+        status = metric.get('base_status') or 'unknown'
+        return status if status in FIREMAP_STATUS_META else 'unknown'
     direction = str(metric.get('direction') or 'lower').strip()
     if direction == 'higher':
         if value >= target:
@@ -2107,14 +2065,33 @@ def _apply_ecommerce_live_template(template, access):
     }
 
 
-def _build_system_posture_system_payload(template, access, catalog=None):
+def _system_posture_evidence(access, catalog=None):
+    evidence = {
+        'alerts': [],
+        'logs': [],
+        'events': [],
+        'traces': [],
+    }
+    if access.get('alerts'):
+        evidence['alerts'] = list(Alert.objects.select_related('host').order_by('-created_at')[:80])
+    if access.get('log_query') or access.get('log_entry'):
+        evidence['logs'] = list(LogEntry.objects.select_related('host').order_by('-timestamp')[:80])
+    if access.get('eventwall'):
+        evidence['events'] = list(EventRecord.objects.order_by('-occurred_at')[:120])
+    if access.get('trace') and isinstance(catalog, dict):
+        evidence['traces'] = list(catalog.get('recent_traces') or [])
+    return evidence
+
+
+def _build_system_posture_system_payload(template, access, catalog=None, evidence=None):
     if _is_ecommerce_system_posture_template(template):
         live_template = _apply_ecommerce_live_template(template, access)
         if live_template:
             template = live_template
     rule_config = _system_posture_rule_config(template)
     trace_catalog = catalog or {}
-    traces = trace_catalog.get('recent_traces') or []
+    evidence = evidence or _system_posture_evidence(access, trace_catalog)
+    traces = evidence.get('traces') or trace_catalog.get('recent_traces') or []
     keywords = template.get('keywords') or []
     service_specs = template.get('service_specs') or []
     dependency_specs = template.get('dependencies') or []
@@ -2124,20 +2101,19 @@ def _build_system_posture_system_payload(template, access, catalog=None):
     matched_traces = []
 
     if access.get('alerts'):
-        for alert in Alert.objects.select_related('host').order_by('-created_at')[:80]:
+        for alert in evidence.get('alerts') or []:
             record_text = _text_block(alert.title, alert.source, alert.message, getattr(alert.host, 'hostname', ''), getattr(alert.host, 'business_line', ''))
             if _record_matches_keywords(record_text, keywords):
                 matched_alerts.append(alert)
 
     if access.get('log_query') or access.get('log_entry'):
-        for entry in LogEntry.objects.select_related('host').order_by('-timestamp')[:80]:
+        for entry in evidence.get('logs') or []:
             record_text = _text_block(entry.service, entry.message, getattr(entry.host, 'hostname', ''))
             if _record_matches_keywords(record_text, keywords):
                 matched_logs.append(entry)
 
     if access.get('eventwall'):
-        event_queryset = EventRecord.objects.order_by('-occurred_at')[:120]
-        for event in event_queryset:
+        for event in evidence.get('events') or []:
             record_text = _text_block(event.title, event.summary, event.detail, event.resource_name, event.application, event.business_line, event.environment, event.action, event.category, event.metadata, event.changes)
             if _record_matches_keywords(record_text, keywords):
                 matched_events.append(event)
@@ -2162,31 +2138,42 @@ def _build_system_posture_system_payload(template, access, catalog=None):
     topology_nodes = []
     topology_links = []
 
+    base_status = template.get('base_status') or 'unknown'
     base_score = {
         'critical': 62,
         'warning': 76,
         'healthy': 90,
-    }.get(template.get('base_status') or 'healthy', 84)
+    }.get(base_status)
     if template.get('health_score') is not None:
         try:
             base_score = max(0, min(100, int(template.get('health_score'))))
         except (TypeError, ValueError):
             pass
-    if (template.get('live') or {}).get('enabled'):
+    if base_score is None:
+        if alert_critical or trace_error >= 2:
+            health_score = 0
+            status = 'critical'
+        elif alert_warning or log_warning or event_failed:
+            health_score = 70
+            status = 'warning'
+        else:
+            health_score = None
+            status = 'unknown'
+    elif (template.get('live') or {}).get('enabled'):
         health_score = base_score
-        status = template.get('base_status') or 'healthy'
+        status = base_status
     else:
         score_penalty = alert_critical * 12 + alert_warning * 6 + log_error * 4 + log_warning * 2 + event_failed * 3 + trace_error * 3
         health_score = max(0, min(100, base_score - score_penalty))
-        status_rank = _status_rank(template.get('base_status') or 'healthy')
+        status_rank = _status_rank(base_status)
         if health_score < 50 or alert_critical or trace_error >= 2:
             status = 'critical'
         elif health_score < 78 or alert_warning or log_warning or event_failed:
             status = 'warning'
         else:
-            status = template.get('base_status') or 'healthy'
+            status = base_status
         if status_rank > _status_rank(status):
-            status = template.get('base_status') or status
+            status = base_status or status
         if alert_critical:
             status = 'critical'
 
@@ -2265,7 +2252,7 @@ def _build_system_posture_system_payload(template, access, catalog=None):
         })
 
     for dep_index, dep in enumerate(dependency_specs):
-        dep_status = dep.get('base_status') or 'healthy'
+        dep_status = dep.get('base_status') or 'unknown'
         dep_metrics = [_normalize_metric(metric) for metric in dep.get('metrics') or []]
         if any(metric['status'] == 'critical' for metric in dep_metrics):
             dep_status = 'critical'
@@ -2433,8 +2420,8 @@ def _build_system_posture_system_payload(template, access, catalog=None):
                 'name': dep['name'],
                 'role': dep.get('role') or 'dependency',
                 'kind': dep.get('kind') or '依赖',
-                'status': dep.get('base_status') or 'healthy',
-                'tone': _status_tone(dep.get('base_status') or 'healthy'),
+                'status': dep.get('base_status') or 'unknown',
+                'tone': _status_tone(dep.get('base_status') or 'unknown'),
                 'metrics': [_normalize_metric(metric) for metric in dep.get('metrics') or []],
                 'impact': dep.get('impact') or '',
             }
@@ -2446,7 +2433,7 @@ def _build_system_posture_system_payload(template, access, catalog=None):
         'source_id': template.get('source_id') or '',
         'editable': bool(template.get('editable')),
         'builtin_backed': bool(template.get('builtin_backed')),
-        'base_status': template.get('base_status') or 'healthy',
+        'base_status': template.get('base_status') or 'unknown',
         'live': template.get('live') or {},
         'form': {**(template.get('form') or {}), 'rule_config': rule_config},
         'focus': {
@@ -3088,7 +3075,11 @@ def observability_system_posture(request):
     alerts = _alert_module_summary() if access.get('alerts') else None
 
     templates = _system_posture_templates()
-    systems = [_build_system_posture_system_payload(template, access, catalog if isinstance(catalog, dict) else None) for template in templates]
+    evidence = _system_posture_evidence(access, catalog if isinstance(catalog, dict) else None)
+    systems = [
+        _build_system_posture_system_payload(template, access, catalog if isinstance(catalog, dict) else None, evidence=evidence)
+        for template in templates
+    ]
     selected_system = None
     if selected_key:
         selected_system = next(

@@ -15,49 +15,13 @@
       </div>
     </section>
 
-    <div class="stats-grid release-stats">
-      <div class="stat-card release-stat-card">
-        <div class="stat-value">{{ summary.system_count || 0 }}</div>
-        <div class="stat-label">业务系统</div>
-      </div>
-      <div class="stat-card release-stat-card danger-card">
-        <div class="stat-value">{{ summary.critical_systems || 0 }}</div>
-        <div class="stat-label">高风险系统</div>
-      </div>
-      <div class="stat-card release-stat-card warning-card">
-        <div class="stat-value">{{ summary.impact_nodes || 0 }}</div>
-        <div class="stat-label">影响依赖</div>
-      </div>
-      <div class="stat-card release-stat-card success-card">
-        <div class="stat-value">{{ summary.trace_count || 0 }}</div>
-        <div class="stat-label">Trace 样本</div>
-      </div>
-    </div>
-
-    <div class="runtime-strip">
-      <span class="runtime-strip__label">当前系统</span>
-      <span>{{ selectedSystem.name || '未选择系统' }} · {{ statusLabel(selectedSystem.status) }} · 健康分 {{ selectedSystem.health_score ?? '--' }}</span>
-      <span v-for="source in dataSources.slice(0, 5)" :key="source.id" class="source-pill" :class="`is-${source.status}`">
-        {{ source.name }} {{ source.count }}
-      </span>
-    </div>
-
-    <div class="neo-tabs theme-blue system-posture-tabs">
-      <button
-        v-for="tab in mainTabs"
-        :key="tab.key"
-        class="neo-tab-btn"
-        :class="{ active: activeTab === tab.key }"
-        @click="switchTab(tab.key)"
-      >
-        <el-icon><component :is="tab.icon" /></el-icon>
-        {{ tab.label }}
-      </button>
-    </div>
-
-    <template v-if="activeTab === 'overview'">
-      <div class="overview-layout" :class="{ 'is-root': !showFocusPanel }">
-        <section class="panel overview-systems-panel" v-loading="loading">
+    <div class="overview-layout" :class="{ 'is-root': !showFocusPanel }">
+        <section
+          class="panel overview-systems-panel"
+          v-loading="loading"
+          element-loading-text="系统态势加载数据较多，请稍等..."
+          element-loading-background="rgba(255, 255, 255, 0.82)"
+        >
           <div class="overview-toolbar">
             <div>
               <div class="drill-breadcrumb">
@@ -85,7 +49,7 @@
               role="button"
               tabindex="0"
               class="system-card"
-              :class="[`is-${cardStatus(item)}`, { active: isDrillCardActive(item), 'is-leaf': !hasChildren(item) }]"
+              :class="[`is-${cardStatus(item)}`, { active: isDrillCardActive(item), 'is-leaf': !hasChildren(item), 'is-slo-breached': isSloBreached(item) }]"
               @click="selectOverviewCard(item)"
               @keydown.enter.prevent="selectOverviewCard(item)"
             >
@@ -125,7 +89,7 @@
           </div>
           <div v-else class="environment-groups">
             <section
-              v-for="group in environmentGroups"
+              v-for="(group, groupIndex) in environmentGroups"
               :key="group.key"
               class="environment-group"
               :class="`is-${group.status}`"
@@ -142,6 +106,8 @@
                   <span>健康 {{ group.counts.healthy }}</span>
                 </div>
                 <div v-if="canManageSystemPosture" class="environment-actions">
+                  <el-button size="small" text :disabled="groupIndex === 0 || environmentSorting" @click="moveEnvironment(group, -1)">上移</el-button>
+                  <el-button size="small" text :disabled="groupIndex === environmentGroups.length - 1 || environmentSorting" @click="moveEnvironment(group, 1)">下移</el-button>
                   <el-button size="small" text @click="renameEnvironment(group)">重命名</el-button>
                   <el-button size="small" type="primary" plain @click="openCreateSystem(group.key)">
                     <el-icon><Plus /></el-icon>
@@ -156,7 +122,7 @@
                   role="button"
                   tabindex="0"
                   class="system-card"
-                  :class="[`is-${cardStatus(item)}`, { active: isDrillCardActive(item), 'is-leaf': !hasChildren(item) }]"
+                  :class="[`is-${cardStatus(item)}`, { active: isDrillCardActive(item), 'is-leaf': !hasChildren(item), 'is-slo-breached': isSloBreached(item) }]"
                   @click="selectOverviewCard(item)"
                   @keydown.enter.prevent="selectOverviewCard(item)"
                 >
@@ -206,7 +172,10 @@
 
         <section v-if="showFocusPanel" class="panel focus-panel">
           <div class="section-head">
-            <h3>{{ focusTarget.name || '节点详情' }}</h3>
+            <div class="focus-heading">
+              <h3>{{ focusTarget.name || '节点详情' }}</h3>
+              <span>所在环境 · {{ focusEnvironmentLabel }}</span>
+            </div>
             <el-tag size="small" :type="tagType(cardStatus(focusTarget))">{{ statusLabel(cardStatus(focusTarget)) }}</el-tag>
           </div>
           <div class="focus-kpis">
@@ -220,6 +189,18 @@
               <strong>{{ focusTarget.kind === 'system' ? focusTarget.health_score ?? '--' : statusLabel(cardStatus(focusTarget)) }}</strong>
               <em>{{ focusTarget.children?.length ? `下级 ${focusTarget.children.length}` : '叶子节点' }}</em>
             </div>
+          </div>
+          <div class="focus-entry-grid">
+            <button type="button" class="focus-entry" @click="openDrilldownDialog">
+              <span>进入</span>
+              <strong>层级下钻</strong>
+              <em>系统、子系统、模块与接口 · {{ drilldownRows.length }} 个节点</em>
+            </button>
+            <button type="button" class="focus-entry" @click="openTopologyDialog">
+              <span>进入</span>
+              <strong>依赖拓扑</strong>
+              <em>上下游依赖健康度 · {{ topology.node_count || 0 }} 个节点 · {{ topology.call_count || 0 }} 条关系</em>
+            </button>
           </div>
           <div v-if="focusMetrics.length" class="focus-block">
             <div class="focus-block__title">关键指标</div>
@@ -244,9 +225,14 @@
           </div>
         </section>
       </div>
-    </template>
 
-    <template v-else-if="activeTab === 'drilldown'">
+    <el-dialog
+      v-model="drillDialogVisible"
+      :title="`${selectedSystem.name || '业务系统'} · 层级下钻`"
+      width="1040px"
+      destroy-on-close
+      class="system-posture-detail-dialog"
+    >
       <div class="drill-layout">
         <section class="panel drill-tree-panel">
           <div class="section-head">
@@ -260,7 +246,7 @@
               type="button"
               class="drill-row"
               :class="[`is-${node.status}`, { active: selectedNode?.id === node.id }]"
-              :style="{ paddingLeft: `${10 + node.level * 20}px` }"
+              :style="{ '--node-indent': `${node.level * 20}px` }"
               @click="selectNode(node)"
             >
               <span class="status-dot" :class="`is-${node.status}`"></span>
@@ -304,9 +290,17 @@
           <el-empty v-else description="请选择一个系统、模块或接口" :image-size="72" />
         </section>
       </div>
-    </template>
+    </el-dialog>
 
-    <template v-else-if="activeTab === 'dependencies'">
+    <el-dialog
+      v-model="topologyDialogVisible"
+      :title="`${selectedSystem.name || '业务系统'} · 依赖拓扑`"
+      width="1080px"
+      destroy-on-close
+      class="system-posture-detail-dialog"
+      @opened="renderTopology"
+      @closed="disposeTopology"
+    >
       <section class="panel topology-panel">
         <div class="section-head">
           <h3>依赖健康度与影响面拓扑</h3>
@@ -340,73 +334,7 @@
           </div>
         </article>
       </div>
-    </template>
-
-    <template v-else-if="activeTab === 'timeline'">
-      <div class="timeline-layout">
-        <section class="panel timeline-panel">
-          <div class="section-head">
-            <h3>变更关联时间线</h3>
-            <el-tag size="small" type="warning">最近 {{ timelineItems.length }} 条</el-tag>
-          </div>
-          <div class="timeline-list">
-            <button
-              v-for="item in timelineItems"
-              :key="item.id"
-              type="button"
-              class="timeline-item"
-              :class="`is-${item.tone || item.status}`"
-              @click="go(item.path)"
-            >
-              <span class="timeline-dot"></span>
-              <div>
-                <strong>{{ item.title }}</strong>
-                <p>{{ item.summary || item.meta || '--' }}</p>
-                <em>{{ formatTime(item.time) }} · {{ item.meta || item.kind }}</em>
-              </div>
-            </button>
-            <el-empty v-if="!timelineItems.length" description="当前系统暂无可关联变更" :image-size="72" />
-          </div>
-        </section>
-
-        <section class="panel evidence-panel">
-          <div class="section-head">
-            <h3>证据对齐</h3>
-            <el-tag size="small" type="info">告警 / 日志 / Trace / 事件</el-tag>
-          </div>
-          <div class="evidence-columns">
-            <div class="evidence-column">
-              <div class="evidence-title">告警</div>
-              <button v-for="item in selectedSystem.recent_alerts || []" :key="item.id" class="evidence-item" @click="go('/alerts')">
-                <strong>{{ item.title }}</strong>
-                <span>{{ item.message }}</span>
-              </button>
-            </div>
-            <div class="evidence-column">
-              <div class="evidence-title">日志</div>
-              <button v-for="item in selectedSystem.recent_logs || []" :key="item.id" class="evidence-item" @click="go('/logs/query')">
-                <strong>{{ item.service }}</strong>
-                <span>{{ item.message }}</span>
-              </button>
-            </div>
-            <div class="evidence-column">
-              <div class="evidence-title">Trace</div>
-              <button v-for="item in selectedSystem.recent_traces || []" :key="item.trace_id" class="evidence-item" @click="openTrace(item)">
-                <strong>{{ item.service_name || item.trace_id }}</strong>
-                <span>{{ item.summary || item.trace_id }}</span>
-              </button>
-            </div>
-            <div class="evidence-column">
-              <div class="evidence-title">事件</div>
-              <button v-for="item in selectedSystem.recent_events || []" :key="item.id" class="evidence-item" @click="go('/events/wall')">
-                <strong>{{ item.title }}</strong>
-                <span>{{ item.summary || item.resource_name }}</span>
-              </button>
-            </div>
-          </div>
-        </section>
-      </div>
-    </template>
+    </el-dialog>
 
     <el-dialog
       v-model="systemDialogVisible"
@@ -416,74 +344,72 @@
       class="system-posture-dialog"
     >
       <el-form label-position="top" class="system-posture-form">
-        <div class="form-grid">
-          <el-form-item label="系统名称">
-            <el-input v-model="systemForm.name" maxlength="128" show-word-limit />
-          </el-form-item>
-          <el-form-item label="负责人">
-            <el-input v-model="systemForm.owner" maxlength="64" />
-          </el-form-item>
-          <el-form-item label="业务域">
-            <el-input v-model="systemForm.domain" maxlength="64" />
-          </el-form-item>
-          <el-form-item label="分层">
-            <el-input v-model="systemForm.tier" maxlength="64" />
-          </el-form-item>
-          <el-form-item label="基础状态">
-            <el-select v-model="systemForm.base_status">
-              <el-option label="健康" value="healthy" />
-              <el-option label="告警" value="warning" />
-              <el-option label="故障" value="critical" />
-              <el-option label="离线" value="offline" />
-            </el-select>
+        <div class="form-section">
+          <div class="form-section__head">
+            <strong>基础信息</strong>
+            <span>卡片归属环境由当前环境分组决定</span>
+          </div>
+          <div class="readonly-row readonly-row--top">
+            <span>所属环境</span>
+            <strong>{{ environmentLabel(systemForm.environment) }}</strong>
+          </div>
+          <div class="form-grid">
+            <el-form-item label="系统名称">
+              <el-input v-model="systemForm.name" maxlength="128" show-word-limit placeholder="例如：电商交易核心" />
+            </el-form-item>
+            <el-form-item label="系统域">
+              <el-select v-model="systemForm.domain" placeholder="请选择系统域">
+                <el-option
+                  v-for="item in systemDomainOptions"
+                  :key="item"
+                  :label="item"
+                  :value="item"
+                />
+              </el-select>
+            </el-form-item>
+          </div>
+        </div>
+
+        <div class="form-section">
+          <div class="form-section__head">
+            <strong>SLO 目标</strong>
+            <span>当前值和健康分由实时数据计算，不在这里手工配置</span>
+          </div>
+          <div class="form-grid form-grid--slo">
+            <el-form-item label="SLO 指标">
+              <el-input v-model="systemForm.metric_label" placeholder="例如：下单成功率" />
+            </el-form-item>
+            <el-form-item label="SLO 目标">
+              <el-input-number v-model="systemForm.metric_target" :precision="2" controls-position="right" />
+            </el-form-item>
+            <el-form-item label="单位">
+              <el-input v-model="systemForm.metric_unit" placeholder="%" />
+            </el-form-item>
+            <el-form-item label="方向">
+              <el-select v-model="systemForm.metric_direction">
+                <el-option label="越高越好" value="higher" />
+                <el-option label="越低越好" value="lower" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </div>
+
+        <div class="form-section">
+          <div class="form-section__head">
+            <strong>高级配置</strong>
+            <el-button size="small" text @click="jsonHelpVisible = true">JSON 填写帮助</el-button>
+          </div>
+          <el-form-item label="规则配置 JSON">
+            <el-input
+              v-model="systemForm.rule_config_text"
+              type="textarea"
+              :rows="14"
+              spellcheck="false"
+              class="json-editor"
+              placeholder='例如：{"north_star":{"metric":"checkout_success_rate","target":99},"drilldown":{"services":[],"dependencies":[]}}'
+            />
           </el-form-item>
         </div>
-        <el-form-item label="摘要">
-          <el-input v-model="systemForm.summary" type="textarea" :rows="2" maxlength="255" show-word-limit />
-        </el-form-item>
-        <div class="form-grid">
-          <el-form-item label="SLO 指标">
-            <el-input v-model="systemForm.metric_label" />
-          </el-form-item>
-          <el-form-item label="SLO 目标">
-            <el-input-number v-model="systemForm.metric_target" :precision="2" controls-position="right" />
-          </el-form-item>
-          <el-form-item label="单位">
-            <el-input v-model="systemForm.metric_unit" />
-          </el-form-item>
-          <el-form-item label="方向">
-            <el-select v-model="systemForm.metric_direction">
-              <el-option label="越高越好" value="higher" />
-              <el-option label="越低越好" value="lower" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="排序">
-            <el-input-number v-model="systemForm.sort_order" :min="0" controls-position="right" />
-          </el-form-item>
-        </div>
-        <div class="form-grid">
-          <el-form-item label="核心服务">
-            <el-input v-model="systemForm.service_name" />
-          </el-form-item>
-          <el-form-item label="核心接口">
-            <el-input v-model="systemForm.interface_name" />
-          </el-form-item>
-          <el-form-item label="上游依赖">
-            <el-input v-model="systemForm.upstream_name" />
-          </el-form-item>
-          <el-form-item label="下游依赖">
-            <el-input v-model="systemForm.downstream_name" />
-          </el-form-item>
-        </div>
-        <el-form-item label="匹配关键字">
-          <el-input v-model="systemForm.keywords_text" />
-        </el-form-item>
-        <el-form-item label="处置步骤">
-          <el-input v-model="systemForm.playbook_text" type="textarea" :rows="3" />
-        </el-form-item>
-        <el-form-item label="规则配置 JSON">
-          <el-input v-model="systemForm.rule_config_text" type="textarea" :rows="12" spellcheck="false" class="json-editor" />
-        </el-form-item>
       </el-form>
       <template #footer>
         <div class="dialog-footer">
@@ -491,6 +417,102 @@
           <el-button type="primary" :loading="systemSubmitting" @click="saveSystem">保存</el-button>
         </div>
       </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="jsonHelpVisible"
+      title="系统态势规则 JSON 填写帮助"
+      width="760px"
+      append-to-body
+      class="system-posture-help-dialog"
+    >
+      <div class="json-help">
+        <p>常用配置包含 SLO 指标、层级下钻结构、依赖拓扑。只配置你需要覆盖的部分；没有配置的结构不会自动生成兜底节点。</p>
+        <pre><code>{
+  "version": 1,
+  "enabled": true,
+  "engine": "prometheus-tempo",
+  "namespace": "ecommerce",
+  "window": "5m",
+  "service_pattern": "api-gateway|cart|order|inventory|catalog",
+  "north_star": {
+    "metric": "checkout_success_rate",
+    "label": "下单成功率",
+    "target": 99,
+    "unit": "%",
+    "direction": "higher"
+  },
+  "prometheus": {
+    "scalars": {
+      "checkout_success_rate": {
+        "label": "下单成功率",
+        "target": 99,
+        "unit": "%",
+        "direction": "higher",
+        "query": "100 * sum(rate(ecommerce_checkout_outcomes_total{namespace=\"{namespace}\",service=\"api-gateway\",outcome=\"success\"}[{window}])) / clamp_min(sum(rate(ecommerce_checkout_outcomes_total{namespace=\"{namespace}\",service=\"api-gateway\",outcome=~\"success|conflict\"}[{window}])), 0.000001)",
+        "fallback_query": "100 * sum(rate(ecommerce_http_requests_total{namespace=\"{namespace}\",service=\"api-gateway\",path=\"/api/checkout\",status=~\"2..\"}[{window}])) / clamp_min(sum(rate(ecommerce_http_requests_total{namespace=\"{namespace}\",service=\"api-gateway\",path=\"/api/checkout\"}[{window}])), 0.000001)"
+      },
+      "checkout_p95_ms": {
+        "label": "Checkout P95",
+        "target": 500,
+        "unit": "ms",
+        "direction": "lower",
+        "scale": 1000,
+        "query": "histogram_quantile(0.95, sum by (le) (rate(ecommerce_http_request_duration_seconds_bucket{namespace=\"{namespace}\",service=\"api-gateway\",path=\"/api/checkout\"}[{window}])))"
+      },
+      "checkout_rps": {
+        "label": "Checkout RPS",
+        "target": 0.01,
+        "unit": "",
+        "direction": "higher",
+        "query": "sum(rate(ecommerce_http_requests_total{namespace=\"{namespace}\",service=\"api-gateway\",path=\"/api/checkout\"}[{window}]))"
+      }
+    },
+    "series": {
+      "service_success_rate": {
+        "labels": ["service"],
+        "query": "100 * sum by (service) (rate(ecommerce_http_requests_total{namespace=\"{namespace}\",service=~\"{services}\",status!~\"5..\"}[{window}])) / clamp_min(sum by (service) (rate(ecommerce_http_requests_total{namespace=\"{namespace}\",service=~\"{services}\"}[{window}])), 0.000001)"
+      },
+      "path_p95_ms": {
+        "labels": ["service", "path"],
+        "scale": 1000,
+        "query": "histogram_quantile(0.95, sum by (service,path,le) (rate(ecommerce_http_request_duration_seconds_bucket{namespace=\"{namespace}\",service=~\"{services}\"}[{window}])))"
+      }
+    }
+  },
+  "drilldown": {
+    "services": [
+      {
+        "id": "checkout-service",
+        "name": "Checkout 服务",
+        "role": "交易核心",
+        "interfaces": [
+          {
+            "id": "checkout-api",
+            "name": "POST /api/checkout",
+            "hint": "下单入口",
+            "metrics": [
+              { "label": "成功率", "target": 99, "unit": "%", "direction": "higher" }
+            ]
+          }
+        ]
+      }
+    ],
+    "dependencies": [
+      {
+        "id": "order-db",
+        "name": "订单数据库",
+        "role": "downstream",
+        "kind": "数据库",
+        "impact": "订单写入超时会影响下单成功率"
+      }
+    ]
+  },
+  "keywords": ["checkout", "order-service"],
+  "focus_service_id": "checkout-service",
+  "focus_interface_id": "checkout-api"
+}</code></pre>
+      </div>
     </el-dialog>
   </div>
 </template>
@@ -501,17 +523,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Aim,
-  Bell,
-  Connection,
-  DataLine,
   Delete,
   Edit,
-  Histogram,
-  Link,
   Plus,
   RefreshRight,
-  Search,
-  Share,
 } from '@element-plus/icons-vue'
 import echarts from '@/lib/echarts'
 import {
@@ -528,53 +543,40 @@ import { openRouteInNewTab } from '@/utils/router'
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const lastSystemStorageKey = 'agdevops:observability:system-posture:last-system'
 const loading = ref(false)
 const systemSubmitting = ref(false)
+const environmentSorting = ref(false)
 const systemDialogVisible = ref(false)
+const jsonHelpVisible = ref(false)
+const drillDialogVisible = ref(false)
+const topologyDialogVisible = ref(false)
 const editingSystem = ref(null)
 const systemPosture = ref({ summary: {}, systems: [], data_sources: [], selected_system: {}, topology: {}, timeline: [], quick_actions: [] })
-const selectedSystemId = ref(typeof route.query.system === 'string' ? route.query.system : '')
+const selectedSystemId = ref(typeof route.query.system === 'string' ? route.query.system : readLastSelectedSystemId())
 const selectedNodeId = ref('')
-const activeTab = ref(['overview', 'drilldown', 'dependencies', 'timeline'].includes(route.query.tab) ? route.query.tab : 'overview')
 const topologyChartRef = ref(null)
 let topologyChart = null
+let postureRequestSeq = 0
 
 function defaultSystemForm() {
   return {
     name: '',
     environment: 'prod',
-    domain: '核心业务',
-    tier: '业务系统',
-    owner: '',
-    summary: '',
-    base_status: 'healthy',
-    metric_label: 'SLO',
-    metric_target: 99.9,
+    domain: '业务域',
+    metric_label: '成功率',
+    metric_target: 99,
     metric_unit: '%',
     metric_direction: 'higher',
-    service_name: '',
-    interface_name: '',
-    upstream_name: '入口网关',
-    downstream_name: '数据存储',
-    keywords_text: '',
-    playbook_text: '确认 SLO 指标是否持续异常\n沿层级下钻定位服务与接口\n回到日志、Trace 与变更证据核对时间线',
     rule_config_text: '{}',
     sort_order: 100,
   }
 }
 
 const systemForm = ref(defaultSystemForm())
+const systemDomainOptions = ['业务域', '平台域', '基础设施域']
 
-const mainTabs = [
-  { key: 'overview', label: '业务总览', icon: DataLine },
-  { key: 'drilldown', label: '层级下钻', icon: Search },
-  { key: 'dependencies', label: '依赖拓扑', icon: Share },
-  { key: 'timeline', label: '变更证据', icon: Link },
-]
-
-const summary = computed(() => systemPosture.value.summary || {})
 const systems = computed(() => systemPosture.value.systems || [])
-const dataSources = computed(() => systemPosture.value.data_sources || [])
 const topology = computed(() => selectedSystem.value.topology || systemPosture.value.topology || {})
 const selectedSystem = computed(() => {
   const selected = systemPosture.value.selected_system || {}
@@ -584,7 +586,6 @@ const selectedSystem = computed(() => {
   return selected.id ? selected : systems.value[0] || {}
 })
 
-const selectedMetrics = computed(() => selectedSystem.value.metrics || [])
 const drillPath = ref([])
 const detailPanelOpen = ref(false)
 const postureEnvironments = computed(() => systemPosture.value.environments || [])
@@ -596,12 +597,17 @@ const environmentNameByKey = computed(() => postureEnvironments.value.reduce((ac
 const currentDrillParent = computed(() => drillPath.value[drillPath.value.length - 1] || null)
 const drillCards = computed(() => (currentDrillParent.value ? currentDrillParent.value.children || [] : systems.value))
 const environmentGroups = computed(() => groupSystemsByEnvironment(systems.value, postureEnvironments.value))
-const showFocusPanel = computed(() => detailPanelOpen.value || drillPath.value.length > 0)
+const showFocusPanel = computed(() => Boolean(focusTarget.value?.id))
 const focusTarget = computed(() => {
   if (drillPath.value.length) {
     return selectedNode.value || currentDrillParent.value || selectedSystem.value || {}
   }
   return selectedSystem.value || {}
+})
+const focusEnvironmentLabel = computed(() => {
+  const target = focusTarget.value || {}
+  const source = target.environment || target.env || target.rule_config?.environment ? target : selectedSystem.value
+  return environmentLabel(environmentKey(source || {}))
 })
 const focusMetrics = computed(() => {
   const target = focusTarget.value || {}
@@ -644,7 +650,6 @@ const selectedNode = computed(() => {
     || drilldownRows.value[0]
 })
 
-const timelineItems = computed(() => systemPosture.value.timeline || selectedSystem.value.timeline || [])
 const allowedQuickActions = computed(() => (systemPosture.value.quick_actions || selectedSystem.value.actions || []).filter(actionAllowed))
 
 const canViewAlerts = computed(() => authStore.hasPermission('ops.alert.view'))
@@ -653,6 +658,23 @@ const canQueryLogs = computed(() => authStore.hasPermission('ops.log.query'))
 const canViewGrafana = computed(() => authStore.hasPermission('ops.grafana.view'))
 const canViewEvents = computed(() => authStore.hasPermission('eventwall.view'))
 const canManageSystemPosture = computed(() => authStore.hasPermission('ops.observability.system_posture.manage') || Boolean(systemPosture.value.context?.can_manage))
+
+function readLastSelectedSystemId() {
+  try {
+    return window.localStorage.getItem(lastSystemStorageKey) || ''
+  } catch {
+    return ''
+  }
+}
+
+function rememberSelectedSystemId(systemId = '') {
+  if (!systemId) return
+  try {
+    window.localStorage.setItem(lastSystemStorageKey, systemId)
+  } catch {
+    // localStorage may be unavailable in restricted browser contexts.
+  }
+}
 
 function flattenNodes(nodes = [], level = 0) {
   return nodes.flatMap((node) => [
@@ -665,16 +687,13 @@ function abnormalChildren(system) {
   return flattenNodes(system.children || [], 1).filter(item => item.status === 'critical' || item.status === 'warning')
 }
 
-function impactedDependencies(system) {
-  return (system.dependencies || []).filter(item => item.status === 'critical' || item.status === 'warning')
-}
-
 function hasChildren(item = {}) {
   return Array.isArray(item.children) && item.children.length > 0
 }
 
 function cardStatus(item = {}) {
-  return item.status || item.base_status || 'healthy'
+  const status = item.status || item.base_status
+  return ['critical', 'warning', 'healthy', 'offline', 'unknown'].includes(status) ? status : 'unknown'
 }
 
 function cardSlo(item = {}) {
@@ -689,15 +708,39 @@ function cardSlo(item = {}) {
   )
 }
 
+function metricNumber(value) {
+  if (value === undefined || value === null || value === '') return null
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  const normalized = String(value).replace(/,/g, '').replace('%', '').trim()
+  if (!normalized) return null
+  const numberValue = Number(normalized)
+  return Number.isFinite(numberValue) ? numberValue : null
+}
+
+function isSloBreached(item = {}) {
+  const metric = cardSlo(item)
+  const value = metricNumber(metric.value)
+  const target = metricNumber(metric.target)
+  if (value === null || target === null) return false
+  return metric.direction === 'lower' ? value > target : value < target
+}
+
+function cardLevel(item = {}) {
+  if (Number.isFinite(Number(item.level))) {
+    return `L${Number(item.level) + 1}`
+  }
+  return drillPath.value.length ? `L${drillPath.value.length + 1}` : 'L1'
+}
+
 function abnormalCount(item = {}) {
   return abnormalChildren(item).length
 }
 
 function cardMeta(system = {}) {
   if (system.kind && system.kind !== 'system') {
-    return [kindLabel(system.kind), system.role].map(item => String(item || '').trim()).filter(Boolean).join(' · ')
+    return [cardLevel(system), kindLabel(system.kind), system.role].map(item => String(item || '').trim()).filter(Boolean).join(' · ')
   }
-  return [system.domain, system.tier, system.owner]
+  return [cardLevel(system), system.domain]
     .map(item => String(item || '').trim())
     .filter(Boolean)
     .join(' · ')
@@ -709,7 +752,7 @@ function drillPathToIndex(id) {
 
 function resetDrill() {
   drillPath.value = []
-  detailPanelOpen.value = false
+  detailPanelOpen.value = true
   selectedNodeId.value = selectedSystem.value.id || ''
 }
 
@@ -729,26 +772,26 @@ function jumpDrill(item = {}) {
   detailPanelOpen.value = true
 }
 
-async function selectOverviewCard(item = {}) {
+function selectOverviewCard(item = {}) {
   if (!item?.id) return
   if (!drillPath.value.length) {
-    await selectSystem(item)
-    selectedNodeId.value = selectedSystem.value?.id || item.id
+    void selectSystem(item, { silent: true, resetNode: false })
+    selectedNodeId.value = item.id
   } else {
     selectedNodeId.value = item.id
   }
   detailPanelOpen.value = true
 }
 
-async function drillIntoCard(item = {}) {
+function drillIntoCard(item = {}) {
   if (!item?.id) return
   if (!drillPath.value.length) {
-    await selectSystem(item)
+    void selectSystem(item, { silent: true, resetNode: false })
     drillPath.value = [{
-      ...(selectedSystem.value?.id ? selectedSystem.value : item),
+      ...item,
       kind: 'system',
     }]
-    selectedNodeId.value = selectedSystem.value?.id || item.id
+    selectedNodeId.value = item.id
     detailPanelOpen.value = true
     return
   }
@@ -765,7 +808,7 @@ async function drillIntoCard(item = {}) {
 }
 
 function isDrillCardActive(item = {}) {
-  return (drillPath.value.length ? selectedNodeId.value === item.id : detailPanelOpen.value && selectedSystem.value.id === item.id)
+  return (drillPath.value.length ? selectedNodeId.value === item.id : selectedSystem.value.id === item.id)
 }
 
 function tagType(status) {
@@ -828,15 +871,6 @@ function splitText(value) {
     .split(/[\n,，]/)
     .map(item => item.trim())
     .filter(Boolean)
-}
-
-function compactId(value, fallback = 'node') {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 48) || fallback
 }
 
 function normalizeEnvironmentKey(value = '') {
@@ -915,35 +949,30 @@ function groupSystemsByEnvironment(items = [], environmentDefs = []) {
     .sort((a, b) => (a.sort_order ?? environmentOrder(a.key)) - (b.sort_order ?? environmentOrder(b.key)) || a.label.localeCompare(b.label, 'zh-Hans-CN'))
 }
 
+function firstSystemInFirstEnvironment() {
+  return environmentGroups.value.find(group => group.items.length > 0)?.items?.[0] || systems.value[0] || null
+}
+
+function systemExists(systemId = '') {
+  return Boolean(systemId && systems.value.some(item => item.id === systemId))
+}
+
 function systemToForm(system = {}) {
   const form = system.form || {}
-  const northStar = form.north_star || system.north_star || {}
-  const service = (form.service_specs || system.children || [])[0] || {}
-  const serviceInterfaces = service.interfaces || service.children || []
-  const firstInterface = serviceInterfaces[0] || {}
-  const dependencies = form.dependencies || system.dependencies || []
-  const upstream = dependencies.find(item => item.role === 'upstream') || {}
-  const downstream = dependencies.find(item => item.role === 'downstream') || {}
+  const ruleConfig = form.rule_config || system.rule_config || {}
+  const northStar = ruleConfig?.north_star && typeof ruleConfig.north_star === 'object'
+    ? ruleConfig.north_star
+    : form.north_star || system.north_star || {}
   return {
     ...defaultSystemForm(),
     name: form.name || system.name || '',
     environment: form.environment || system.environment || 'prod',
-    domain: form.domain || system.domain || '核心业务',
-    tier: form.tier || system.tier || '业务系统',
-    owner: form.owner || system.owner || '',
-    summary: form.summary || system.summary || '',
-    base_status: form.base_status || system.base_status || system.status || 'healthy',
-    metric_label: northStar.label || 'SLO',
-    metric_target: Number(northStar.target ?? 99.9),
+    domain: systemDomainOptions.includes(form.domain || system.domain) ? form.domain || system.domain : '业务域',
+    metric_label: northStar.label || form.north_star?.label || system.north_star?.label || '成功率',
+    metric_target: Number(northStar.target ?? form.north_star?.target ?? system.north_star?.target ?? 99),
     metric_unit: northStar.unit || '%',
     metric_direction: northStar.direction || 'higher',
-    service_name: service.name || `${system.name || '业务'} 核心服务`,
-    interface_name: firstInterface.name || `${system.name || '业务'} 关键接口`,
-    upstream_name: upstream.name || '入口网关',
-    downstream_name: downstream.name || '数据存储',
-    keywords_text: (form.keywords || system.keywords || []).join('，'),
-    playbook_text: (form.playbook || system.playbook || defaultSystemForm().playbook_text.split('\n')).join('\n'),
-    rule_config_text: stringifyConfig(form.rule_config || system.rule_config || {}),
+    rule_config_text: stringifyConfig(ruleConfig),
     sort_order: form.sort_order ?? 100,
   }
 }
@@ -951,78 +980,60 @@ function systemToForm(system = {}) {
 function formToPayload(sourceForm = systemForm.value, sourceSystem = editingSystem.value) {
   const form = sourceForm
   const name = form.name.trim()
-  const slug = compactId(name, 'custom')
-  const systemId = sourceSystem?.id || `custom-${slug}`
   const ruleConfig = parseRuleConfig(form.rule_config_text)
-  const northStar = sourceSystem?.form?.north_star || sourceSystem?.north_star || {}
+  const formSnapshot = sourceSystem?.form || {}
+  const northStar = formSnapshot.north_star || sourceSystem?.north_star || {}
   const metric = {
+    ...northStar,
     label: form.metric_label.trim() || 'SLO',
-    value: Number(northStar.value ?? 99),
     target: Number(form.metric_target ?? northStar.target ?? 99.9),
     unit: form.metric_unit.trim() || '',
     direction: form.metric_direction || 'higher',
   }
-  const serviceId = `${systemId}-${slug}-service`
-  const interfaceId = `${systemId}-${slug}-interface`
-  const serviceSpecs = [
-    {
-      id: serviceId,
-      name: form.service_name.trim() || `${name} 核心服务`,
-      role: form.tier.trim() || '核心链路',
-      base_status: form.base_status,
-      metrics: [metric],
-      interfaces: [
-        {
-          id: interfaceId,
-          name: form.interface_name.trim() || `${name} 关键接口`,
-          base_status: form.base_status,
-          hint: form.summary.trim() || '从核心指标继续下钻定位接口层异常。',
-          metrics: [metric],
-        },
-      ],
+  const drilldownConfig = ruleConfig.drilldown && typeof ruleConfig.drilldown === 'object' ? ruleConfig.drilldown : {}
+  const serviceSpecs = Array.isArray(drilldownConfig.services)
+    ? drilldownConfig.services
+    : Array.isArray(ruleConfig.service_specs)
+      ? ruleConfig.service_specs
+      : formSnapshot.service_specs || sourceSystem?.service_specs || []
+  const dependencies = Array.isArray(drilldownConfig.dependencies)
+    ? drilldownConfig.dependencies
+    : Array.isArray(ruleConfig.dependencies)
+      ? ruleConfig.dependencies
+      : formSnapshot.dependencies || sourceSystem?.dependencies || []
+  const playbook = Array.isArray(ruleConfig.playbook)
+    ? ruleConfig.playbook
+    : formSnapshot.playbook || sourceSystem?.playbook || []
+  const keywords = Array.isArray(ruleConfig.keywords)
+    ? ruleConfig.keywords
+    : formSnapshot.keywords || sourceSystem?.keywords || splitText(`${name}，${form.domain}`)
+  const effectiveRuleConfig = {
+    ...ruleConfig,
+    north_star: {
+      ...(ruleConfig.north_star && typeof ruleConfig.north_star === 'object' ? ruleConfig.north_star : {}),
+      label: metric.label,
+      target: metric.target,
+      unit: metric.unit,
+      direction: metric.direction,
     },
-  ]
-  const dependencies = []
-  if (form.upstream_name.trim()) {
-    dependencies.push({
-      id: `${systemId}-${slug}-upstream`,
-      name: form.upstream_name.trim(),
-      role: 'upstream',
-      kind: '网关',
-      base_status: form.base_status === 'critical' ? 'warning' : 'healthy',
-      metrics: [{ label: '可用率', value: 99.9, target: 99.5, unit: '%', direction: 'higher' }],
-      impact: '入口侧稳定性会影响该系统的外部可用性。',
-    })
-  }
-  if (form.downstream_name.trim()) {
-    dependencies.push({
-      id: `${systemId}-${slug}-downstream`,
-      name: form.downstream_name.trim(),
-      role: 'downstream',
-      kind: '数据库',
-      base_status: 'healthy',
-      metrics: [{ label: 'P95', value: 48, target: 80, unit: 'ms', direction: 'lower' }],
-      impact: '存储延迟会直接放大接口耗时。',
-    })
   }
   return {
     name,
     environment: form.environment.trim() || 'prod',
     domain: form.domain.trim(),
-    tier: form.tier.trim(),
-    owner: form.owner.trim(),
-    summary: form.summary.trim(),
-    base_status: form.base_status,
-    keywords: splitText(form.keywords_text || `${name}，${form.domain}`),
+    tier: formSnapshot.tier || sourceSystem?.tier || '',
+    owner: formSnapshot.owner || sourceSystem?.owner || '',
+    summary: formSnapshot.summary || sourceSystem?.summary || '',
+    keywords,
     north_star: metric,
-    metrics: [metric],
+    metrics: formSnapshot.metrics || sourceSystem?.metrics || [],
     service_specs: serviceSpecs,
     dependencies,
-    rule_config: ruleConfig,
-    playbook: splitText(form.playbook_text),
-    focus_service_id: serviceId,
-    focus_interface_id: interfaceId,
-    focus_keyword: name,
+    rule_config: effectiveRuleConfig,
+    playbook,
+    focus_service_id: ruleConfig.focus_service_id || formSnapshot.focus_service_id || sourceSystem?.focus_service_id || '',
+    focus_interface_id: ruleConfig.focus_interface_id || formSnapshot.focus_interface_id || sourceSystem?.focus_interface_id || '',
+    focus_keyword: ruleConfig.focus_keyword || formSnapshot.focus_keyword || sourceSystem?.focus_keyword || name,
     sort_order: Number(form.sort_order ?? 100),
     is_enabled: true,
   }
@@ -1097,6 +1108,54 @@ async function renameEnvironment(group = {}) {
   }
 }
 
+async function ensureEnvironmentRecord(group = {}, sortOrder = 100) {
+  if (group.id) {
+    return group
+  }
+  const saved = await createSystemPostureEnvironment({
+    key: group.key,
+    name: group.label || environmentLabel(group.key),
+    sort_order: sortOrder,
+  })
+  return {
+    ...group,
+    id: saved?.id,
+    key: saved?.key || group.key,
+    label: saved?.name || group.label,
+  }
+}
+
+async function moveEnvironment(group = {}, direction = 0) {
+  if (!group?.key || environmentSorting.value) return
+  const currentGroups = environmentGroups.value
+  const currentIndex = currentGroups.findIndex(item => item.key === group.key)
+  const targetIndex = currentIndex + direction
+  if (currentIndex < 0 || targetIndex < 0 || targetIndex >= currentGroups.length) return
+
+  const reordered = [...currentGroups]
+  const [moved] = reordered.splice(currentIndex, 1)
+  reordered.splice(targetIndex, 0, moved)
+
+  environmentSorting.value = true
+  try {
+    const persistedGroups = []
+    for (let index = 0; index < reordered.length; index += 1) {
+      persistedGroups.push(await ensureEnvironmentRecord(reordered[index], (index + 1) * 10))
+    }
+    await Promise.all(persistedGroups.map((item, index) => (
+      item.id
+        ? updateSystemPostureEnvironment(item.id, { sort_order: (index + 1) * 10 })
+        : Promise.resolve()
+    )))
+    ElMessage.success('环境顺序已更新')
+    await loadSystemPosture(selectedSystemId.value)
+  } catch (error) {
+    ElMessage.error('调整环境顺序失败')
+  } finally {
+    environmentSorting.value = false
+  }
+}
+
 async function saveSystem() {
   let payload
   try {
@@ -1147,13 +1206,6 @@ async function removeSystem(system) {
   await loadSystemPosture(selectedSystemId.value)
 }
 
-function formatTime(value) {
-  if (!value) return '--'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return String(value)
-  return date.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-}
-
 function actionAllowed(action) {
   if (action.key === 'alert') return canViewAlerts.value
   if (action.key === 'trace') return canViewTrace.value
@@ -1172,48 +1224,80 @@ function goAction(action) {
   go(action.path, action.query || {})
 }
 
-function openTrace(item = {}) {
-  const context = selectedSystem.value.trace_context || {}
-  go('/observability/tracing', {
-    ...(context.provider ? { provider: context.provider } : {}),
-    ...(context.datasource_id ? { datasourceId: String(context.datasource_id) } : {}),
-    ...(context.service ? { service: context.service } : {}),
-    ...(item.trace_id ? { traceId: item.trace_id } : {}),
-  })
-}
-
-function switchTab(tab) {
-  activeTab.value = tab
-  router.replace({ query: { ...route.query, tab } })
-}
-
-async function selectSystem(system) {
-  if (!system?.id || selectedSystemId.value === system.id) return
+async function selectSystem(system, options = {}) {
+  if (!system?.id) return
+  if (selectedSystemId.value === system.id) {
+    detailPanelOpen.value = true
+    selectedNodeId.value = selectedNodeId.value || system.focus?.interface_id || system.focus?.service_id || system.id
+    rememberSelectedSystemId(system.id)
+    return
+  }
   selectedSystemId.value = system.id
   selectedNodeId.value = system.focus?.interface_id || system.focus?.service_id || system.id
-  router.replace({ query: { ...route.query, system: system.id, tab: activeTab.value } })
-  await loadSystemPosture(system.id)
+  detailPanelOpen.value = true
+  rememberSelectedSystemId(system.id)
+  const nextQuery = { ...route.query, system: system.id }
+  delete nextQuery.tab
+  router.replace({ query: nextQuery })
+  await loadSystemPosture(system.id, options)
 }
 
 function selectNode(node) {
   selectedNodeId.value = node?.id || ''
 }
 
-async function loadSystemPosture(systemId = selectedSystemId.value) {
-  loading.value = true
+async function loadSystemPosture(systemId = selectedSystemId.value, options = {}) {
+  const { silent = false, resetNode = true } = options
+  const requestSeq = ++postureRequestSeq
+  const requestedSystemId = systemId || ''
+  if (!silent) loading.value = true
   try {
-    const response = await getObservabilitySystemPosture({ system: systemId || undefined })
+    const response = await getObservabilitySystemPosture({ system: requestedSystemId || undefined })
+    if (requestSeq !== postureRequestSeq) return
     systemPosture.value = response
-    selectedSystemId.value = response.selected_system_id || response.selected_system?.id || systemId || ''
-    selectedNodeId.value = response.selected_system?.focus?.interface_id
-      || response.selected_system?.focus?.service_id
-      || response.selected_system?.id
-      || ''
-    await nextTick()
-    renderTopology()
+    const responseSelectedId = response.selected_system_id || response.selected_system?.id || ''
+    const fallbackSystem = firstSystemInFirstEnvironment()
+    const nextSystemId = systemExists(requestedSystemId)
+      ? requestedSystemId
+      : fallbackSystem?.id || responseSelectedId || ''
+    if (nextSystemId && responseSelectedId !== nextSystemId && requestedSystemId !== nextSystemId) {
+      selectedSystemId.value = nextSystemId
+      rememberSelectedSystemId(nextSystemId)
+      await loadSystemPosture(nextSystemId, options)
+      return
+    }
+    selectedSystemId.value = nextSystemId || responseSelectedId || requestedSystemId || ''
+    if (selectedSystemId.value) {
+      detailPanelOpen.value = true
+      rememberSelectedSystemId(selectedSystemId.value)
+    }
+    if (resetNode) {
+      selectedNodeId.value = response.selected_system?.focus?.interface_id
+        || response.selected_system?.focus?.service_id
+        || response.selected_system?.id
+        || selectedSystemId.value
+        || ''
+    }
+    if (topologyDialogVisible.value) {
+      await nextTick()
+      renderTopology()
+    }
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
+}
+
+async function openDrilldownDialog() {
+  if (!selectedSystem.value?.id) return
+  selectedNodeId.value = selectedNode.value?.id || selectedSystem.value.focus?.interface_id || selectedSystem.value.focus?.service_id || selectedSystem.value.id
+  drillDialogVisible.value = true
+}
+
+async function openTopologyDialog() {
+  if (!selectedSystem.value?.id) return
+  topologyDialogVisible.value = true
+  await nextTick()
+  renderTopology()
 }
 
 function nodeColor(status, kind) {
@@ -1226,7 +1310,7 @@ function nodeColor(status, kind) {
 }
 
 function renderTopology() {
-  if (activeTab.value !== 'dependencies' || !topologyChartRef.value) return
+  if (!topologyDialogVisible.value || !topologyChartRef.value) return
   if (topologyChart && topologyChart.getDom() !== topologyChartRef.value) {
     topologyChart.dispose()
     topologyChart = null
@@ -1238,7 +1322,8 @@ function renderTopology() {
       const match = drilldownRows.value.find(item => item.id === params.data.id)
       if (match) {
         selectedNodeId.value = match.id
-        switchTab('drilldown')
+        topologyDialogVisible.value = false
+        drillDialogVisible.value = true
       }
     })
   }
@@ -1317,15 +1402,20 @@ function renderTopology() {
   topologyChart.resize()
 }
 
+function disposeTopology() {
+  topologyChart?.dispose()
+  topologyChart = null
+}
+
 function handleResize() {
   topologyChart?.resize()
 }
 
 watch(
-  () => [activeTab.value, selectedSystem.value?.id, topology.value.node_count, topology.value.call_count].join('|'),
+  () => [topologyDialogVisible.value, selectedSystem.value?.id, topology.value.node_count, topology.value.call_count].join('|'),
   async () => {
     await nextTick()
-    if (activeTab.value === 'dependencies') {
+    if (topologyDialogVisible.value) {
       renderTopology()
     }
   }
@@ -1342,8 +1432,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
-  topologyChart?.dispose()
-  topologyChart = null
+  disposeTopology()
 })
 </script>
 
@@ -1432,159 +1521,8 @@ onUnmounted(() => {
   padding: 0 14px;
 }
 
-.release-stats {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.release-stat-card {
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(31, 35, 41, 0.08);
-  border-radius: 8px;
-  box-shadow: 0 4px 14px rgba(31, 35, 41, 0.03);
-  min-height: 68px;
-  overflow: hidden;
-  padding: 12px 14px;
-  position: relative;
-}
-
-.release-stat-card::after {
-  background: linear-gradient(90deg, rgba(51, 112, 255, 0.14), rgba(51, 112, 255, 0));
-  content: '';
-  height: 1px;
-  inset: 0 12px auto;
-  position: absolute;
-  width: auto;
-}
-
-.danger-card::after {
-  background: linear-gradient(90deg, rgba(245, 74, 69, 0.16), rgba(245, 74, 69, 0));
-}
-
-.warning-card::after {
-  background: linear-gradient(90deg, rgba(255, 136, 0, 0.16), rgba(255, 136, 0, 0));
-}
-
-.success-card::after {
-  background: linear-gradient(90deg, rgba(0, 168, 112, 0.16), rgba(0, 168, 112, 0));
-}
-
-.stat-value {
-  color: var(--fm-text);
-  font-size: 24px;
-  font-weight: 650;
-  line-height: 1.08;
-  position: relative;
-}
-
-.danger-card .stat-value {
-  color: #d83931;
-}
-
-.warning-card .stat-value {
-  color: #c26300;
-}
-
-.success-card .stat-value {
-  color: #087a55;
-}
-
-.stat-label {
-  color: var(--fm-muted);
-  font-size: 12px;
-  margin-top: 4px;
-  position: relative;
-}
-
-.runtime-strip {
-  align-items: center;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(248, 250, 252, 0.92) 100%);
-  border: 1px solid rgba(226, 232, 240, 0.88);
-  border-radius: 8px;
-  color: var(--fm-muted);
-  display: flex;
-  flex-wrap: wrap;
-  font-size: 12px;
-  gap: 8px;
-  line-height: 1.45;
-  padding: 8px 12px;
-}
-
-.runtime-strip__label,
-.source-pill {
-  border-radius: 6px;
-  font-weight: 600;
-  padding: 2px 7px;
-}
-
-.runtime-strip__label {
-  background: #f2f6ff;
-  color: #245bdb;
-}
-
-.source-pill {
-  background: #f6f7f9;
-  color: var(--fm-muted);
-}
-
-.source-pill.is-critical {
-  background: var(--fm-red-soft);
-  color: var(--fm-red);
-}
-
-.source-pill.is-warning {
-  background: var(--fm-amber-soft);
-  color: var(--fm-amber);
-}
-
-.source-pill.is-healthy {
-  background: var(--fm-green-soft);
-  color: var(--fm-green);
-}
-
-.system-posture-tabs {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.9));
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 8px;
-  box-shadow: 0 6px 16px rgba(31, 35, 41, 0.035);
-  display: flex;
-  gap: 4px;
-  margin-bottom: 0;
-  padding: 4px;
-}
-
-.system-posture-tabs .neo-tab-btn {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-  color: var(--fm-muted);
-  cursor: pointer;
-  display: inline-flex;
-  flex: 0 0 auto;
-  font-size: 13px;
-  font-weight: 500;
-  gap: 6px;
-  min-height: 34px;
-  padding: 0 12px;
-  transition: background 0.16s ease, color 0.16s ease;
-}
-
-.system-posture-tabs .neo-tab-btn:hover {
-  background: #f4f6f8;
-  color: var(--fm-text);
-}
-
-.system-posture-tabs .neo-tab-btn.active {
-  background: #eef4ff;
-  box-shadow: inset 0 0 0 1px rgba(51, 112, 255, 0.08);
-  color: #245bdb;
-}
-
 .overview-layout,
-.drill-layout,
-.timeline-layout {
+.drill-layout {
   display: grid;
   gap: 8px;
   grid-template-columns: minmax(0, 1.62fr) minmax(340px, 0.86fr);
@@ -1641,6 +1579,7 @@ onUnmounted(() => {
 
 .environment-actions {
   flex: 0 0 auto;
+  gap: 4px;
 }
 
 .environment-title strong {
@@ -1673,7 +1612,14 @@ onUnmounted(() => {
 .environment-actions :deep(.el-button) {
   border-radius: 6px;
   font-weight: 500;
+  margin-left: 0;
   min-height: 28px;
+  padding: 0 5px;
+}
+
+.environment-actions :deep(.el-button--primary) {
+  margin-left: 2px;
+  padding: 0 9px;
 }
 
 .environment-dot {
@@ -1699,7 +1645,15 @@ onUnmounted(() => {
 }
 
 .overview-systems-panel {
+  min-height: calc(100vh - 148px);
   min-width: 0;
+}
+
+.overview-systems-panel :deep(.el-loading-spinner .el-loading-text) {
+  color: var(--fm-blue);
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 10px;
 }
 
 .overview-toolbar {
@@ -1793,8 +1747,20 @@ onUnmounted(() => {
   transform: translateY(-1px);
 }
 
+.system-card.is-slo-breached {
+  background: linear-gradient(180deg, #fffafa 0%, #fff7f5 100%);
+  border-color: rgba(216, 57, 49, 0.14);
+}
+
+.system-card.is-slo-breached:hover,
+.system-card.is-slo-breached.active {
+  background: linear-gradient(180deg, #ffffff 0%, #fff5f2 100%);
+  border-color: rgba(216, 57, 49, 0.22);
+  box-shadow: 0 8px 18px rgba(216, 57, 49, 0.055);
+}
+
 .system-card.is-critical:not(:hover):not(.active) {
-  border-color: var(--fm-border);
+  border-color: rgba(216, 57, 49, 0.16);
 }
 
 .system-card.is-warning:not(:hover):not(.active) {
@@ -1822,6 +1788,7 @@ onUnmounted(() => {
 }
 
 .system-card__title {
+  flex: 1;
   min-width: 0;
 }
 
@@ -1872,9 +1839,12 @@ onUnmounted(() => {
 }
 
 .system-card__meta {
+  display: block;
   margin-top: 6px;
   min-height: 18px;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .score-row {
@@ -1896,23 +1866,46 @@ onUnmounted(() => {
 
 .score-row em,
 .drill-action {
-  border: 0;
-  border-radius: 6px;
+  border-radius: 7px;
   font-size: 12px;
   font-style: normal;
   font-weight: 500;
   margin-left: auto;
-  padding: 2px 7px;
 }
 
 .drill-action {
+  align-items: center;
+  border: 1px solid rgba(51, 112, 255, 0.18);
+  box-shadow: 0 2px 6px rgba(51, 112, 255, 0.06);
   cursor: pointer;
-  line-height: 1.45;
-  transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+  display: inline-flex;
+  gap: 4px;
+  line-height: 1.4;
+  min-height: 26px;
+  padding: 0 10px;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.drill-action::after {
+  content: '›';
+  font-size: 15px;
+  line-height: 1;
 }
 
 .drill-action:hover {
-  box-shadow: inset 0 0 0 1px rgba(31, 35, 41, 0.08);
+  border-color: rgba(51, 112, 255, 0.34);
+  box-shadow: 0 4px 10px rgba(51, 112, 255, 0.1);
+  transform: translateY(-1px);
+}
+
+.drill-action:active {
+  box-shadow: 0 2px 6px rgba(31, 35, 41, 0.06);
+  transform: translateY(0);
+}
+
+.score-row em {
+  border: 0;
+  padding: 2px 7px;
 }
 
 .score-row em.is-critical,
@@ -1952,6 +1945,16 @@ onUnmounted(() => {
   padding: 8px 10px;
 }
 
+.system-card.is-slo-breached .north-star {
+  background: rgba(255, 247, 245, 0.72);
+  border-color: rgba(216, 57, 49, 0.12);
+}
+
+.system-card.is-slo-breached .north-star em {
+  border-color: rgba(216, 57, 49, 0.16);
+  color: #ad352f;
+}
+
 .north-star span {
   grid-column: 1;
 }
@@ -1975,10 +1978,7 @@ onUnmounted(() => {
 .metric-cell span,
 .metric-cell em,
 .dependency-card span,
-.dependency-card p,
-.timeline-item p,
-.timeline-item em,
-.evidence-item span {
+.dependency-card p {
   color: var(--fm-muted);
   font-size: 12px;
   font-style: normal;
@@ -2029,6 +2029,25 @@ onUnmounted(() => {
   margin: 0;
 }
 
+.focus-heading {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.focus-heading h3,
+.focus-heading span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focus-heading span {
+  color: var(--fm-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .focus-kpis {
   display: grid;
   gap: 6px;
@@ -2062,6 +2081,101 @@ onUnmounted(() => {
   font-size: 18px;
   font-weight: 650;
   line-height: 1.15;
+}
+
+.focus-entry-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.focus-entry {
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 8px;
+  box-shadow: 0 3px 10px rgba(31, 35, 41, 0.025);
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: minmax(0, 1fr) 22px;
+  min-height: 86px;
+  overflow: hidden;
+  padding: 11px 12px;
+  position: relative;
+  text-align: left;
+  transition: background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.focus-entry::after {
+  align-items: center;
+  align-self: center;
+  background: #f4f7ff;
+  border: 1px solid rgba(51, 112, 255, 0.12);
+  border-radius: 999px;
+  color: #3370ff;
+  content: '›';
+  display: inline-flex;
+  font-size: 18px;
+  font-weight: 500;
+  grid-column: 2;
+  grid-row: 1 / span 3;
+  height: 22px;
+  justify-content: center;
+  line-height: 1;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+  width: 22px;
+}
+
+.focus-entry:hover {
+  background: #f8fbff;
+  border-color: rgba(51, 112, 255, 0.36);
+  box-shadow: 0 8px 18px rgba(51, 112, 255, 0.08);
+  transform: translateY(-1px);
+}
+
+.focus-entry:hover::after {
+  background: #3370ff;
+  border-color: #3370ff;
+  color: #ffffff;
+  transform: translateX(2px);
+}
+
+.focus-entry:active {
+  box-shadow: 0 3px 10px rgba(31, 35, 41, 0.04);
+  transform: translateY(0);
+}
+
+.focus-entry:focus-visible {
+  border-color: rgba(51, 112, 255, 0.55);
+  box-shadow: 0 0 0 3px rgba(51, 112, 255, 0.12);
+  outline: none;
+}
+
+.focus-entry span,
+.focus-entry em {
+  color: var(--fm-muted);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.45;
+}
+
+.focus-entry strong {
+  color: var(--fm-text);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.focus-entry span,
+.focus-entry strong,
+.focus-entry em {
+  grid-column: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .focus-block {
@@ -2155,69 +2269,6 @@ onUnmounted(() => {
   color: #087a55;
 }
 
-.rule-board {
-  background: rgba(247, 249, 252, 0.78);
-  border: 1px solid rgba(226, 232, 240, 0.82);
-  border-radius: 8px;
-  margin-top: 12px;
-  padding: 12px;
-}
-
-.rule-board__head {
-  align-items: center;
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 10px;
-}
-
-.rule-board__head h4 {
-  color: var(--fm-text);
-  font-size: 13px;
-  font-weight: 600;
-  margin: 0;
-}
-
-.rule-board__head span {
-  background: var(--fm-blue-soft);
-  border-radius: 6px;
-  color: var(--fm-blue);
-  font-size: 12px;
-  font-weight: 600;
-  padding: 2px 7px;
-}
-
-.rule-card-grid {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.rule-card {
-  background: var(--fm-panel);
-  border: 1px solid var(--fm-border-soft);
-  border-radius: 8px;
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-  padding: 9px 10px;
-}
-
-.rule-card span,
-.rule-card em {
-  color: var(--fm-muted);
-  font-size: 12px;
-  font-style: normal;
-  line-height: 1.45;
-}
-
-.rule-card strong {
-  color: var(--fm-text);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
 .action-row {
   flex-wrap: wrap;
   margin-top: 12px;
@@ -2249,13 +2300,16 @@ onUnmounted(() => {
   background: #ffffff;
   border: 1px solid rgba(226, 232, 240, 0.88);
   border-radius: 8px;
+  box-sizing: border-box;
   color: inherit;
   cursor: pointer;
   display: flex;
   gap: 8px;
   min-height: 40px;
+  padding: 0 14px 0 calc(12px + var(--node-indent, 0px));
   text-align: left;
   transition: background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+  width: 100%;
 }
 
 .drill-row:hover,
@@ -2279,12 +2333,27 @@ onUnmounted(() => {
   color: var(--fm-muted);
   font-size: 12px;
   font-style: normal;
+  line-height: 1.4;
 }
 
 .node-kind {
   background: #f4f6f8;
   border-radius: 6px;
+  flex: 0 0 auto;
   padding: 2px 7px;
+}
+
+.drill-row em {
+  background: #f8fafc;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 999px;
+  flex: 0 1 auto;
+  margin-left: auto;
+  max-width: 116px;
+  overflow: hidden;
+  padding: 2px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-dot {
@@ -2419,106 +2488,6 @@ onUnmounted(() => {
   color: #c26300;
 }
 
-.timeline-list {
-  display: grid;
-  gap: 6px;
-}
-
-.timeline-item {
-  background: #ffffff;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 8px;
-  color: inherit;
-  cursor: pointer;
-  display: grid;
-  gap: 10px;
-  grid-template-columns: 12px minmax(0, 1fr);
-  padding: 11px 12px;
-  text-align: left;
-  transition: background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
-}
-
-.timeline-item:hover {
-  background: #f8fbff;
-  border-color: rgba(51, 112, 255, 0.24);
-  box-shadow: 0 4px 12px rgba(51, 112, 255, 0.05);
-}
-
-.timeline-dot {
-  background: #3370ff;
-  border-radius: 999px;
-  height: 8px;
-  margin-top: 5px;
-  width: 8px;
-}
-
-.timeline-item.is-danger .timeline-dot,
-.timeline-item.is-failed .timeline-dot,
-.timeline-item.is-rejected .timeline-dot {
-  background: var(--fm-red);
-}
-
-.timeline-item.is-warning .timeline-dot,
-.timeline-item.is-pending .timeline-dot,
-.timeline-item.is-partial .timeline-dot {
-  background: var(--fm-amber);
-}
-
-.timeline-item strong {
-  color: var(--fm-text);
-}
-
-.timeline-item p {
-  margin: 5px 0;
-}
-
-.evidence-columns {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.evidence-column {
-  background: rgba(247, 249, 252, 0.78);
-  border: 1px solid rgba(226, 232, 240, 0.82);
-  border-radius: 8px;
-  padding: 10px;
-}
-
-.evidence-title {
-  color: var(--fm-text);
-  font-size: 13px;
-  font-weight: 600;
-  margin-bottom: 8px;
-}
-
-.evidence-item {
-  background: #ffffff;
-  border: 1px solid rgba(226, 232, 240, 0.82);
-  border-radius: 8px;
-  color: inherit;
-  cursor: pointer;
-  display: grid;
-  gap: 4px;
-  margin-bottom: 6px;
-  min-height: 58px;
-  padding: 8px;
-  text-align: left;
-  width: 100%;
-  transition: background 0.16s ease, border-color 0.16s ease;
-}
-
-.evidence-item:hover {
-  background: #f8fbff;
-  border-color: rgba(51, 112, 255, 0.22);
-}
-
-.evidence-item strong {
-  color: var(--fm-text);
-  font-size: 13px;
-  font-weight: 600;
-}
-
 .system-card :deep(.el-tag),
 .dependency-card :deep(.el-tag),
 .section-head :deep(.el-tag) {
@@ -2528,6 +2497,28 @@ onUnmounted(() => {
 
 .system-posture-dialog :deep(.el-dialog) {
   border-radius: 8px;
+}
+
+.system-posture-detail-dialog :deep(.el-dialog) {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.system-posture-detail-dialog :deep(.el-dialog__header) {
+  border-bottom: 1px solid var(--fm-border-soft);
+  margin-right: 0;
+  padding: 18px 20px 14px;
+}
+
+.system-posture-detail-dialog :deep(.el-dialog__title) {
+  color: var(--fm-text);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.system-posture-detail-dialog :deep(.el-dialog__body) {
+  background: #f7f8fa;
+  padding: 14px;
 }
 
 .system-posture-dialog :deep(.el-dialog__header) {
@@ -2563,6 +2554,63 @@ onUnmounted(() => {
   margin-bottom: 7px;
 }
 
+.form-section {
+  background: #ffffff;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  padding: 12px;
+}
+
+.form-section__head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.form-section__head :deep(.el-button) {
+  border-radius: 6px;
+  font-weight: 500;
+  min-height: 26px;
+}
+
+.form-section__head strong {
+  color: var(--fm-text);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.form-section__head span,
+.readonly-row span {
+  color: var(--fm-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.readonly-row {
+  align-items: center;
+  background: #f7f9fc;
+  border: 1px solid rgba(226, 232, 240, 0.82);
+  border-radius: 8px;
+  display: flex;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.readonly-row--top {
+  margin-bottom: 12px;
+}
+
+.readonly-row strong {
+  color: var(--fm-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .system-posture-form :deep(.el-input__wrapper),
 .system-posture-form :deep(.el-textarea__inner),
 .system-posture-form :deep(.el-select__wrapper),
@@ -2570,7 +2618,69 @@ onUnmounted(() => {
   border-radius: 6px;
 }
 
+.system-posture-form :deep(.el-input-number) {
+  width: 100%;
+}
+
 .json-editor :deep(.el-textarea__inner) {
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+:deep(.system-posture-help-dialog) {
+  border-radius: 8px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: min(760px, 82vh);
+  margin-bottom: 0;
+  margin-top: 8vh !important;
+  overflow: hidden;
+}
+
+:deep(.system-posture-help-dialog .el-dialog__header) {
+  border-bottom: 1px solid var(--fm-border-soft);
+  flex: 0 0 auto;
+  margin-right: 0;
+  padding: 18px 20px 14px;
+}
+
+:deep(.system-posture-help-dialog .el-dialog__body) {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  padding: 16px 20px 20px;
+}
+
+.json-help {
+  color: var(--fm-muted);
+  flex: 1 1 auto;
+  font-size: 13px;
+  line-height: 1.6;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.json-help p {
+  margin: 0 0 12px;
+}
+
+.json-help pre {
+  background: #f7f9fc;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 8px;
+  color: #1f2329;
+  margin: 0;
+  overflow: visible;
+  padding: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.json-help code {
   font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
   font-size: 12px;
   line-height: 1.55;
@@ -2580,6 +2690,10 @@ onUnmounted(() => {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.form-grid--slo {
+  grid-template-columns: minmax(160px, 1.35fr) minmax(120px, 1fr) minmax(88px, 0.7fr) minmax(120px, 1fr);
 }
 
 .dialog-footer {
@@ -2595,19 +2709,16 @@ onUnmounted(() => {
 @media (max-width: 1280px) {
   .overview-layout,
   .drill-layout,
-  .timeline-layout,
   .dependency-grid {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 900px) {
-  .release-stats,
   .system-grid,
   .metric-grid,
-  .rule-card-grid,
   .child-node-grid,
-  .evidence-columns,
+  .focus-entry-grid,
   .form-grid {
     grid-template-columns: 1fr;
   }
