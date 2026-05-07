@@ -1,6 +1,6 @@
 <template>
   <div class="system-posture-page">
-    <section class="hero panel">
+    <section v-if="!embedded" class="hero panel">
       <div class="release-hero-copy">
         <div class="release-hero-title-row release-hero-title-inline">
           <span class="hero-icon"><el-icon><Aim /></el-icon></span>
@@ -15,33 +15,50 @@
       </div>
     </section>
 
-    <div class="overview-layout" :class="{ 'is-root': !showFocusPanel }">
+    <div
+      class="overview-shell"
+      :class="{ 'is-root': !showFocusPanel }"
+      v-loading="loading"
+      element-loading-text="系统态势加载数据较多，请稍等..."
+      element-loading-background="rgba(255, 255, 255, 0.82)"
+    >
+      <div class="overview-toolbar">
+        <div>
+          <div class="drill-breadcrumb">
+            <button type="button" :class="{ active: !drillPath.length }" @click="resetDrill">业务系统</button>
+            <template v-for="item in drillPath" :key="item.id">
+              <span>/</span>
+              <button type="button" :class="{ active: currentDrillParent?.id === item.id }" @click="jumpDrill(item)">
+                {{ item.name }}
+              </button>
+            </template>
+          </div>
+          <span>{{ drillToolbarText }}</span>
+        </div>
+        <div class="overview-toolbar__actions">
+          <el-date-picker
+            v-model="timeRange"
+            type="datetimerange"
+            size="small"
+            unlink-panels
+            range-separator="至"
+            start-placeholder="开始时间"
+            end-placeholder="结束时间"
+            :shortcuts="timeRangeShortcuts"
+            class="system-posture-time-picker"
+            @change="handleTimeRangeChange"
+          />
+          <el-button v-if="drillPath.length" size="small" @click="drillUp">返回上层</el-button>
+          <el-button v-if="canManageSystemPosture && !drillPath.length" size="small" @click="openCreateEnvironment">
+            新增环境
+          </el-button>
+        </div>
+      </div>
+
+      <div class="overview-layout" :class="{ 'is-root': !showFocusPanel }">
         <section
           class="panel overview-systems-panel"
-          v-loading="loading"
-          element-loading-text="系统态势加载数据较多，请稍等..."
-          element-loading-background="rgba(255, 255, 255, 0.82)"
         >
-          <div class="overview-toolbar">
-            <div>
-              <div class="drill-breadcrumb">
-                <button type="button" :class="{ active: !drillPath.length }" @click="resetDrill">业务系统</button>
-                <template v-for="item in drillPath" :key="item.id">
-                  <span>/</span>
-                  <button type="button" :class="{ active: currentDrillParent?.id === item.id }" @click="jumpDrill(item)">
-                    {{ item.name }}
-                  </button>
-                </template>
-              </div>
-              <span>{{ drillToolbarText }}</span>
-            </div>
-            <div class="overview-toolbar__actions">
-              <el-button v-if="drillPath.length" size="small" @click="drillUp">返回上层</el-button>
-              <el-button v-if="canManageSystemPosture && !drillPath.length" size="small" @click="openCreateEnvironment">
-                新增环境
-              </el-button>
-            </div>
-          </div>
           <div v-if="drillPath.length" class="system-grid">
             <article
               v-for="item in drillCards"
@@ -103,6 +120,8 @@
                 <div class="environment-summary">
                   <span v-if="group.counts.critical">故障 {{ group.counts.critical }}</span>
                   <span v-if="group.counts.warning">告警 {{ group.counts.warning }}</span>
+                  <span v-if="group.counts.offline">离线 {{ group.counts.offline }}</span>
+                  <span v-if="group.counts.unknown">未知 {{ group.counts.unknown }}</span>
                   <span>健康 {{ group.counts.healthy }}</span>
                 </div>
                 <div v-if="canManageSystemPosture" class="environment-actions">
@@ -191,16 +210,32 @@
             </div>
           </div>
           <div class="focus-entry-grid">
-            <button type="button" class="focus-entry" @click="openDrilldownDialog">
-              <span>进入</span>
-              <strong>层级下钻</strong>
-              <em>系统、子系统、模块与接口 · {{ drilldownRows.length }} 个节点</em>
-            </button>
-            <button type="button" class="focus-entry" @click="openTopologyDialog">
-              <span>进入</span>
-              <strong>依赖拓扑</strong>
-              <em>上下游依赖健康度 · {{ topology.node_count || 0 }} 个节点 · {{ topology.call_count || 0 }} 条关系</em>
-            </button>
+            <el-tooltip
+              effect="light"
+              placement="top"
+              :show-after="180"
+              popper-class="system-posture-entry-tip"
+              :content="drilldownEntryText"
+            >
+              <button type="button" class="focus-entry" @click="openDrilldownDialog">
+                <span>进入</span>
+                <strong>层级下钻</strong>
+                <em>{{ drilldownEntryText }}</em>
+              </button>
+            </el-tooltip>
+            <el-tooltip
+              effect="light"
+              placement="top"
+              :show-after="180"
+              popper-class="system-posture-entry-tip"
+              :content="topologyEntryText"
+            >
+              <button type="button" class="focus-entry" @click="openTopologyDialog">
+                <span>进入</span>
+                <strong>依赖拓扑</strong>
+                <em>{{ topologyEntryText }}</em>
+              </button>
+            </el-tooltip>
           </div>
           <div v-if="focusMetrics.length" class="focus-block">
             <div class="focus-block__title">关键指标</div>
@@ -225,6 +260,7 @@
           </div>
         </section>
       </div>
+    </div>
 
     <el-dialog
       v-model="drillDialogVisible"
@@ -427,13 +463,12 @@
       class="system-posture-help-dialog"
     >
       <div class="json-help">
-        <p>常用配置包含 SLO 指标、层级下钻结构、依赖拓扑。只配置你需要覆盖的部分；没有配置的结构不会自动生成兜底节点。</p>
+        <p>常用配置包含 SLO 指标、层级下钻结构、依赖拓扑。查询窗口由页面时间选择器控制，PromQL 中保留 {window} 占位即可。</p>
         <pre><code>{
   "version": 1,
   "enabled": true,
   "engine": "prometheus-tempo",
   "namespace": "ecommerce",
-  "window": "5m",
   "service_pattern": "api-gateway|cart|order|inventory|catalog",
   "north_star": {
     "metric": "checkout_success_rate",
@@ -540,6 +575,13 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { openRouteInNewTab } from '@/utils/router'
 
+defineProps({
+  embedded: {
+    type: Boolean,
+    default: false,
+  },
+})
+
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
@@ -554,6 +596,7 @@ const topologyDialogVisible = ref(false)
 const editingSystem = ref(null)
 const systemPosture = ref({ summary: {}, systems: [], data_sources: [], selected_system: {}, topology: {}, timeline: [], quick_actions: [] })
 const selectedSystemId = ref(typeof route.query.system === 'string' ? route.query.system : readLastSelectedSystemId())
+const timeRange = ref(initialTimeRange())
 const selectedNodeId = ref('')
 const topologyChartRef = ref(null)
 let topologyChart = null
@@ -575,6 +618,32 @@ function defaultSystemForm() {
 
 const systemForm = ref(defaultSystemForm())
 const systemDomainOptions = ['业务域', '平台域', '基础设施域']
+const timeRangeShortcuts = [
+  {
+    text: '最近 30 分钟',
+    value: () => [new Date(Date.now() - 30 * 60 * 1000), new Date()],
+  },
+  {
+    text: '最近 5 分钟',
+    value: () => [new Date(Date.now() - 5 * 60 * 1000), new Date()],
+  },
+  {
+    text: '最近 15 分钟',
+    value: () => [new Date(Date.now() - 15 * 60 * 1000), new Date()],
+  },
+  {
+    text: '最近 1 小时',
+    value: () => [new Date(Date.now() - 60 * 60 * 1000), new Date()],
+  },
+  {
+    text: '最近 6 小时',
+    value: () => [new Date(Date.now() - 6 * 60 * 60 * 1000), new Date()],
+  },
+  {
+    text: '最近 24 小时',
+    value: () => [new Date(Date.now() - 24 * 60 * 60 * 1000), new Date()],
+  },
+]
 
 const systems = computed(() => systemPosture.value.systems || [])
 const topology = computed(() => selectedSystem.value.topology || systemPosture.value.topology || {})
@@ -617,6 +686,8 @@ const focusMetrics = computed(() => {
   return (metrics.length ? metrics : sourceMetrics).slice(0, 4)
 })
 const focusActions = computed(() => allowedQuickActions.value.slice(0, 3))
+const drilldownEntryText = computed(() => `系统、子系统、模块与接口 · ${drilldownRows.value.length} 个节点`)
+const topologyEntryText = computed(() => `上下游依赖健康度 · ${topology.value.node_count || 0} 个节点 · ${topology.value.call_count || 0} 条关系`)
 const drillToolbarText = computed(() => {
   if (!drillPath.value.length) {
     return `系统 ${systems.value.length} 个 · 点击卡片查看详情，点下钻进入子系统、模块和接口`
@@ -674,6 +745,42 @@ function rememberSelectedSystemId(systemId = '') {
   } catch {
     // localStorage may be unavailable in restricted browser contexts.
   }
+}
+
+function parseRouteDate(value) {
+  const date = new Date(String(value || ''))
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function initialTimeRange() {
+  const start = typeof route.query.start === 'string' ? parseRouteDate(route.query.start) : null
+  const end = typeof route.query.end === 'string' ? parseRouteDate(route.query.end) : null
+  if (start && end && start < end) {
+    return [start, end]
+  }
+  return [new Date(Date.now() - 30 * 60 * 1000), new Date()]
+}
+
+function systemPostureTimeParams() {
+  const [start, end] = Array.isArray(timeRange.value) ? timeRange.value : []
+  const startDate = start instanceof Date ? start : parseRouteDate(start)
+  const endDate = end instanceof Date ? end : parseRouteDate(end)
+  if (!startDate || !endDate || startDate >= endDate) return {}
+  return {
+    start: startDate.toISOString(),
+    end: endDate.toISOString(),
+  }
+}
+
+async function handleTimeRangeChange() {
+  const timeQuery = systemPostureTimeParams()
+  const nextQuery = { ...route.query, ...timeQuery }
+  if (!timeQuery.start || !timeQuery.end) {
+    delete nextQuery.start
+    delete nextQuery.end
+  }
+  await router.replace({ query: nextQuery })
+  await loadSystemPosture(selectedSystemId.value)
 }
 
 function flattenNodes(nodes = [], level = 0) {
@@ -904,19 +1011,40 @@ function environmentOrder(key = '') {
   return order[String(key).toLowerCase()] || 8
 }
 
+function effectiveCardStatus(item = {}) {
+  const ownStatus = cardStatus(item)
+  if (ownStatus === 'critical') return 'critical'
+  const childStatuses = flattenNodes(item.children || [], 1).map((node) => {
+    const nodeStatus = cardStatus(node)
+    if (nodeStatus === 'critical') return 'critical'
+    if (nodeStatus === 'warning' || isSloBreached(node)) return 'warning'
+    return nodeStatus
+  })
+  if (childStatuses.includes('critical')) return 'critical'
+  if (ownStatus === 'warning' || childStatuses.includes('warning') || isSloBreached(item)) return 'warning'
+  if (ownStatus === 'offline') return 'offline'
+  if (ownStatus === 'unknown') return 'unknown'
+  return ownStatus
+}
+
 function environmentCounts(items = []) {
   return items.reduce((acc, item) => {
-    const status = cardStatus(item)
+    const status = effectiveCardStatus(item)
     acc[status] = (acc[status] || 0) + 1
     return acc
-  }, { critical: 0, warning: 0, healthy: 0, offline: 0 })
+  }, { critical: 0, warning: 0, healthy: 0, offline: 0, unknown: 0 })
+}
+
+function environmentStatusFromCounts(counts = {}, total = 0) {
+  if (counts.critical) return 'critical'
+  if (counts.warning) return 'warning'
+  if (total && counts.offline === total) return 'offline'
+  if (total && counts.unknown === total) return 'unknown'
+  return total ? 'healthy' : 'unknown'
 }
 
 function environmentStatus(items = []) {
-  if (items.some(item => cardStatus(item) === 'critical')) return 'critical'
-  if (items.some(item => cardStatus(item) === 'warning')) return 'warning'
-  if (items.length && items.every(item => cardStatus(item) === 'offline')) return 'offline'
-  return 'healthy'
+  return environmentStatusFromCounts(environmentCounts(items), items.length)
 }
 
 function groupSystemsByEnvironment(items = [], environmentDefs = []) {
@@ -941,11 +1069,14 @@ function groupSystemsByEnvironment(items = [], environmentDefs = []) {
     groups.get(key).items.push(item)
   })
   return Array.from(groups.values())
-    .map(group => ({
-      ...group,
-      counts: environmentCounts(group.items),
-      status: environmentStatus(group.items),
-    }))
+    .map((group) => {
+      const counts = environmentCounts(group.items)
+      return {
+        ...group,
+        counts,
+        status: environmentStatusFromCounts(counts, group.items.length),
+      }
+    })
     .sort((a, b) => (a.sort_order ?? environmentOrder(a.key)) - (b.sort_order ?? environmentOrder(b.key)) || a.label.localeCompare(b.label, 'zh-Hans-CN'))
 }
 
@@ -1252,7 +1383,10 @@ async function loadSystemPosture(systemId = selectedSystemId.value, options = {}
   const requestedSystemId = systemId || ''
   if (!silent) loading.value = true
   try {
-    const response = await getObservabilitySystemPosture({ system: requestedSystemId || undefined })
+    const response = await getObservabilitySystemPosture({
+      system: requestedSystemId || undefined,
+      ...systemPostureTimeParams(),
+    })
     if (requestSeq !== postureRequestSeq) return
     systemPosture.value = response
     const responseSelectedId = response.selected_system_id || response.selected_system?.id || ''
@@ -1521,6 +1655,17 @@ onUnmounted(() => {
   padding: 0 14px;
 }
 
+.overview-shell {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 250, 252, 0.92) 100%);
+  border: 1px solid rgba(31, 35, 41, 0.08);
+  border-radius: 8px;
+  box-shadow: 0 8px 22px rgba(31, 35, 41, 0.04);
+  display: grid;
+  gap: 8px;
+  min-height: calc(100vh - 132px);
+  padding: 8px;
+}
+
 .overview-layout,
 .drill-layout {
   display: grid;
@@ -1645,11 +1790,13 @@ onUnmounted(() => {
 }
 
 .overview-systems-panel {
-  min-height: calc(100vh - 148px);
+  border-color: rgba(203, 213, 225, 0.82);
+  box-shadow: 0 0 0 1px rgba(226, 232, 240, 0.74), 0 4px 14px rgba(31, 35, 41, 0.025);
+  min-height: calc(100vh - 202px);
   min-width: 0;
 }
 
-.overview-systems-panel :deep(.el-loading-spinner .el-loading-text) {
+.overview-shell :deep(.el-loading-spinner .el-loading-text) {
   color: var(--fm-blue);
   font-size: 13px;
   font-weight: 600;
@@ -1658,12 +1805,13 @@ onUnmounted(() => {
 
 .overview-toolbar {
   align-items: center;
-  background: rgba(247, 249, 252, 0.82);
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
   border: 1px solid rgba(226, 232, 240, 0.86);
   border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(31, 35, 41, 0.02);
   display: flex;
   justify-content: space-between;
-  margin: -2px 0 10px;
+  margin: 0;
   padding: 8px 10px;
 }
 
@@ -1686,6 +1834,15 @@ onUnmounted(() => {
   align-items: center;
   display: flex;
   gap: 8px;
+}
+
+.system-posture-time-picker {
+  width: 330px;
+}
+
+.system-posture-time-picker :deep(.el-range__icon),
+.system-posture-time-picker :deep(.el-range-separator) {
+  color: var(--fm-muted);
 }
 
 .drill-breadcrumb {
@@ -2013,7 +2170,8 @@ onUnmounted(() => {
 
 .focus-panel {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(249, 251, 255, 0.96) 100%);
-  border-color: rgba(226, 232, 240, 0.9);
+  border-color: rgba(203, 213, 225, 0.82);
+  box-shadow: 0 0 0 1px rgba(226, 232, 240, 0.74), 0 4px 14px rgba(31, 35, 41, 0.025);
   min-width: 0;
   padding: 12px;
 }
@@ -2176,6 +2334,19 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+:global(.system-posture-entry-tip) {
+  border: 1px solid rgba(226, 232, 240, 0.96) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 10px 28px rgba(31, 35, 41, 0.1) !important;
+  color: #1f2329 !important;
+  font-size: 12px;
+  line-height: 1.55;
+  max-width: 320px;
+  padding: 8px 10px !important;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .focus-block {

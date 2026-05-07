@@ -1097,7 +1097,9 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(selected['north_star']['status'], 'warning')
         self.assertTrue(selected['live']['enabled'])
         self.assertEqual(selected['live']['north_star_metric'], 'checkout_success_rate')
-        self.assertEqual(selected['rule_config']['window'], '5m')
+        self.assertNotIn('window', selected['rule_config'])
+        self.assertNotIn('window', selected['form']['rule_config'])
+        self.assertEqual(selected['live']['window'], '30m')
         self.assertEqual(selected['rule_config']['health_score']['weights']['success_rate'], 0.62)
         self.assertIn('rule_config', selected['form'])
         self.assertEqual(selected['children'][0]['id'], 'api-gateway')
@@ -1121,6 +1123,35 @@ class ObservabilityViewsTests(TestCase):
         },
     })
     @patch('ops.observability_views.http_requests.get')
+    def test_observability_system_posture_applies_selected_time_range_to_prometheus(self, mock_get):
+        mock_get.side_effect = self._mock_ecommerce_prometheus_get()
+
+        response = self.client.get(
+            '/api/observability/system-posture/?system=commerce-core'
+            '&start=2026-05-07T10:00:00Z&end=2026-05-07T10:30:00Z'
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        selected = payload['selected_system']
+        self.assertEqual(selected['rule_config']['window'], '30m')
+        self.assertNotIn('window', selected['form']['rule_config'])
+        self.assertEqual(selected['live']['window'], '30m')
+        self.assertEqual(payload['context']['time_range']['window'], '30m')
+        query_calls = [call for call in mock_get.call_args_list if '/api/v1/query' in call.args[0]]
+        self.assertTrue(query_calls)
+        self.assertTrue(any('[30m]' in (call.kwargs.get('params') or {}).get('query', '') for call in query_calls))
+        self.assertTrue(all((call.kwargs.get('params') or {}).get('time') for call in query_calls))
+
+    @override_settings(OBSERVABILITY_CONFIG={
+        **TEST_OBSERVABILITY_CONFIG,
+        'prometheus': {
+            'enabled': True,
+            'query_url': 'http://prometheus.example.com',
+            'timeout': 3,
+        },
+    })
+    @patch('ops.observability_views.http_requests.get')
     def test_observability_system_posture_uses_configured_ecommerce_rules(self, mock_get):
         system = SystemPostureSystem.objects.create(
             name='电商交易核心',
@@ -1128,7 +1159,6 @@ class ObservabilityViewsTests(TestCase):
             tier='交易链路',
             owner='commerce-oncall',
             rule_config={
-                'window': '10m',
                 'north_star': {'target': 95},
                 'status_rules': {
                     'critical': {'health_score_lt': 50, 'success_rate_lt': 90, 'checkout_5xx_rate_gte': 5},
@@ -1159,7 +1189,9 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         selected = response.json()['selected_system']
         self.assertEqual(selected['name'], '电商交易核心')
-        self.assertEqual(selected['rule_config']['window'], '10m')
+        self.assertNotIn('window', selected['rule_config'])
+        self.assertNotIn('window', selected['form']['rule_config'])
+        self.assertEqual(selected['live']['window'], '30m')
         self.assertEqual(selected['rule_config']['north_star']['target'], 95)
         self.assertEqual(selected['status'], 'healthy')
         inventory = next(item for item in selected['children'] if item['id'] == 'inventory')
@@ -1341,6 +1373,26 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(payload['modules']['logs']['datasource_count'], existing_count + 1)
         self.assertEqual(len(payload['navigation']), 1)
         self.assertEqual(payload['navigation'][0]['path'], '/logs')
+
+    @patch('ops.observability_views.user_has_permissions')
+    def test_observability_overview_allows_system_posture_only_user(self, mock_permissions):
+        limited_user = get_user_model().objects.create_user('posture-overview-viewer', password='Admin@123456')
+        self.client.force_authenticate(user=limited_user)
+
+        def permission_side_effect(user, codes):
+            code = codes[0] if codes else ''
+            return code == 'ops.observability.system_posture.view'
+
+        mock_permissions.side_effect = permission_side_effect
+
+        response = self.client.get('/api/observability/overview/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload['navigation']), 1)
+        self.assertEqual(payload['navigation'][0]['path'], '/observability/system-posture')
+        self.assertIsNone(payload['modules']['tracing'])
+        self.assertIsNone(payload['modules']['logs'])
 
     def test_observability_overview_uses_configured_grafana_dashboards(self):
         with override_settings(

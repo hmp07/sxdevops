@@ -17,34 +17,30 @@
       </div>
     </section>
 
-    <div class="stats-grid release-stats">
-      <div v-for="item in statCards" :key="item.label" class="stat-card release-stat-card" :class="item.tone">
-        <div class="stat-value">{{ item.value }}</div>
-        <div class="stat-label">{{ item.label }}</div>
-      </div>
-    </div>
-
-    <section class="panel">
+    <section class="capability-section">
       <div class="section-head">
         <h3>核心能力</h3>
       </div>
 
       <div class="module-grid">
-        <article v-if="canViewSystemPosture" class="module-card">
+        <article v-if="overview.modules?.grafana" class="module-card">
           <div class="module-head">
             <div class="module-title">
-              <el-icon><Aim /></el-icon>
-              <strong>系统态势</strong>
+              <el-icon><Histogram /></el-icon>
+              <strong>监控看板</strong>
             </div>
-            <el-tag size="small" type="danger">核心总览</el-tag>
+            <el-tag size="small" :type="overview.modules.grafana.configured ? 'success' : 'warning'">
+              {{ overview.modules.grafana.configured ? '已配置' : '待接入' }}
+            </el-tag>
           </div>
           <div class="module-meta">
-            <span>SLA 健康</span>
-            <span>层级下钻</span>
-            <span>依赖影响</span>
+            <span>看板 {{ overview.modules.grafana.dashboard_count }}</span>
+            <span>面板 {{ overview.modules.grafana.panel_count }}</span>
+            <span>数据源 {{ overview.modules.grafana.datasource_count }}</span>
           </div>
           <div class="module-actions">
-            <el-button size="small" link type="primary" @click="go('/observability/system-posture')">打开系统态势</el-button>
+            <el-button size="small" link type="primary" @click="go('/observability/grafana')">查看看板</el-button>
+            <el-button size="small" v-if="overview.modules.grafana.url" link @click="openExternal(overview.modules.grafana.url)">外部打开</el-button>
           </div>
         </article>
 
@@ -52,7 +48,7 @@
           <div class="module-head">
             <div class="module-title">
               <el-icon><Search /></el-icon>
-              <strong>日志能力</strong>
+              <strong>日志中心</strong>
             </div>
             <el-tag size="small" type="success">已接入</el-tag>
           </div>
@@ -64,26 +60,6 @@
           <div class="module-actions">
             <el-button size="small" link type="primary" @click="go('/logs')">查看日志</el-button>
             <el-button size="small" v-if="canViewLogDatasources" link @click="go('/logs/datasources')">数据源</el-button>
-          </div>
-        </article>
-
-        <article v-if="overview.modules?.alerts" class="module-card">
-          <div class="module-head">
-            <div class="module-title">
-              <el-icon><Bell /></el-icon>
-              <strong>告警中心</strong>
-            </div>
-            <el-tag size="small" :type="overview.modules.alerts.unacknowledged ? 'danger' : 'success'">
-              {{ overview.modules.alerts.unacknowledged ? '待处理' : '稳定' }}
-            </el-tag>
-          </div>
-          <div class="module-meta">
-            <span>未认领 {{ overview.modules.alerts.unacknowledged }}</span>
-            <span>严重 {{ overview.modules.alerts.critical }}</span>
-            <span>警告 {{ overview.modules.alerts.warning }}</span>
-          </div>
-          <div class="module-actions">
-            <el-button size="small" link type="primary" @click="go('/alerts')">查看告警</el-button>
           </div>
         </article>
 
@@ -109,32 +85,52 @@
           </div>
         </article>
 
-        <article v-if="overview.modules?.grafana" class="module-card">
+        <article v-if="overview.modules?.alerts" class="module-card">
           <div class="module-head">
             <div class="module-title">
-              <el-icon><Histogram /></el-icon>
-              <strong>监控看板</strong>
+              <el-icon><Bell /></el-icon>
+              <strong>告警中心</strong>
             </div>
-            <el-tag size="small" :type="overview.modules.grafana.configured ? 'success' : 'warning'">
-              {{ overview.modules.grafana.configured ? '已配置' : '待接入' }}
+            <el-tag size="small" :type="overview.modules.alerts.unacknowledged ? 'danger' : 'success'">
+              {{ overview.modules.alerts.unacknowledged ? '待处理' : '稳定' }}
             </el-tag>
           </div>
           <div class="module-meta">
-            <span>看板 {{ overview.modules.grafana.dashboard_count }}</span>
-            <span>面板 {{ overview.modules.grafana.panel_count }}</span>
-            <span>数据源 {{ overview.modules.grafana.datasource_count }}</span>
+            <span>未认领 {{ overview.modules.alerts.unacknowledged }}</span>
+            <span>严重 {{ overview.modules.alerts.critical }}</span>
+            <span>警告 {{ overview.modules.alerts.warning }}</span>
           </div>
           <div class="module-actions">
-            <el-button size="small" link type="primary" @click="go('/observability/grafana')">查看看板</el-button>
-            <el-button size="small" v-if="overview.modules.grafana.url" link @click="openExternal(overview.modules.grafana.url)">外部打开</el-button>
+            <el-button size="small" link type="primary" @click="go('/alerts')">查看告警</el-button>
           </div>
         </article>
       </div>
     </section>
 
-    <section v-if="canViewLinks" class="panel">
+    <div class="neo-tabs theme-blue log-center-tabs trace-center-tabs overview-center-tabs">
+      <button
+        v-if="canViewSystemPosture"
+        class="neo-tab-btn"
+        :class="{ active: activeOverviewTab === 'system-posture' }"
+        @click="activeOverviewTab = 'system-posture'"
+      >
+        <el-icon><Aim /></el-icon>
+        系统态势
+      </button>
+      <button
+        class="neo-tab-btn"
+        :class="{ active: activeOverviewTab === 'capabilities' }"
+        @click="activeOverviewTab = 'capabilities'"
+      >
+        <el-icon><Share /></el-icon>
+        关联配置
+      </button>
+    </div>
+
+    <ObservabilitySystemPosture v-if="activeOverviewTab === 'system-posture' && canViewSystemPosture" embedded />
+    <section v-if="activeOverviewTab === 'capabilities' && canViewLinks" class="panel">
       <div class="section-head">
-        <h3>关联跳转配置</h3>
+        <h3>关联配置</h3>
         <el-tag size="small" type="success">日志 / 链路 / 看板</el-tag>
       </div>
       <ObservabilityDataSourceLinks embedded />
@@ -143,12 +139,13 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Aim, Bell, Connection, DataLine, Histogram, RefreshRight, Search } from '@element-plus/icons-vue'
+import { Aim, Bell, Connection, DataLine, Histogram, RefreshRight, Search, Share } from '@element-plus/icons-vue'
 import { getObservabilityOverview } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
 import ObservabilityDataSourceLinks from './ObservabilityDataSourceLinks.vue'
+import ObservabilitySystemPosture from './ObservabilitySystemPosture.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -158,13 +155,13 @@ const canViewLogDatasources = computed(() => authStore.hasPermission('ops.log.da
 const canViewTraceDatasources = computed(() => authStore.hasPermission('ops.trace.datasource.view'))
 const canViewLinks = computed(() => authStore.hasPermission('ops.observability.link.view'))
 const canViewSystemPosture = computed(() => authStore.hasPermission('ops.observability.system_posture.view'))
+const activeOverviewTab = ref(canViewSystemPosture.value ? 'system-posture' : 'capabilities')
 
-const statCards = computed(() => [
-  { label: '日志数据源', value: overview.value.summary?.datasource_count || 0, tone: '' },
-  { label: '待处理告警', value: overview.value.summary?.unacknowledged_alerts || 0, tone: 'danger-card' },
-  { label: 'Trace 数', value: overview.value.summary?.trace_count || 0, tone: 'warning-card' },
-  { label: 'Grafana 看板', value: overview.value.summary?.dashboard_count || 0, tone: 'success-card' },
-])
+watch(canViewSystemPosture, (canView) => {
+  if (!canView && activeOverviewTab.value === 'system-posture') {
+    activeOverviewTab.value = 'capabilities'
+  }
+})
 
 async function loadOverview() {
   loading.value = true
@@ -267,44 +264,24 @@ onMounted(loadOverview)
   width: 42px;
 }
 
-.release-stats {
+.capability-section {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.release-stats + .panel,
-.release-stats + .table-card {
-  margin-top: -8px;
-}
-
-.release-stat-card {
+.overview-center-tabs {
+  margin-bottom: 0;
+  padding: 4px;
   border-radius: 12px;
-  min-height: 72px;
-  padding: 10px 12px;
+  background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.9));
+  border: 1px solid rgba(148,163,184,.16);
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.04);
 }
 
-.warning-card {
-  background: linear-gradient(135deg, #fef3c7, #fdba74);
-}
-
-.danger-card {
-  background: linear-gradient(135deg, #fee2e2, #fca5a5);
-}
-
-.success-card {
-  background: linear-gradient(135deg, #dcfce7, #86efac);
-}
-
-.stat-value {
-  font-size: 22px;
-  font-weight: 700;
-}
-
-.stat-label {
-  color: #475569;
-  font-size: 12px;
-  margin-top: 4px;
+.overview-center-tabs .neo-tab-btn {
+  min-height: 38px;
+  padding: 0 20px;
+  border-radius: 8px;
 }
 
 .section-head {
@@ -360,7 +337,6 @@ onMounted(loadOverview)
 }
 
 @media (max-width: 1200px) {
-  .release-stats,
   .module-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -373,7 +349,6 @@ onMounted(loadOverview)
     flex-direction: column;
   }
 
-  .release-stats,
   .module-grid {
     grid-template-columns: 1fr;
   }

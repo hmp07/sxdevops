@@ -4,6 +4,7 @@ import json
 import copy
 import math
 import re
+from datetime import datetime, timedelta, timezone as datetime_timezone
 from urllib.parse import urlparse
 
 import requests as http_requests
@@ -1097,7 +1098,7 @@ def _record_matches_keywords(record_text, keywords):
 
 ECOMMERCE_FIREMAP_NAME = '电商交易核心'
 ECOMMERCE_NAMESPACE = 'ecommerce'
-ECOMMERCE_PROMQL_WINDOW = '5m'
+ECOMMERCE_PROMQL_WINDOW = '30m'
 ECOMMERCE_SERVICE_PATTERN = 'api-gateway|cart|order|inventory|catalog'
 ECOMMERCE_SERVICE_SPECS = [
     {
@@ -1161,7 +1162,6 @@ ECOMMERCE_FIREMAP_RULE_CONFIG = {
     'enabled': True,
     'engine': 'prometheus-tempo',
     'namespace': ECOMMERCE_NAMESPACE,
-    'window': ECOMMERCE_PROMQL_WINDOW,
     'service_pattern': ECOMMERCE_SERVICE_PATTERN,
     'description': '电商交易核心实时规则：Prometheus 计算业务成功率、健康分和下钻指标，Tempo 补充最近链路。',
     'overview_metrics': ['checkout_conflict_rate', 'checkout_5xx_rate', 'checkout_p95_ms', 'checkout_rps'],
@@ -1361,6 +1361,69 @@ def _system_posture_rule_config(template):
     return configured
 
 
+def _parse_system_posture_datetime(value):
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        if text.isdigit():
+            number = int(text)
+            if number > 10_000_000_000:
+                number = number / 1000
+            return datetime.fromtimestamp(number, tz=datetime_timezone.utc)
+        parsed = datetime.fromisoformat(text.replace('Z', '+00:00'))
+        if timezone.is_naive(parsed):
+            parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
+        return parsed.astimezone(datetime_timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _prometheus_duration(seconds):
+    seconds = max(60, min(int(seconds or 0), 31 * 24 * 3600))
+    if seconds % 86400 == 0:
+        return f'{seconds // 86400}d'
+    if seconds % 3600 == 0:
+        return f'{seconds // 3600}h'
+    if seconds % 60 == 0:
+        return f'{seconds // 60}m'
+    return f'{seconds}s'
+
+
+def _system_posture_time_context(params):
+    now = timezone.now()
+    explicit = any(params.get(key) for key in ('start', 'start_time', 'from', 'end', 'end_time', 'to', 'window'))
+    end = _parse_system_posture_datetime(params.get('end') or params.get('end_time') or params.get('to')) or now
+    start = _parse_system_posture_datetime(params.get('start') or params.get('start_time') or params.get('from'))
+    window_text = str(params.get('window') or '').strip()
+    if start and start >= end:
+        start = None
+    if not start:
+        start = end - timedelta(minutes=5)
+    duration_seconds = max(60, int((end - start).total_seconds()))
+    promql_window = window_text or _prometheus_duration(duration_seconds)
+    return {
+        'start': start,
+        'end': end,
+        'start_iso': start.isoformat(),
+        'end_iso': end.isoformat(),
+        'duration_seconds': duration_seconds,
+        'duration_minutes': max(1, int(math.ceil(duration_seconds / 60))),
+        'promql_window': promql_window,
+        'explicit': explicit,
+        'label': f'{start.astimezone(timezone.get_current_timezone()).strftime("%Y-%m-%d %H:%M")} - {end.astimezone(timezone.get_current_timezone()).strftime("%Y-%m-%d %H:%M")}' if explicit else '',
+    }
+
+
+def _system_posture_rule_config_for_time(template, time_context=None):
+    rule_config = _system_posture_rule_config(template)
+    if not time_context or not time_context.get('explicit'):
+        return rule_config
+    rule_config = copy.deepcopy(rule_config)
+    rule_config['window'] = time_context.get('promql_window') or _rule_window(rule_config)
+    return rule_config
+
+
 def _rule_window(rule_config):
     return str(rule_config.get('window') or ECOMMERCE_PROMQL_WINDOW).strip() or ECOMMERCE_PROMQL_WINDOW
 
@@ -1547,10 +1610,13 @@ def _resolve_prometheus_client():
     }
 
 
-def _prometheus_query(client, query):
+def _prometheus_query(client, query, at_time=None):
+    params = {'query': query}
+    if at_time:
+        params['time'] = at_time.timestamp()
     response = http_requests.get(
         f"{client['base_url'].rstrip('/')}/api/v1/query",
-        params={'query': query},
+        params=params,
         headers=client.get('headers') or {},
         timeout=client.get('timeout') or 6,
     )
@@ -1562,14 +1628,14 @@ def _prometheus_query(client, query):
     return ((body.get('data') or {}).get('result') or [])
 
 
-def _prometheus_scalar(client, query):
-    results = _prometheus_query(client, query)
+def _prometheus_scalar(client, query, at_time=None):
+    results = _prometheus_query(client, query, at_time=at_time)
     return _prometheus_value(results[0]) if results else None
 
 
-def _prometheus_series_map(client, query, labels):
+def _prometheus_series_map(client, query, labels, at_time=None):
     mapped = {}
-    for result in _prometheus_query(client, query):
+    for result in _prometheus_query(client, query, at_time=at_time):
         metric = result.get('metric') or {}
         key = tuple(str(metric.get(label) or '') for label in labels)
         if len(key) == 1:
@@ -1580,29 +1646,33 @@ def _prometheus_series_map(client, query, labels):
     return mapped
 
 
-def _safe_prometheus_scalar(client, query, warnings):
+def _safe_prometheus_scalar(client, query, warnings, at_time=None):
     try:
-        return _prometheus_scalar(client, query)
+        return _prometheus_scalar(client, query, at_time=at_time)
     except Exception as exc:
         warnings.append(str(exc))
         return None
 
 
-def _safe_prometheus_series_map(client, query, labels, warnings):
+def _safe_prometheus_series_map(client, query, labels, warnings, at_time=None):
     try:
-        return _prometheus_series_map(client, query, labels)
+        return _prometheus_series_map(client, query, labels, at_time=at_time)
     except Exception as exc:
         warnings.append(str(exc))
         return {}
 
 
-def _ecommerce_prometheus_snapshot(client, rule_config):
+def _ecommerce_prometheus_snapshot(client, rule_config, time_context=None):
     warnings = []
+    at_time = time_context.get('end') if isinstance(time_context, dict) else None
     snapshot = {
         'source': client.get('source'),
         'description': client.get('description'),
         'window': _rule_window(rule_config),
         'namespace': _rule_namespace(rule_config),
+        'start_time': time_context.get('start_iso') if isinstance(time_context, dict) else '',
+        'end_time': time_context.get('end_iso') if isinstance(time_context, dict) else '',
+        'time_label': time_context.get('label') if isinstance(time_context, dict) else '',
         'warnings': warnings,
     }
     prometheus_config = rule_config.get('prometheus') if isinstance(rule_config.get('prometheus'), dict) else {}
@@ -1610,9 +1680,9 @@ def _ecommerce_prometheus_snapshot(client, rule_config):
     for key, item in scalar_rules.items():
         if not isinstance(item, dict) or not item.get('query'):
             continue
-        value = _safe_prometheus_scalar(client, _render_system_posture_promql(item.get('query'), rule_config), warnings)
+        value = _safe_prometheus_scalar(client, _render_system_posture_promql(item.get('query'), rule_config), warnings, at_time=at_time)
         if value is None and item.get('fallback_query'):
-            value = _safe_prometheus_scalar(client, _render_system_posture_promql(item.get('fallback_query'), rule_config), warnings)
+            value = _safe_prometheus_scalar(client, _render_system_posture_promql(item.get('fallback_query'), rule_config), warnings, at_time=at_time)
         scale = _safe_float(item.get('scale')) or 1
         snapshot[key] = value * scale if value is not None else None
 
@@ -1621,7 +1691,7 @@ def _ecommerce_prometheus_snapshot(client, rule_config):
         if not isinstance(item, dict) or not item.get('query'):
             continue
         labels = item.get('labels') if isinstance(item.get('labels'), list) else []
-        values = _safe_prometheus_series_map(client, _render_system_posture_promql(item.get('query'), rule_config), labels, warnings)
+        values = _safe_prometheus_series_map(client, _render_system_posture_promql(item.get('query'), rule_config), labels, warnings, at_time=at_time)
         scale = _safe_float(item.get('scale')) or 1
         snapshot[key] = {series_key: value * scale for series_key, value in values.items()} if scale != 1 else values
 
@@ -1936,7 +2006,7 @@ def _build_ecommerce_overview_metrics(snapshot, rule_config):
     return metrics
 
 
-def _load_ecommerce_recent_tempo_traces(access, rule_config):
+def _load_ecommerce_recent_tempo_traces(access, rule_config, time_context=None):
     if not access.get('trace'):
         return [], {}
     datasource = TracingDataSource.objects.filter(provider='tempo', is_enabled=True).order_by('-is_default', 'name').first()
@@ -1946,15 +2016,21 @@ def _load_ecommerce_recent_tempo_traces(access, rule_config):
     service_id = str(tempo_config.get('service_id') or 'api-gateway').strip() or 'api-gateway'
     keyword = str(tempo_config.get('keyword') or 'POST /api/checkout').strip() or 'POST /api/checkout'
     duration_minutes = _config_int(tempo_config.get('duration_minutes'), 30)
+    if isinstance(time_context, dict) and time_context.get('explicit'):
+        duration_minutes = time_context.get('duration_minutes') or duration_minutes
     limit = _config_int(tempo_config.get('limit'), 8)
+    payload = {
+        'provider': 'tempo',
+        'datasource_id': datasource.id,
+        'service_id': service_id,
+        'duration_minutes': duration_minutes,
+        'limit': limit,
+    }
+    if isinstance(time_context, dict) and time_context.get('explicit') and time_context.get('start_iso') and time_context.get('end_iso'):
+        payload['start_time'] = time_context.get('start_iso')
+        payload['end_time'] = time_context.get('end_iso')
     try:
-        result = search_tracing({
-            'provider': 'tempo',
-            'datasource_id': datasource.id,
-            'service_id': service_id,
-            'duration_minutes': duration_minutes,
-            'limit': limit,
-        })
+        result = search_tracing(payload)
     except Exception:
         return [], {}
     traces = result.get('traces') or []
@@ -1971,17 +2047,17 @@ def _load_ecommerce_recent_tempo_traces(access, rule_config):
     return traces, context
 
 
-def _apply_ecommerce_live_template(template, access):
+def _apply_ecommerce_live_template(template, access, time_context=None):
     if not _is_ecommerce_system_posture_template(template):
         return template
-    rule_config = _system_posture_rule_config(template)
+    rule_config = _system_posture_rule_config_for_time(template, time_context)
     if not rule_config.get('enabled', True):
         return {**template, 'rule_config': rule_config}
     client = _resolve_prometheus_client()
     if not client.get('ready'):
         return {**template, 'rule_config': rule_config}
     try:
-        snapshot = _ecommerce_prometheus_snapshot(client, rule_config)
+        snapshot = _ecommerce_prometheus_snapshot(client, rule_config, time_context=time_context)
     except Exception:
         return {**template, 'rule_config': rule_config}
     if not snapshot.get('ready'):
@@ -1998,10 +2074,10 @@ def _apply_ecommerce_live_template(template, access):
     p95_ms = snapshot.get('checkout_p95_ms')
     rps = snapshot.get('checkout_rps')
     conflict_status, conflict_hint, conflict_rule = _ecommerce_inventory_conflict_status(snapshot, rule_config)
-    recent_traces, trace_context = _load_ecommerce_recent_tempo_traces(access, rule_config)
+    recent_traces, trace_context = _load_ecommerce_recent_tempo_traces(access, rule_config, time_context=time_context)
     source_text = 'Grafana 代理 Prometheus' if snapshot.get('source') == 'grafana' else 'Prometheus'
     summary_parts = [
-        f'过去 {snapshot.get("window") or ECOMMERCE_PROMQL_WINDOW} {north_star_config.get("label") or north_metric_rule.get("label") or "北极星指标"} {_round_system_posture_value(north_value)}{north_star_config.get("unit") or north_metric_rule.get("unit") or ""}',
+        f'{snapshot.get("time_label") or "过去 " + (snapshot.get("window") or ECOMMERCE_PROMQL_WINDOW)} {north_star_config.get("label") or north_metric_rule.get("label") or "北极星指标"} {_round_system_posture_value(north_value)}{north_star_config.get("unit") or north_metric_rule.get("unit") or ""}',
         f'Checkout 409 占比 {_round_system_posture_value(conflict_rate)}%' if conflict_rate is not None and conflict_rate >= 1 else '',
         f'网关 P95 {_round_system_posture_value(p95_ms, digits=0)}ms' if p95_ms is not None else '',
         f'Checkout RPS {_round_system_posture_value(rps, digits=3)}' if rps is not None else '',
@@ -2054,6 +2130,9 @@ def _apply_ecommerce_live_template(template, access):
             'source': snapshot.get('source'),
             'description': snapshot.get('description'),
             'window': snapshot.get('window'),
+            'start_time': snapshot.get('start_time'),
+            'end_time': snapshot.get('end_time'),
+            'time_label': snapshot.get('time_label'),
             'namespace': snapshot.get('namespace'),
             'rule_version': rule_config.get('version'),
             'north_star_metric': north_metric_key,
@@ -2065,32 +2144,44 @@ def _apply_ecommerce_live_template(template, access):
     }
 
 
-def _system_posture_evidence(access, catalog=None):
+def _system_posture_evidence(access, catalog=None, time_context=None):
     evidence = {
         'alerts': [],
         'logs': [],
         'events': [],
         'traces': [],
     }
+    explicit = isinstance(time_context, dict) and time_context.get('explicit')
+    start = time_context.get('start') if explicit else None
+    end = time_context.get('end') if explicit else None
     if access.get('alerts'):
-        evidence['alerts'] = list(Alert.objects.select_related('host').order_by('-created_at')[:80])
+        queryset = Alert.objects.select_related('host')
+        if start and end:
+            queryset = queryset.filter(created_at__gte=start, created_at__lte=end)
+        evidence['alerts'] = list(queryset.order_by('-created_at')[:80])
     if access.get('log_query') or access.get('log_entry'):
-        evidence['logs'] = list(LogEntry.objects.select_related('host').order_by('-timestamp')[:80])
+        queryset = LogEntry.objects.select_related('host')
+        if start and end:
+            queryset = queryset.filter(timestamp__gte=start, timestamp__lte=end)
+        evidence['logs'] = list(queryset.order_by('-timestamp')[:80])
     if access.get('eventwall'):
-        evidence['events'] = list(EventRecord.objects.order_by('-occurred_at')[:120])
+        queryset = EventRecord.objects.all()
+        if start and end:
+            queryset = queryset.filter(occurred_at__gte=start, occurred_at__lte=end)
+        evidence['events'] = list(queryset.order_by('-occurred_at')[:120])
     if access.get('trace') and isinstance(catalog, dict):
         evidence['traces'] = list(catalog.get('recent_traces') or [])
     return evidence
 
 
-def _build_system_posture_system_payload(template, access, catalog=None, evidence=None):
+def _build_system_posture_system_payload(template, access, catalog=None, evidence=None, time_context=None):
     if _is_ecommerce_system_posture_template(template):
-        live_template = _apply_ecommerce_live_template(template, access)
+        live_template = _apply_ecommerce_live_template(template, access, time_context=time_context)
         if live_template:
             template = live_template
-    rule_config = _system_posture_rule_config(template)
+    rule_config = _system_posture_rule_config_for_time(template, time_context)
     trace_catalog = catalog or {}
-    evidence = evidence or _system_posture_evidence(access, trace_catalog)
+    evidence = evidence or _system_posture_evidence(access, trace_catalog, time_context=time_context)
     traces = evidence.get('traces') or trace_catalog.get('recent_traces') or []
     keywords = template.get('keywords') or []
     service_specs = template.get('service_specs') or []
@@ -2399,6 +2490,9 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
             'host_name': '',
         }]
 
+    form_rule_config = copy.deepcopy(rule_config)
+    form_rule_config.pop('window', None)
+
     return {
         'id': template['id'],
         'name': template['name'],
@@ -2435,7 +2529,7 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
         'builtin_backed': bool(template.get('builtin_backed')),
         'base_status': template.get('base_status') or 'unknown',
         'live': template.get('live') or {},
-        'form': {**(template.get('form') or {}), 'rule_config': rule_config},
+        'form': {**(template.get('form') or {}), 'rule_config': form_rule_config},
         'focus': {
             'service_id': template.get('focus_service_id') or '',
             'interface_id': template.get('focus_interface_id') or '',
@@ -3058,6 +3152,7 @@ def observability_system_posture(request):
     provider = request.query_params.get('provider', '')
     layer = request.query_params.get('layer', '')
     selected_key = str(request.query_params.get('system') or request.query_params.get('focus') or '').strip()
+    time_context = _system_posture_time_context(request.query_params)
 
     catalog = None
     if access.get('trace'):
@@ -3075,9 +3170,9 @@ def observability_system_posture(request):
     alerts = _alert_module_summary() if access.get('alerts') else None
 
     templates = _system_posture_templates()
-    evidence = _system_posture_evidence(access, catalog if isinstance(catalog, dict) else None)
+    evidence = _system_posture_evidence(access, catalog if isinstance(catalog, dict) else None, time_context=time_context)
     systems = [
-        _build_system_posture_system_payload(template, access, catalog if isinstance(catalog, dict) else None, evidence=evidence)
+        _build_system_posture_system_payload(template, access, catalog if isinstance(catalog, dict) else None, evidence=evidence, time_context=time_context)
         for template in templates
     ]
     selected_system = None
@@ -3141,6 +3236,13 @@ def observability_system_posture(request):
             'provider': provider,
             'layer': layer,
             'datasource_id': request.query_params.get('datasource_id', ''),
+            'time_range': {
+                'start': time_context.get('start_iso'),
+                'end': time_context.get('end_iso'),
+                'window': time_context.get('promql_window'),
+                'duration_seconds': time_context.get('duration_seconds'),
+                'label': time_context.get('label'),
+            },
             'can_manage': access.get('system_posture_manage'),
         },
     })
@@ -3151,7 +3253,7 @@ def observability_overview(request):
     access = _observability_access(request)
     denied = _deny_if_missing_any(
         request,
-        ['ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'],
+        ['ops.observability.system_posture.view', 'ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'],
     )
     if denied:
         return denied
@@ -3171,6 +3273,8 @@ def observability_overview(request):
     alerts = _alert_module_summary() if access['alerts'] else None
 
     navigation = []
+    if access['system_posture']:
+        navigation.append({'title': '系统态势', 'path': '/observability/system-posture', 'description': '查看业务系统健康、SLO 指标与依赖影响。', 'tone': 'danger'})
     if access['log_query'] or access['log_datasource']:
         log_description = '统一进入日志查询与数据源管理。' if access['log_query'] and access['log_datasource'] else '进入日志中心并按当前权限查看可用标签。'
         navigation.append({'title': '日志中心', 'path': '/logs', 'description': log_description, 'tone': 'info'})

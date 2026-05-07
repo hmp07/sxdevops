@@ -271,10 +271,7 @@ const routes = [
         path: 'observability',
         redirect: () => {
           const authStore = useAuthStore(pinia)
-          if (authStore.hasPermission('ops.observability.system_posture.view')) {
-            return '/observability/system-posture'
-          }
-          if (authStore.hasAnyPermission(['ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'])) {
+          if (authStore.hasAnyPermission(['ops.observability.system_posture.view', 'ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'])) {
             return '/observability/overview'
           }
           return '/403'
@@ -294,7 +291,7 @@ const routes = [
         meta: {
           title: '平台总览',
           icon: 'DataLine',
-          anyPermissions: ['ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'],
+          anyPermissions: ['ops.observability.system_posture.view', 'ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'],
         },
       },
       {
