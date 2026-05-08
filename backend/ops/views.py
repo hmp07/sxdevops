@@ -552,7 +552,7 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             severity=EventRecord.SEVERITY_WARNING,
             resource_type='host_task_batch',
             resource_id='batch_cancel',
-            resource_name='鎵归噺缁堟浠诲姟',
+            resource_name='批量终止任务',
             correlation_id=f'host-task-batch-cancel:{now.strftime("%Y%m%d%H%M%S")}',
             metadata={'ids': [item.id for item in tasks]},
         )
@@ -751,6 +751,24 @@ class DeploymentApprovalFlowViewSet(EventWallModelViewSetMixin, RBACPermissionMi
         serializer.save(created_by=self.request.user.username)
 
 
+def deployment_event_metadata(deployment, **extra):
+    metadata = {
+        'event_category': 'application_release',
+        'service': deployment.app_name,
+        'service_name': deployment.app_name,
+        'version': deployment.version,
+        'release_version': deployment.version,
+        'release_name': deployment.release_name,
+        'action_type': deployment.action_type,
+        'deploy_mode': deployment.deploy_mode,
+        'release_strategy': deployment.release_strategy,
+        'image': deployment.image,
+        'namespace': deployment.namespace,
+    }
+    metadata.update({key: value for key, value in extra.items() if value not in (None, '')})
+    return metadata
+
+
 class DeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = Deployment.objects.select_related(
         'host',
@@ -790,6 +808,24 @@ class DeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewset
     def perform_create(self, serializer):
         deployment = serializer.save(submitter=self.request.user.username)
         _initialize_approval_steps(deployment)
+        record_event(
+            request=self.request,
+            module='ops',
+            category='workflow',
+            action=deployment.action_type or 'deploy',
+            title='提交应用发布单',
+            summary=f'发布单 {deployment.app_name} {deployment.version} 已提交',
+            result=EventRecord.RESULT_PENDING,
+            resource_type='deployment',
+            resource_id=deployment.id,
+            resource_name=deployment.app_name,
+            business_line=deployment.business_line,
+            environment=deployment.environment,
+            application=deployment.app_name,
+            correlation_id=f'deployment:{deployment.id}',
+            related_resources=self.eventwall_related_resources(deployment),
+            metadata=deployment_event_metadata(deployment),
+        )
 
     def eventwall_should_record(self, action, instance=None):
         return False
@@ -844,6 +880,32 @@ class DeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewset
             rerun_source=rerun_source,
         )
         _initialize_approval_steps(deployment)
+        action_title = '发起版本回滚' if action_type == 'rollback' else '发起重新发布'
+        record_event(
+            module='ops',
+            category='workflow',
+            action=action_type,
+            title=action_title,
+            summary=f'发布单 {deployment.app_name} {deployment.version} 已{("发起回滚" if action_type == "rollback" else "发起重跑")}',
+            result=EventRecord.RESULT_PENDING,
+            actor_username=actor,
+            actor_display=actor,
+            actor_type=EventRecord.ACTOR_USER,
+            resource_type='deployment',
+            resource_id=deployment.id,
+            resource_name=deployment.app_name,
+            business_line=deployment.business_line,
+            environment=deployment.environment,
+            application=deployment.app_name,
+            correlation_id=f'deployment:{deployment.id}',
+            related_resources=self.eventwall_related_resources(deployment),
+            metadata=deployment_event_metadata(
+                deployment,
+                source_deployment_id=getattr(source, 'id', None),
+                rollback_source_id=getattr(rollback_source, 'id', None),
+                rerun_source_id=getattr(rerun_source, 'id', None),
+            ),
+        )
         return deployment
 
     @action(detail=True, methods=['post'])
@@ -930,7 +992,7 @@ class DeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewset
             application=deployment.app_name,
             correlation_id=f'deployment:{deployment.id}',
             related_resources=self.eventwall_related_resources(deployment),
-            metadata={'comment': comment},
+            metadata=deployment_event_metadata(deployment, comment=comment),
         )
         return Response(DeploymentSerializer(deployment).data)
 
@@ -1002,6 +1064,7 @@ class DeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewset
             application=deployment.app_name,
             correlation_id=f'deployment:{deployment.id}',
             related_resources=self.eventwall_related_resources(deployment),
+            metadata=deployment_event_metadata(deployment),
         )
         return Response(DeploymentSerializer(deployment).data)
 
@@ -1024,6 +1087,7 @@ class DeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewset
             application=deployment.app_name,
             correlation_id=f'deployment:{deployment.id}',
             related_resources=self.eventwall_related_resources(deployment),
+            metadata=deployment_event_metadata(deployment),
         )
         return Response(DeploymentSerializer(deployment).data)
 
@@ -1047,6 +1111,7 @@ class DeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewset
             application=deployment.app_name,
             correlation_id=f'deployment:{deployment.id}',
             related_resources=self.eventwall_related_resources(deployment),
+            metadata=deployment_event_metadata(deployment),
         )
         return Response(DeploymentSerializer(deployment).data)
 
@@ -1087,6 +1152,15 @@ class TransactionTicketViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, 
     def perform_create(self, serializer):
         serializer.save(applicant=self.request.user.username)
 
+    def eventwall_metadata(self, instance, action, before=None, after=None):
+        return {
+            'ticket_type': instance.ticket_type,
+            'priority': instance.priority,
+            'status': instance.status,
+            'owner': instance.owner,
+            'applicant': instance.applicant,
+        }
+
     def _transition_ticket(self, request, ticket, *, target_status, action, title, summary, severity=EventRecord.SEVERITY_INFO):
         ticket.status = target_status
         if action == 'start_process' and not ticket.owner:
@@ -1109,7 +1183,7 @@ class TransactionTicketViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, 
             business_line=ticket.business_line,
             environment=ticket.environment,
             correlation_id=f'transaction-ticket:{ticket.id}',
-            metadata={'status': ticket.status, 'owner': ticket.owner},
+            metadata={'status': ticket.status, 'owner': ticket.owner, 'ticket_type': ticket.ticket_type},
             related_resources=(
                 [build_resource('ops', 'deployment_approval_flow', ticket.approval_flow_id, ticket.approval_flow.name)]
                 if ticket.approval_flow_id else []
@@ -1206,7 +1280,7 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
     }
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().order_by('-last_received_at', '-created_at', '-id')
         params = self.request.query_params
         claimed = params.get('claimed')
         if claimed is None:

@@ -365,6 +365,24 @@ def _mark_current_release(deployment):
         deployment.save(update_fields=['is_current'])
 
 
+def _deployment_event_metadata(deployment, **extra):
+    metadata = {
+        'event_category': 'application_release',
+        'service': deployment.app_name,
+        'service_name': deployment.app_name,
+        'version': deployment.version,
+        'release_version': deployment.version,
+        'release_name': deployment.release_name,
+        'action_type': deployment.action_type,
+        'deploy_mode': deployment.deploy_mode,
+        'release_strategy': deployment.release_strategy,
+        'image': deployment.image,
+        'namespace': deployment.namespace,
+    }
+    metadata.update({key: value for key, value in extra.items() if value not in (None, '')})
+    return metadata
+
+
 def _strategy_log_lines(deployment):
     if deployment.release_strategy == 'canary':
         return [f'[INFO] 发布策略: 灰度发布 {deployment.canary_percent}%']
@@ -524,7 +542,7 @@ def deploy_service(deployment_id):
             environment=deployment.environment,
             application=deployment.app_name,
             correlation_id=f'deployment:{deployment.id}',
-            metadata={'execution_count': deployment.execution_count},
+            metadata=_deployment_event_metadata(deployment, execution_count=deployment.execution_count),
         )
     except Exception as exc:
         logger.exception('deploy_service error')
@@ -550,7 +568,7 @@ def deploy_service(deployment_id):
             environment=deployment.environment,
             application=deployment.app_name,
             correlation_id=f'deployment:{deployment.id}',
-            metadata={'error': str(exc)},
+            metadata=_deployment_event_metadata(deployment, error=str(exc)),
         )
 
     deployment.deploy_log = '\n'.join(log_lines)

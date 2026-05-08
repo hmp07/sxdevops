@@ -1,11 +1,15 @@
 <template>
   <div class="event-wall-page fade-in">
     <section class="hero panel">
-      <div class="hero__title">
-        <el-icon><Aim /></el-icon>
-        <h2>事件墙</h2>
+      <div class="hero-copy">
+        <div class="hero-title-row">
+          <span class="hero-icon">
+            <el-icon><Aim /></el-icon>
+          </span>
+          <h2>事件墙</h2>
+        </div>
       </div>
-      <div class="hero__actions">
+      <div class="hero-actions">
         <el-button size="small" :loading="loading" @click="loadWall">
           <el-icon><RefreshRight /></el-icon>
           刷新
@@ -17,19 +21,22 @@
       </div>
     </section>
 
-    <EventWallTabs />
-
-    <section class="metric-grid">
-      <div v-for="item in statCards" :key="item.label" class="metric-cell">
-        <span>{{ item.kicker }}</span>
-        <strong>{{ item.value }}</strong>
-        <em>{{ item.label }}</em>
+    <section class="capability-section">
+      <div class="stats-grid release-stats dashboard-stats capability-card-grid">
+        <div v-for="item in statCards" :key="item.label" class="stat-card release-stat-card" :class="item.tone">
+          <div class="stat-inline">
+            <span class="stat-label">{{ item.label }}</span>
+            <span class="stat-value">{{ item.value }}</span>
+          </div>
+        </div>
       </div>
     </section>
 
+    <EventWallTabs />
+
     <section class="hint-strip">
       <el-icon><InfoFilled /></el-icon>
-      <span>{{ wall.tips?.[0] || '先确定故障时刻，再按业务线、环境、应用和事件源收敛发布、配置、任务、K8s 与外部流水线事件。' }}</span>
+      <span>{{ wall.tips?.[0] || '先确定故障时刻，再按业务线、环境、应用和事件源收敛工单、任务中心与外部 Webhook 事件。' }}</span>
     </section>
 
     <section class="query-panel panel">
@@ -78,6 +85,9 @@
         <el-select v-model="eventSourceCode" size="small" placeholder="事件源" clearable filterable>
           <el-option v-for="item in sourceOptions" :key="item.code" :label="item.name" :value="item.code" />
         </el-select>
+        <el-select v-model="eventCategoryFilter" size="small" placeholder="事件分类" clearable>
+          <el-option v-for="item in eventCategoryOptions" :key="item.key" :label="item.label" :value="item.key" />
+        </el-select>
         <el-select v-model="resultFilter" size="small" placeholder="结果" clearable>
           <el-option label="失败" value="failed" />
           <el-option label="部分成功" value="partial" />
@@ -107,8 +117,8 @@
         </div>
         <button v-for="item in topScopes" :key="`${item.business_line}-${item.environment}-${item.application}`" type="button" class="scope-row" @click="focusScope(item)">
           <span>
-            <strong>{{ item.application }}</strong>
-            <em>{{ item.business_line }} / {{ item.environment }}</em>
+            <strong>{{ item.environment }}</strong>
+            <em>{{ item.application }} / {{ item.business_line }}</em>
           </span>
           <b>{{ item.risk_score }}</b>
           <small>{{ item.count }} 条 · 失败 {{ item.failed }} · 疑似 {{ item.suspects }} · 来源 {{ item.source_count }}</small>
@@ -126,16 +136,6 @@
           <span>{{ item.count }} 个事件 · 失败 {{ item.failed }} · {{ (item.source_names || []).join(' / ') }}</span>
         </button>
         <el-empty v-if="!loading && !correlationChains.length" description="暂无明显关联链路" />
-      </div>
-
-      <div class="panel analysis-panel">
-        <div class="section-head">
-          <h3>排查建议</h3>
-          <span>{{ recommendations.length }} 条</span>
-        </div>
-        <ol class="recommend-list">
-          <li v-for="item in recommendations" :key="item">{{ item }}</li>
-        </ol>
       </div>
     </section>
 
@@ -164,50 +164,47 @@
           <el-empty v-if="!loading && !filteredSuspects.length" description="当前窗口没有高优先级疑似事件" />
         </div>
       </div>
-
-      <div class="panel source-panel">
-        <div class="section-head">
-          <h3>事件源分布</h3>
-          <span>{{ wall.source_breakdown?.length || 0 }} 个来源</span>
-        </div>
-        <button v-for="item in wall.source_breakdown || []" :key="item.code" type="button" class="source-row" @click="selectSource(item.code)">
-          <span>
-            <strong>{{ item.name }}</strong>
-            <em>{{ item.source_kind === 'external' ? '外部接入' : '平台内置' }}</em>
-          </span>
-          <b>{{ item.count }}</b>
-          <div class="source-track"><i :style="{ width: sourcePercent(item.count) }"></i></div>
-          <small>失败 {{ item.failed }} · 关注 {{ item.warning }}</small>
-        </button>
-        <el-empty v-if="!loading && !(wall.source_breakdown || []).length" description="暂无事件源分布" />
-      </div>
     </section>
 
     <section class="panel timeline-panel" v-loading="loading">
       <div class="section-head">
-        <h3>故障时间线</h3>
-        <span>{{ formatWindow(wall.window) }}</span>
+        <h3>事件时间线</h3>
+        <span>{{ formatTransactionWindow }}</span>
+      </div>
+      <div class="timeline-toolbar">
+        <el-select v-model="timelineEnvironment" size="small" placeholder="时间线环境" clearable filterable>
+          <el-option v-for="item in filterOptions.environments || []" :key="item" :label="item" :value="item" />
+        </el-select>
+        <el-date-picker
+          v-model="timelineRange"
+          size="small"
+          type="datetimerange"
+          range-separator="至"
+          start-placeholder="开始时间"
+          end-placeholder="结束时间"
+          class="timeline-range"
+        />
+        <el-button size="small" @click="resetTimelineFilters">重置时间线</el-button>
       </div>
       <div class="axis-row">
-        <span>窗口开始</span>
-        <strong>故障时刻 {{ formatShortTime(wall.window?.fault_at) }}</strong>
-        <span>窗口结束</span>
+        <span>{{ formatShortTime(transactionTimelineWindow.start_at) }}</span>
+        <strong>事件窗口</strong>
+        <span>{{ formatShortTime(transactionTimelineWindow.end_at) }}</span>
       </div>
       <div class="lane-stack">
-        <article v-for="lane in filteredLanes" :key="lane.source.code" class="lane-row">
+        <article v-for="lane in transactionTimelineLanes" :key="lane.key" class="lane-row">
           <div class="lane-label">
-            <strong>{{ lane.source.name }}</strong>
+            <strong>{{ lane.label }}</strong>
             <span>{{ lane.count }} 条 · 失败 {{ lane.failed }}</span>
           </div>
           <div class="lane-track">
-            <i v-if="wall.window?.fault_at" class="fault-marker" :style="{ left: faultMarkerPosition }"></i>
             <button
               v-for="event in lane.events"
               :key="event.id"
               type="button"
               class="event-dot"
               :class="[`is-${event.result}`, { 'is-suspect': event.suspicion_score >= 35 }]"
-              :style="{ left: eventPosition(event) }"
+              :style="{ left: transactionEventPosition(event) }"
               :title="event.title"
               @click="openDetail(event)"
             >
@@ -217,7 +214,79 @@
           </div>
         </article>
       </div>
-      <el-empty v-if="!loading && !filteredLanes.length" description="当前条件下没有事件" />
+    </section>
+
+    <section class="panel category-panel">
+      <div class="section-head">
+        <h3>分类事件列表</h3>
+        <span>{{ activeCategorySection.events.length }} / {{ activeCategorySection.total }} 条 · 失败 {{ activeCategorySection.failed }}</span>
+      </div>
+      <div class="category-tabs">
+        <button
+          v-for="section in categorySections"
+          :key="section.key"
+          type="button"
+          :class="{ active: activeCategoryTab === section.key }"
+          @click="activeCategoryTab = section.key"
+        >
+          <strong>{{ section.label }}</strong>
+          <span>{{ section.events.length }} / {{ section.total }}</span>
+        </button>
+      </div>
+      <div class="category-filter-row" :class="{ 'is-release': activeCategoryTab === 'application_release' }">
+        <el-select v-model="categoryFilters[activeCategoryTab].environment" size="small" placeholder="环境" clearable filterable>
+          <el-option v-for="item in filterOptions.environments || []" :key="item" :label="item" :value="item" />
+        </el-select>
+        <el-input v-model="categoryFilters[activeCategoryTab].application" size="small" placeholder="系统 / 服务" clearable />
+        <el-select v-model="categoryFilters[activeCategoryTab].source" size="small" placeholder="来源" clearable filterable>
+          <el-option v-for="item in sourceOptions" :key="item.code" :label="item.name" :value="item.code" />
+        </el-select>
+        <el-select v-model="categoryFilters[activeCategoryTab].result" size="small" placeholder="结果" clearable>
+          <el-option label="失败" value="failed" />
+          <el-option label="部分成功" value="partial" />
+          <el-option label="待处理" value="pending" />
+          <el-option label="成功" value="success" />
+        </el-select>
+        <el-select v-if="activeCategoryTab === 'application_release'" v-model="categoryFilters[activeCategoryTab].action" size="small" placeholder="发布动作" clearable>
+          <el-option label="发布" value="deploy" />
+          <el-option label="回滚" value="rollback" />
+          <el-option label="重跑" value="rerun" />
+          <el-option label="构建" value="build" />
+          <el-option label="流水线" value="pipeline" />
+          <el-option label="启停下线" value="lifecycle" />
+        </el-select>
+        <el-input v-if="activeCategoryTab === 'application_release'" v-model="categoryFilters[activeCategoryTab].version" size="small" placeholder="版本 / 镜像" clearable />
+        <el-input v-model="categoryFilters[activeCategoryTab].keyword" size="small" :placeholder="`${activeCategorySection.label}关键字`" clearable>
+          <template #prefix><el-icon><Search /></el-icon></template>
+        </el-input>
+      </div>
+      <el-table :data="activeCategorySection.events" size="small" row-key="id" class="category-table" @row-click="openDetail">
+        <el-table-column label="事件时间" width="138">
+          <template #default="{ row }">{{ formatTime(row.occurred_at) }}</template>
+        </el-table-column>
+        <el-table-column label="环境" width="88" show-overflow-tooltip>
+          <template #default="{ row }">{{ environmentLabel(row) }}</template>
+        </el-table-column>
+        <el-table-column label="系统（业务）" min-width="150" show-overflow-tooltip>
+          <template #default="{ row }">{{ systemLabel(row) }}</template>
+        </el-table-column>
+        <el-table-column v-if="activeCategoryTab === 'application_release'" label="服务" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">{{ releaseService(row) }}</template>
+        </el-table-column>
+        <el-table-column v-if="activeCategoryTab === 'application_release'" label="版本" min-width="130" show-overflow-tooltip>
+          <template #default="{ row }">{{ releaseVersion(row) }}</template>
+        </el-table-column>
+        <el-table-column v-if="activeCategoryTab === 'application_release'" label="动作" width="96" show-overflow-tooltip>
+          <template #default="{ row }">{{ releaseAction(row) }}</template>
+        </el-table-column>
+        <el-table-column prop="title" label="事件" min-width="180" show-overflow-tooltip />
+        <el-table-column label="结果" width="86">
+          <template #default="{ row }">
+            <el-tag size="small" :type="tagType(row.result)">{{ resultLabel(row) }}</el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-if="!loading && !activeCategorySection.events.length" :description="`暂无${activeCategorySection.label}事件`" />
     </section>
 
     <section class="panel table-panel">
@@ -229,7 +298,16 @@
         <el-table-column label="时间" width="150">
           <template #default="{ row }">{{ formatTime(row.occurred_at) }}</template>
         </el-table-column>
-        <el-table-column prop="title" label="事件" min-width="240" show-overflow-tooltip />
+        <el-table-column label="环境" width="110" show-overflow-tooltip>
+          <template #default="{ row }">{{ environmentLabel(row) }}</template>
+        </el-table-column>
+        <el-table-column label="系统（业务）" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">{{ systemLabel(row) }}</template>
+        </el-table-column>
+        <el-table-column label="分类" width="100">
+          <template #default="{ row }">{{ eventCategoryLabel(row) }}</template>
+        </el-table-column>
+        <el-table-column prop="title" label="事件" min-width="220" show-overflow-tooltip />
         <el-table-column label="来源" width="150">
           <template #default="{ row }">{{ row.event_source?.name || moduleLabel(row.module) }}</template>
         </el-table-column>
@@ -259,8 +337,9 @@
         <section class="detail-section">
           <div class="detail-row"><span>时间</span><b>{{ formatTime(activeEvent.occurred_at) }} · {{ relativeFaultTime(activeEvent.minutes_from_fault) }}</b></div>
           <div class="detail-row"><span>事件源</span><b>{{ activeEvent.event_source?.name || moduleLabel(activeEvent.module) }}</b></div>
+          <div class="detail-row"><span>事件分类</span><b>{{ eventCategoryLabel(activeEvent) }}</b></div>
           <div class="detail-row"><span>结果</span><b>{{ resultLabel(activeEvent) }}</b></div>
-          <div class="detail-row"><span>业务范围</span><b>{{ scopeLabel(activeEvent) }}</b></div>
+          <div class="detail-row"><span>环境 / 系统</span><b>{{ scopeLabel(activeEvent) }}</b></div>
           <div class="detail-row"><span>资源</span><b>{{ activeEvent.resource_type || '-' }} / {{ activeEvent.resource_name || activeEvent.resource_id || '-' }}</b></div>
           <div class="detail-row"><span>操作人</span><b>{{ activeEvent.actor_username || activeEvent.actor_display || 'system' }}</b></div>
           <div class="detail-row"><span>关联 ID</span><b>{{ activeEvent.correlation_id || '-' }}</b></div>
@@ -315,27 +394,83 @@ const activeEvent = ref(null)
 const wall = ref({ summary: {}, window: {}, lanes: [], suspects: [], events: [], source_breakdown: [], tips: [] })
 const filterOptions = ref({ business_lines: [], environments: [], applications: [] })
 const sourceOptions = ref([])
+const eventCategoryOptions = [
+  { key: 'application_release', label: '应用发布' },
+  { key: 'db_change', label: 'DB变更' },
+  { key: 'config_change', label: '配置变更' },
+  { key: 'ops_transaction', label: '运维事务' },
+]
+const categoryFilters = reactive({
+  application_release: { keyword: '', environment: '', application: '', source: '', result: '', action: '', version: '' },
+  db_change: { keyword: '', environment: '', application: '', source: '', result: '', action: '', version: '' },
+  config_change: { keyword: '', environment: '', application: '', source: '', result: '', action: '', version: '' },
+  ops_transaction: { keyword: '', environment: '', application: '', source: '', result: '', action: '', version: '' },
+})
 const faultAt = ref(new Date())
 const lookbackMinutes = ref(240)
 const afterMinutes = ref(60)
+const timelineEnvironment = ref('')
+const timelineRange = ref([])
+const activeCategoryTab = ref('application_release')
 const eventSourceCode = ref('')
+const eventCategoryFilter = ref('')
 const resultFilter = ref('')
 const keyword = ref('')
 const onlyRisk = ref(false)
 const scope = reactive({ business_line: '', environment: '', application: '' })
 
 const statCards = computed(() => [
-  { kicker: 'Events', value: wall.value.summary?.total || 0, label: '窗口事件' },
-  { kicker: 'Failed', value: wall.value.summary?.failed || 0, label: '失败事件' },
-  { kicker: 'Suspects', value: wall.value.summary?.suspects || 0, label: '优先排查' },
-  { kicker: 'Sources', value: wall.value.summary?.source_count || 0, label: '事件源' },
+  { value: `事件 ${wall.value.summary?.total || 0}`, label: '窗口事件', tone: '' },
+  { value: `失败 ${wall.value.summary?.failed || 0}`, label: '失败事件', tone: 'danger-card' },
+  { value: `疑似 ${wall.value.summary?.suspects || 0}`, label: '优先排查', tone: 'warning-card' },
+  { value: `来源 ${wall.value.summary?.source_count || 0}`, label: '事件源', tone: 'success-card' },
 ])
 
 const filteredEvents = computed(() => filterEvents(wall.value.events || []))
 const filteredSuspects = computed(() => filterEvents(wall.value.suspects || []))
+const categorySections = computed(() => eventCategoryOptions.map((category) => {
+  const categoryEvents = filteredEvents.value.filter(item => eventCategoryKey(item) === category.key)
+  const scopedFilter = categoryFilters[category.key] || {}
+  const keywordValue = String(scopedFilter.keyword || '').trim().toLowerCase()
+  const events = categoryEvents.filter((item) => {
+    if (scopedFilter.result && item.result !== scopedFilter.result) return false
+    if (scopedFilter.environment && item.environment !== scopedFilter.environment) return false
+    if (scopedFilter.source && item.event_source?.code !== scopedFilter.source) return false
+    if (scopedFilter.application) {
+      const appKey = scopedFilter.application.trim().toLowerCase()
+      if (![item.application, item.resource_name, item.resource_id, releaseService(item)]
+        .some(value => String(value || '').toLowerCase().includes(appKey))) return false
+    }
+    if (scopedFilter.action) {
+      const actionGroup = scopedFilter.action === 'lifecycle' ? ['start', 'stop', 'remove'] : [scopedFilter.action]
+      if (!actionGroup.includes(item.action)) return false
+    }
+    if (scopedFilter.version) {
+      const versionKey = scopedFilter.version.trim().toLowerCase()
+      if (!String(releaseVersion(item) || '').toLowerCase().includes(versionKey)) return false
+    }
+    if (!keywordValue) return true
+    return categorySearchFields(item).some(value => String(value || '').toLowerCase().includes(keywordValue))
+  })
+  return {
+    ...category,
+    events,
+    total: categoryEvents.length,
+    failed: events.filter(item => item.result === 'failed').length,
+    warning: events.filter(item => ['warning', 'danger'].includes(item.severity)).length,
+  }
+}))
+const activeCategorySection = computed(() => {
+  return categorySections.value.find(item => item.key === activeCategoryTab.value) || categorySections.value[0] || {
+    key: 'application_release',
+    label: '应用发布',
+    events: [],
+    total: 0,
+    failed: 0,
+  }
+})
 const topScopes = computed(() => wall.value.affected_scopes || [])
 const correlationChains = computed(() => wall.value.correlation_chains || [])
-const recommendations = computed(() => wall.value.recommendations || [])
 const activeFilterChips = computed(() => {
   const chips = []
   if (scope.business_line) chips.push({ key: 'business_line', label: `业务线 ${scope.business_line}` })
@@ -345,6 +480,7 @@ const activeFilterChips = computed(() => {
     const source = sourceOptions.value.find(item => item.code === eventSourceCode.value)
     chips.push({ key: 'event_source_code', label: `事件源 ${source?.name || eventSourceCode.value}` })
   }
+  if (eventCategoryFilter.value) chips.push({ key: 'event_category', label: `分类 ${eventCategoryLabel({ event_category: { key: eventCategoryFilter.value } })}` })
   if (resultFilter.value) chips.push({ key: 'result', label: `结果 ${resultLabel({ result: resultFilter.value })}` })
   if (keyword.value.trim()) chips.push({ key: 'search', label: `搜索 ${keyword.value.trim()}` })
   if (onlyRisk.value) chips.push({ key: 'risk', label: '仅看高风险' })
@@ -357,27 +493,70 @@ const relatedChainEvents = computed(() => {
     .filter(item => item.correlation_id === correlationId)
     .sort((a, b) => new Date(a.occurred_at) - new Date(b.occurred_at))
 })
-const filteredLanes = computed(() => {
-  return (wall.value.lanes || [])
-    .map((lane) => {
-      const events = filterEvents(lane.events || [])
-      return { ...lane, events, count: events.length }
-    })
-    .filter((lane) => lane.events.length)
+const transactionTimelineWindow = computed(() => {
+  const [startValue, endValue] = timelineRange.value || []
+  const start = startValue ? new Date(startValue) : new Date(wall.value.window?.start_at)
+  const end = endValue ? new Date(endValue) : new Date(wall.value.window?.end_at)
+  return {
+    start_at: Number.isNaN(start.getTime()) ? wall.value.window?.start_at : start,
+    end_at: Number.isNaN(end.getTime()) ? wall.value.window?.end_at : end,
+  }
 })
-const maxSourceCount = computed(() => Math.max(...(wall.value.source_breakdown || []).map(item => item.count || 0), 1))
-const faultMarkerPosition = computed(() => datePosition(wall.value.window?.fault_at))
+const formatTransactionWindow = computed(() => formatWindow(transactionTimelineWindow.value))
+const transactionTimelineEvents = computed(() => {
+  const start = new Date(transactionTimelineWindow.value.start_at).getTime()
+  const end = new Date(transactionTimelineWindow.value.end_at).getTime()
+  return filteredEvents.value
+    .filter((item) => {
+      if (timelineEnvironment.value && item.environment !== timelineEnvironment.value) return false
+      const occurredAt = new Date(item.occurred_at).getTime()
+      if (Number.isFinite(start) && occurredAt < start) return false
+      if (Number.isFinite(end) && occurredAt > end) return false
+      return true
+    })
+    .sort((a, b) => new Date(a.occurred_at) - new Date(b.occurred_at))
+})
+const transactionTimelineLanes = computed(() => {
+  return eventCategoryOptions
+    .map((category) => {
+      const events = transactionTimelineEvents.value.filter(item => eventCategoryKey(item) === category.key)
+      return {
+        ...category,
+        events,
+        count: events.length,
+        failed: events.filter(item => item.result === 'failed').length,
+      }
+    })
+})
 
 function filterEvents(events) {
   const key = keyword.value.trim().toLowerCase()
   return events.filter((item) => {
     if (resultFilter.value && item.result !== resultFilter.value) return false
     if (eventSourceCode.value && item.event_source?.code !== eventSourceCode.value) return false
+    if (eventCategoryFilter.value && eventCategoryKey(item) !== eventCategoryFilter.value) return false
     if (onlyRisk.value && item.result !== 'failed' && !['warning', 'danger'].includes(item.severity) && (item.suspicion_score || 0) < 35) return false
     if (!key) return true
-    return [item.title, item.summary, item.detail, item.resource_name, item.resource_id, item.actor_username, item.application, item.correlation_id]
+    return categorySearchFields(item)
       .some(value => String(value || '').toLowerCase().includes(key))
   })
+}
+
+function categorySearchFields(item) {
+  return [
+    item.title,
+    item.summary,
+    item.detail,
+    item.resource_name,
+    item.resource_id,
+    item.actor_username,
+    item.application,
+    item.environment,
+    item.business_line,
+    item.correlation_id,
+    releaseService(item),
+    releaseVersion(item),
+  ]
 }
 
 function restoreFromRoute() {
@@ -387,6 +566,7 @@ function restoreFromRoute() {
   lookbackMinutes.value = Number(query.lookback_minutes || 240)
   afterMinutes.value = Number(query.after_minutes || 60)
   eventSourceCode.value = String(query.event_source_code || '')
+  eventCategoryFilter.value = String(query.event_category || '')
   resultFilter.value = String(query.result || '')
   keyword.value = String(query.search || '')
   onlyRisk.value = ['1', 'true'].includes(String(query.risk || '').toLowerCase())
@@ -432,6 +612,7 @@ async function loadWall() {
 async function applyQuery() {
   const query = {
     ...buildParams(),
+    event_category: eventCategoryFilter.value || undefined,
     result: resultFilter.value || undefined,
     search: keyword.value || undefined,
     risk: onlyRisk.value ? '1' : undefined,
@@ -444,6 +625,7 @@ async function resetWindow() {
   faultAt.value = new Date()
   lookbackMinutes.value = 240
   afterMinutes.value = 60
+  eventCategoryFilter.value = ''
   resultFilter.value = ''
   keyword.value = ''
   await applyQuery()
@@ -462,16 +644,12 @@ async function focusScope(item) {
   await applyQuery()
 }
 
-async function selectSource(code) {
-  eventSourceCode.value = eventSourceCode.value === code ? '' : code
-  await applyQuery()
-}
-
 async function clearFilter(key) {
   if (key === 'business_line') scope.business_line = ''
   else if (key === 'environment') scope.environment = ''
   else if (key === 'application') scope.application = ''
   else if (key === 'event_source_code') eventSourceCode.value = ''
+  else if (key === 'event_category') eventCategoryFilter.value = ''
   else if (key === 'result') resultFilter.value = ''
   else if (key === 'search') keyword.value = ''
   else if (key === 'risk') onlyRisk.value = false
@@ -483,6 +661,7 @@ async function clearAllFilters() {
   scope.environment = ''
   scope.application = ''
   eventSourceCode.value = ''
+  eventCategoryFilter.value = ''
   resultFilter.value = ''
   keyword.value = ''
   onlyRisk.value = false
@@ -494,21 +673,22 @@ function openDetail(row) {
   drawerVisible.value = true
 }
 
-function sourcePercent(count) {
-  return `${Math.max(6, Math.round(((count || 0) / maxSourceCount.value) * 100))}%`
-}
-
-function datePosition(value) {
-  const start = new Date(wall.value.window?.start_at).getTime()
-  const end = new Date(wall.value.window?.end_at).getTime()
+function datePosition(value, windowValue = wall.value.window) {
+  const start = new Date(windowValue?.start_at).getTime()
+  const end = new Date(windowValue?.end_at).getTime()
   const current = new Date(value).getTime()
   if (![start, end, current].every(Number.isFinite) || end <= start) return '50%'
   const percent = ((current - start) / (end - start)) * 100
   return `${Math.min(96, Math.max(2, percent))}%`
 }
 
-function eventPosition(event) {
-  return datePosition(event.occurred_at)
+function transactionEventPosition(event) {
+  return datePosition(event.occurred_at, transactionTimelineWindow.value)
+}
+
+function resetTimelineFilters() {
+  timelineEnvironment.value = ''
+  timelineRange.value = []
 }
 
 function tagType(result) {
@@ -529,8 +709,65 @@ function moduleLabel(module) {
   }[module] || module || '其他事件'
 }
 
+function eventCategoryKey(row) {
+  const key = row?.event_category?.key || row?.metadata?.event_category || row?.metadata?.wall_category || ''
+  const traits = [row?.resource_type, row?.action, row?.metadata?.event_type, row?.metadata?.event_source_type]
+    .map(value => String(value || '').toLowerCase())
+  if (traits.some(value => ['deployment', 'deployment_approval_flow', 'deploy', 'deploy_finish', 'rollback', 'rerun', 'pipeline', 'build', 'start', 'stop', 'remove'].includes(value))) {
+    return 'application_release'
+  }
+  return eventCategoryOptions.some(item => item.key === key) ? key : 'ops_transaction'
+}
+
+function eventCategoryLabel(row) {
+  return row?.event_category?.label || eventCategoryOptions.find(item => item.key === eventCategoryKey(row))?.label || '运维事务'
+}
+
+function environmentLabel(row) {
+  return row?.environment || '未标注环境'
+}
+
+function systemLabel(row) {
+  const system = row?.application || row?.resource_name || row?.resource_id || '未标注系统'
+  return row?.business_line ? `${system}（${row.business_line}）` : system
+}
+
+function releaseService(row) {
+  return row?.metadata?.service || row?.metadata?.service_name || row?.metadata?.app_name || row?.application || row?.resource_name || '-'
+}
+
+function releaseVersion(row) {
+  const changes = row?.changes || {}
+  return row?.metadata?.version ||
+    row?.metadata?.release_version ||
+    row?.metadata?.image_tag ||
+    row?.metadata?.build_number ||
+    changes?.version?.after ||
+    changes?.image_tag?.after ||
+    '-'
+}
+
+function releaseAction(row) {
+  return {
+    deploy: '发布',
+    deploy_finish: '发布完成',
+    release: '发布',
+    deployment: '发布',
+    rollback: '回滚',
+    rerun: '重跑',
+    build: '构建',
+    pipeline: '流水线',
+    sync: '同步',
+    start: '启动',
+    stop: '停止',
+    remove: '下线',
+    reject: '驳回',
+    approve: '审批',
+  }[row?.action] || row?.action || '-'
+}
+
 function scopeLabel(row) {
-  return [row.business_line, row.environment, row.application].filter(Boolean).join(' / ') || row.resource_name || '-'
+  return [environmentLabel(row), systemLabel(row)].filter(Boolean).join(' / ')
 }
 
 function relativeFaultTime(minutes) {
@@ -583,27 +820,29 @@ onMounted(async () => {
 .event-wall-page {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 8px;
   color: #1f2329;
 }
 
 .panel {
-  border: 1px solid #dee0e3;
-  border-radius: 8px;
-  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #fffdf8 100%);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04);
 }
 
 .hero {
-  min-height: 64px;
-  padding: 14px 18px;
+  min-height: 68px;
+  padding: 12px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
 }
 
-.hero__title,
-.hero__actions,
+.hero-copy,
+.hero-title-row,
+.hero-actions,
 .query-row,
 .section-head,
 .axis-row {
@@ -611,60 +850,106 @@ onMounted(async () => {
   align-items: center;
 }
 
-.hero__title {
-  gap: 10px;
+.hero-copy {
+  gap: 4px;
+  flex-wrap: wrap;
 }
 
-.hero__title h2 {
+.hero-title-row {
+  align-items: baseline;
+  gap: 12px;
+}
+
+.hero-title-row h2 {
   margin: 0;
-  font-size: 20px;
+  font-size: 23px;
   font-weight: 700;
-  line-height: 1.2;
+  line-height: 1.1;
 }
 
-.hero__title .el-icon {
-  color: #3370ff;
-  font-size: 22px;
+.hero-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #0f766e, #2563eb);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
 }
 
-.hero__actions {
+.hero-actions {
   gap: 8px;
 }
 
-.metric-grid {
+.hero-actions :deep(.el-button) {
+  min-height: 32px;
+  border-radius: 10px;
+  font-weight: 500;
+  padding: 0 14px;
+}
+
+.hero.panel {
+  border-radius: 20px;
+}
+
+.capability-section {
+  display: block;
+}
+
+.capability-card-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
+  margin-bottom: 0;
 }
 
-.metric-cell {
-  min-height: 82px;
-  padding: 13px 14px;
-  border: 1px solid #dee0e3;
-  border-radius: 8px;
+.release-stat-card {
+  min-height: 68px;
+  padding: 9px 11px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
   background: #fff;
+  box-shadow: 0 6px 18px rgba(31, 35, 41, 0.04);
   display: flex;
-  flex-direction: column;
-  gap: 5px;
+  align-items: center;
 }
 
-.metric-cell span {
-  font-size: 12px;
-  color: #8f959e;
+.success-card {
+  background: linear-gradient(135deg, #dcfce7, #86efac);
 }
 
-.metric-cell strong {
-  font-size: 26px;
-  line-height: 1;
-  color: #1f2329;
+.warning-card {
+  background: linear-gradient(135deg, #fef3c7, #fdba74);
 }
 
-.metric-cell em,
-.source-row em,
+.danger-card {
+  background: linear-gradient(135deg, #fee2e2, #fca5a5);
+}
+
+.stat-inline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.stat-label {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.stat-value {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 500;
+}
+
 .suspect-row em,
 .suspect-row small,
-.lane-label span,
-.source-row small {
+.lane-label span {
   font-style: normal;
   color: #646a73;
 }
@@ -672,9 +957,9 @@ onMounted(async () => {
 .hint-strip {
   min-height: 38px;
   padding: 9px 12px;
-  border: 1px solid #bacefd;
-  border-radius: 8px;
-  background: #f3f7ff;
+  border: 1px solid rgba(51, 112, 255, 0.18);
+  border-radius: 12px;
+  background: linear-gradient(90deg, #f7faff, #f8fbff);
   color: #245bdb;
   display: flex;
   align-items: center;
@@ -687,6 +972,12 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.query-panel :deep(.el-input__wrapper),
+.query-panel :deep(.el-select__wrapper) {
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px #e5e7eb inset;
 }
 
 .query-row {
@@ -736,9 +1027,9 @@ onMounted(async () => {
 .active-filter-strip {
   min-height: 34px;
   padding: 6px 8px;
-  border: 1px solid #dee0e3;
-  border-radius: 8px;
-  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -779,28 +1070,120 @@ onMounted(async () => {
 
 .focus-grid {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.category-filter-row {
+  margin-bottom: 10px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr)) minmax(180px, 1.4fr);
+  gap: 8px;
+}
+
+.category-filter-row :deep(.el-input__wrapper),
+.category-filter-row :deep(.el-select__wrapper),
+.timeline-toolbar :deep(.el-input__wrapper),
+.timeline-toolbar :deep(.el-select__wrapper) {
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px #e5e7eb inset;
+}
+
+.category-filter-row.is-release {
+  grid-template-columns: repeat(6, minmax(120px, 1fr)) minmax(200px, 1.5fr);
+}
+
+.category-tabs {
+  margin-bottom: 10px;
+  padding: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.9));
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.category-tabs button {
+  min-width: 0;
+  min-height: 40px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #4e5969;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.category-tabs button:hover {
+  background: rgba(51, 112, 255, 0.06);
+}
+
+.category-tabs button.active {
+  background: #e8f0ff;
+  color: #245bdb;
+  box-shadow: inset 0 0 0 1px rgba(51, 112, 255, 0.08);
+}
+
+.category-tabs strong,
+.category-tabs span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-tabs strong {
+  font-size: 13px;
+}
+
+.category-tabs span {
+  color: #8f959e;
+  font-size: 12px;
+}
+
+.category-tabs button.active span {
+  color: #245bdb;
 }
 
 .analysis-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(280px, .8fr);
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .focus-panel,
-.source-panel,
 .analysis-panel,
+.category-panel,
 .timeline-panel,
 .table-panel {
   padding: 14px;
 }
 
+.category-table :deep(.el-table__header th),
+.event-table :deep(.el-table__header th) {
+  background: #f8fafc;
+  color: #646a73;
+  font-weight: 600;
+}
+
+.category-table :deep(.el-table__inner-wrapper::before),
+.event-table :deep(.el-table__inner-wrapper::before) {
+  display: none;
+}
+
+.category-table :deep(.el-table__row),
+.event-table :deep(.el-table__row) {
+  cursor: pointer;
+}
+
 .section-head {
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .section-head h3 {
@@ -815,7 +1198,6 @@ onMounted(async () => {
 }
 
 .suspect-list,
-.source-panel,
 .analysis-panel {
   display: flex;
   flex-direction: column;
@@ -825,7 +1207,6 @@ onMounted(async () => {
 .suspect-row,
 .scope-row,
 .chain-row,
-.source-row,
 .event-dot {
   border: 0;
   background: transparent;
@@ -836,8 +1217,8 @@ onMounted(async () => {
 .suspect-row {
   width: 100%;
   padding: 10px;
-  border: 1px solid #dee0e3;
-  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
   display: grid;
   grid-template-columns: 52px minmax(0, 1fr) 190px;
   gap: 10px;
@@ -846,9 +1227,8 @@ onMounted(async () => {
 
 .suspect-row:hover,
 .scope-row:hover,
-.chain-row:hover,
-.source-row:hover {
-  border-color: #bacefd;
+.chain-row:hover {
+  border-color: rgba(51, 112, 255, 0.24);
   background: #f7faff;
 }
 
@@ -856,8 +1236,8 @@ onMounted(async () => {
 .chain-row {
   width: 100%;
   padding: 10px;
-  border: 1px solid #dee0e3;
-  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
   display: grid;
   gap: 5px 10px;
   text-align: left;
@@ -904,18 +1284,6 @@ onMounted(async () => {
   grid-column: 1 / -1;
 }
 
-.recommend-list {
-  margin: 0;
-  padding-left: 18px;
-  color: #4e5969;
-  line-height: 1.7;
-  font-size: 13px;
-}
-
-.recommend-list li + li {
-  margin-top: 6px;
-}
-
 .score {
   width: 40px;
   height: 40px;
@@ -959,43 +1327,6 @@ onMounted(async () => {
   font-style: normal;
 }
 
-.source-row {
-  position: relative;
-  padding: 10px;
-  border: 1px solid #dee0e3;
-  border-radius: 8px;
-  text-align: left;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 6px 10px;
-}
-
-.source-row span {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.source-track {
-  grid-column: 1 / -1;
-  height: 6px;
-  border-radius: 999px;
-  background: #eff0f1;
-  overflow: hidden;
-}
-
-.source-track i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: #3370ff;
-}
-
-.source-row small {
-  grid-column: 1 / -1;
-}
-
 .axis-row {
   height: 34px;
   padding: 0 12px;
@@ -1004,6 +1335,22 @@ onMounted(async () => {
   justify-content: space-between;
   font-size: 12px;
   color: #646a73;
+}
+
+.timeline-toolbar {
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.timeline-toolbar :deep(.el-select) {
+  width: 180px;
+}
+
+.timeline-range {
+  width: 360px;
 }
 
 .axis-row strong {
@@ -1044,15 +1391,6 @@ onMounted(async () => {
   border-radius: 8px;
   background: #f7f8fa;
   overflow: hidden;
-}
-
-.fault-marker {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: #f54a45;
-  z-index: 2;
 }
 
 .event-dot {
@@ -1220,8 +1558,7 @@ pre {
 }
 
 @media (max-width: 1100px) {
-  .metric-grid,
-  .focus-grid,
+  .capability-card-grid,
   .analysis-grid {
     grid-template-columns: 1fr 1fr;
   }
@@ -1238,16 +1575,31 @@ pre {
 
 @media (max-width: 760px) {
   .hero,
-  .hero__actions {
+  .hero-actions {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .metric-grid,
+  .capability-card-grid,
   .focus-grid,
   .analysis-grid,
+  .category-tabs,
   .lane-row {
     grid-template-columns: 1fr;
+  }
+
+  .category-filter-row {
+    grid-template-columns: 1fr;
+  }
+
+  .category-filter-row.is-release {
+    grid-template-columns: 1fr;
+  }
+
+  .timeline-toolbar,
+  .timeline-toolbar :deep(.el-select),
+  .timeline-range {
+    width: 100%;
   }
 
   .query-row :deep(.el-select),

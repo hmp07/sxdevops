@@ -1,7 +1,7 @@
 ﻿from collections import Counter, defaultdict
 from datetime import timedelta
 
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework import filters, status, viewsets
@@ -19,54 +19,108 @@ from .services import record_event
 
 DEMO_WINDOW_MINUTES = 7 * 24 * 60 - 1
 
+EVENT_CATEGORY_DEFINITIONS = [
+    {
+        'key': 'application_release',
+        'label': '应用发布',
+        'description': '应用发布、回滚、启停、下线和流水线发布类事件。',
+        'required_fields': ['event_id', 'event_category', 'title', 'environment', 'application', 'result'],
+        'recommended_fields': ['version', 'release_name', 'pipeline_url', 'rollback_source', 'approval_id'],
+    },
+    {
+        'key': 'db_change',
+        'label': 'DB变更',
+        'description': 'SQL 上线、数据库结构变更、数据修复和执行结果类事件。',
+        'required_fields': ['event_id', 'event_category', 'title', 'environment', 'application', 'result'],
+        'recommended_fields': ['database', 'sql_type', 'affected_rows', 'duration_ms', 'datasource'],
+    },
+    {
+        'key': 'config_change',
+        'label': '配置变更',
+        'description': '配置发布、参数调整、网络策略、域名路由和中间件配置类事件。',
+        'required_fields': ['event_id', 'event_category', 'title', 'environment', 'application', 'result'],
+        'recommended_fields': ['config_key', 'change_window', 'before', 'after', 'approval_id'],
+    },
+    {
+        'key': 'ops_transaction',
+        'label': '运维事务',
+        'description': '权限开通、网络配置、机器申请释放、巡检和通用运维处理类事件。',
+        'required_fields': ['event_id', 'event_category', 'title', 'environment', 'business_line', 'result'],
+        'recommended_fields': ['ticket_type', 'owner', 'applicant', 'resource_type', 'resource_id'],
+    },
+]
+EVENT_CATEGORY_MAP = {item['key']: item for item in EVENT_CATEGORY_DEFINITIONS}
+EVENT_CATEGORY_ALIASES = {
+    'release': 'application_release',
+    'deployment': 'application_release',
+    'deployment_approval_flow': 'application_release',
+    'deploy': 'application_release',
+    'deploy_finish': 'application_release',
+    'service_deployment': 'application_release',
+    'rollback': 'application_release',
+    'pipeline': 'application_release',
+    'build': 'application_release',
+    'jenkins_build': 'application_release',
+    'argocd_app': 'application_release',
+    'argocd_application': 'application_release',
+    'app_release': 'application_release',
+    'application': 'application_release',
+    'sql': 'db_change',
+    'sql_order': 'db_change',
+    'database': 'db_change',
+    'db': 'db_change',
+    'config': 'config_change',
+    'configuration': 'config_change',
+    'ops': 'ops_transaction',
+    'transaction': 'ops_transaction',
+    'workorder': 'ops_transaction',
+}
+
 DEFAULT_EVENT_SOURCES = [
     {
         'code': 'builtin-workorder',
         'name': '工单系统',
         'source_kind': EventSource.KIND_BUILTIN,
         'source_type': EventSource.TYPE_BUILTIN_WORKORDER,
-        'description': '沉淀应用发布、SQL 审计、事务工单、审批流等变更事件。',
+        'description': '沉淀应用发布、SQL 工单、事务工单和审批流结果，为故障窗口提供变更线索。',
         'enabled': True,
         'status': EventSource.STATUS_HEALTHY,
         'auth_type': EventSource.AUTH_NONE,
         'field_mapping': {'time': 'occurred_at', 'title': 'title', 'status': 'result', 'operator': 'actor_username'},
-        'config': {'resource_types': ['deployment', 'sql_order', 'transaction_ticket', 'deployment_approval_flow']},
+        'config': {
+            'resource_types': ['deployment', 'sql_order', 'transaction_ticket', 'deployment_approval_flow'],
+            'supported_event_categories': ['application_release', 'db_change', 'config_change', 'ops_transaction'],
+        },
     },
     {
         'code': 'builtin-task-center',
         'name': '任务中心',
         'source_kind': EventSource.KIND_BUILTIN,
         'source_type': EventSource.TYPE_BUILTIN_TASK,
-        'description': '沉淀主机任务、定时编排、批量执行、重跑和终止等操作事件。',
+        'description': '沉淀主机任务、定时编排、批量执行、重跑和终止结果，为故障分析补充自动化执行上下文。',
         'enabled': True,
         'status': EventSource.STATUS_HEALTHY,
         'auth_type': EventSource.AUTH_NONE,
         'field_mapping': {'time': 'occurred_at', 'target': 'resource_name', 'status': 'result'},
-        'config': {'resource_types': ['host_task', 'host_task_batch', 'host_task_schedule']},
+        'config': {'resource_types': ['host_task', 'host_task_batch', 'host_task_schedule'], 'default_event_category': 'ops_transaction'},
     },
-    {
-        'code': 'builtin-k8s',
-        'name': 'K8s 事件',
-        'source_kind': EventSource.KIND_BUILTIN,
-        'source_type': EventSource.TYPE_BUILTIN_K8S,
-        'description': '汇总集群资源事件、配置修订、扩缩容、Pod 操作与异常调度线索。',
-        'enabled': True,
-        'status': EventSource.STATUS_HEALTHY,
-        'auth_type': EventSource.AUTH_NONE,
-        'field_mapping': {'type': 'severity', 'reason': 'action', 'message': 'summary', 'resource': 'resource_name'},
-        'config': {'resource_types': ['k8s_cluster', 'k8s_event', 'k8s_config_revision']},
-    },
-    {'code': 'jira', 'name': 'Jira', 'source_kind': EventSource.KIND_EXTERNAL, 'source_type': EventSource.TYPE_JIRA, 'description': '接入 Jira issue 创建、流转、发布关联和故障工单事件。', 'enabled': False, 'status': EventSource.STATUS_NOT_CONFIGURED, 'auth_type': EventSource.AUTH_WEBHOOK, 'field_mapping': {'issue.key': 'resource_id', 'issue.fields.summary': 'title', 'user.name': 'actor'}},
-    {'code': 'jenkins', 'name': 'Jenkins', 'source_kind': EventSource.KIND_EXTERNAL, 'source_type': EventSource.TYPE_JENKINS, 'description': '接入 Jenkins 构建开始、成功、失败、回滚和部署流水线事件。', 'enabled': False, 'status': EventSource.STATUS_NOT_CONFIGURED, 'auth_type': EventSource.AUTH_WEBHOOK, 'field_mapping': {'job_name': 'application', 'build_number': 'resource_id', 'status': 'result'}},
-    {'code': 'argocd', 'name': 'ArgoCD', 'source_kind': EventSource.KIND_EXTERNAL, 'source_type': EventSource.TYPE_ARGOCD, 'description': '接入 ArgoCD 应用同步、健康状态、回滚和 GitOps 发布事件。', 'enabled': False, 'status': EventSource.STATUS_NOT_CONFIGURED, 'auth_type': EventSource.AUTH_WEBHOOK, 'field_mapping': {'app.metadata.name': 'application', 'app.status.health.status': 'severity'}},
-    {'code': 'gitlab', 'name': 'GitLab', 'source_kind': EventSource.KIND_EXTERNAL, 'source_type': EventSource.TYPE_GITLAB, 'description': '接入 GitLab push、merge request、tag、pipeline 和 deployment 事件。', 'enabled': False, 'status': EventSource.STATUS_NOT_CONFIGURED, 'auth_type': EventSource.AUTH_WEBHOOK, 'field_mapping': {'project.name': 'application', 'user_username': 'actor', 'object_kind': 'event_type'}},
-    {'code': 'custom', 'name': '自定义事件源', 'source_kind': EventSource.KIND_EXTERNAL, 'source_type': EventSource.TYPE_CUSTOM, 'description': '为内部自研系统提供统一 webhook 规范，写入事件墙后可参与故障分析。', 'enabled': False, 'status': EventSource.STATUS_NOT_CONFIGURED, 'auth_type': EventSource.AUTH_WEBHOOK, 'field_mapping': {'event_id': 'event_id', 'occurred_at': 'occurred_at', 'title': 'title'}},
+    {'code': 'jira', 'name': 'Jira', 'source_kind': EventSource.KIND_EXTERNAL, 'source_type': EventSource.TYPE_JIRA, 'description': '接入 Jira issue 创建、流转、发布关联和故障工单事件。', 'enabled': False, 'status': EventSource.STATUS_NOT_CONFIGURED, 'auth_type': EventSource.AUTH_WEBHOOK, 'field_mapping': {'issue.key': 'resource_id', 'issue.fields.summary': 'title', 'user.name': 'actor'}, 'config': {'default_event_category': 'ops_transaction'}},
+    {'code': 'jenkins', 'name': 'Jenkins', 'source_kind': EventSource.KIND_EXTERNAL, 'source_type': EventSource.TYPE_JENKINS, 'description': '接入 Jenkins 构建开始、成功、失败、回滚和部署流水线事件。', 'enabled': False, 'status': EventSource.STATUS_NOT_CONFIGURED, 'auth_type': EventSource.AUTH_WEBHOOK, 'field_mapping': {'job_name': 'application', 'build_number': 'resource_id', 'status': 'result'}, 'config': {'default_event_category': 'application_release'}},
+    {'code': 'argocd', 'name': 'ArgoCD', 'source_kind': EventSource.KIND_EXTERNAL, 'source_type': EventSource.TYPE_ARGOCD, 'description': '接入 ArgoCD 应用同步、健康状态、回滚和 GitOps 发布事件。', 'enabled': False, 'status': EventSource.STATUS_NOT_CONFIGURED, 'auth_type': EventSource.AUTH_WEBHOOK, 'field_mapping': {'app.metadata.name': 'application', 'app.status.health.status': 'severity'}, 'config': {'default_event_category': 'application_release'}},
+    {'code': 'gitlab', 'name': 'GitLab', 'source_kind': EventSource.KIND_EXTERNAL, 'source_type': EventSource.TYPE_GITLAB, 'description': '接入 GitLab push、merge request、tag、pipeline 和 deployment 事件。', 'enabled': False, 'status': EventSource.STATUS_NOT_CONFIGURED, 'auth_type': EventSource.AUTH_WEBHOOK, 'field_mapping': {'project.name': 'application', 'user_username': 'actor', 'object_kind': 'event_type'}, 'config': {'default_event_category': 'config_change'}},
+    {'code': 'custom', 'name': '自定义事件源', 'source_kind': EventSource.KIND_EXTERNAL, 'source_type': EventSource.TYPE_CUSTOM, 'description': '为内部自研系统提供统一 webhook 规范，写入事件墙后可参与故障分析。', 'enabled': False, 'status': EventSource.STATUS_NOT_CONFIGURED, 'auth_type': EventSource.AUTH_WEBHOOK, 'field_mapping': {'event_id': 'event_id', 'event_category': 'event_category', 'occurred_at': 'occurred_at', 'title': 'title'}},
 ]
 
 BUILTIN_RESOURCE_TYPES = {
     EventSource.TYPE_BUILTIN_WORKORDER: ['deployment', 'sql_order', 'transaction_ticket', 'deployment_approval_flow'],
     EventSource.TYPE_BUILTIN_TASK: ['host_task', 'host_task_batch', 'host_task_schedule'],
-    EventSource.TYPE_BUILTIN_K8S: ['k8s_cluster', 'k8s_event', 'k8s_config_revision'],
+}
+
+LEGACY_EVENT_SOURCE_CODES = {'builtin-k8s'}
+WALL_BUILTIN_RESOURCE_TYPES = {
+    resource_type
+    for resource_types in BUILTIN_RESOURCE_TYPES.values()
+    for resource_type in resource_types
 }
 
 INGEST_SPEC = {
@@ -74,12 +128,16 @@ INGEST_SPEC = {
     'auth': 'Authorization: Bearer <token> 或 X-Event-Token: <token>',
     'content_type': 'application/json',
     'endpoint_template': '/api/event-sources/{code}/ingest/',
-    'required_fields': ['title'],
+    'required_fields': ['title', 'event_category'],
     'recommended_fields': ['event_id', 'occurred_at', 'summary', 'event_type', 'action', 'result', 'severity', 'actor', 'business_line', 'environment', 'application', 'resource_type', 'resource_id', 'resource_name', 'correlation_id', 'tags', 'related_resources', 'changes', 'metadata'],
+    'event_categories': EVENT_CATEGORY_DEFINITIONS,
+    'idempotency': '同一事件源下 event_id 会作为幂等键，重复推送不会生成第二条事件。',
+    'scope': '平台内置事件源只接收工单系统和任务中心；平台配置、资源管理、告警配置等内部操作请查看操作审计。',
     'result_values': [choice[0] for choice in EventRecord.RESULT_CHOICES],
     'severity_values': [choice[0] for choice in EventRecord.SEVERITY_CHOICES],
     'example': {
         'event_id': 'deploy-20260506-001',
+        'event_category': 'application_release',
         'occurred_at': '2026-05-06T10:15:00+08:00',
         'title': 'payment-api 发布失败',
         'summary': 'Jenkins 构建 #184 发布到 prod 失败',
@@ -102,6 +160,11 @@ INGEST_SPEC = {
 
 
 def _ensure_default_event_sources():
+    EventSource.objects.filter(code__in=LEGACY_EVENT_SOURCE_CODES).update(
+        enabled=False,
+        status=EventSource.STATUS_DISABLED,
+        last_error='事件墙已收敛为故障分析视图，平台内置事件仅保留工单系统和任务中心。',
+    )
     for item in DEFAULT_EVENT_SOURCES:
         source, created = EventSource.objects.get_or_create(code=item['code'], defaults={key: value for key, value in item.items() if key != 'code'})
         if created:
@@ -164,7 +227,7 @@ def _event_source_counts(days=7):
     start = timezone.now() - timedelta(days=days)
     result = defaultdict(int)
     builtin_code_map = {item['source_type']: item['code'] for item in DEFAULT_EVENT_SOURCES if item['source_kind'] == EventSource.KIND_BUILTIN}
-    for item in EventRecord.objects.filter(occurred_at__gte=start).values('resource_type', 'metadata'):
+    for item in EventRecord.objects.filter(_event_wall_record_q(), occurred_at__gte=start).values('resource_type', 'metadata'):
         source_code = (item.get('metadata') or {}).get('event_source_code')
         if source_code:
             result[source_code] += 1
@@ -179,7 +242,7 @@ def _event_source_counts(days=7):
 def _source_catalog():
     _ensure_default_event_sources()
     catalog = {}
-    for source in EventSource.objects.all():
+    for source in EventSource.objects.exclude(code__in=LEGACY_EVENT_SOURCE_CODES):
         catalog[source.code] = {
             'code': source.code,
             'name': source.name,
@@ -187,6 +250,7 @@ def _source_catalog():
             'source_type': source.source_type,
             'status': source.status,
             'enabled': source.enabled,
+            'config': source.config or {},
         }
     return catalog
 
@@ -222,6 +286,73 @@ def _classify_event_source(event, catalog=None):
         'status': '',
         'enabled': True,
     }
+
+
+def _event_wall_record_q():
+    return (
+        Q(source_type=EventRecord.SOURCE_EXTERNAL)
+        | Q(category='external_event')
+        | Q(resource_type__in=WALL_BUILTIN_RESOURCE_TYPES)
+    )
+
+
+def _normalize_event_category(value):
+    key = str(value or '').strip()
+    if not key:
+        return ''
+    normalized = key.lower().replace('-', '_').replace(' ', '_')
+    return normalized if normalized in EVENT_CATEGORY_MAP else EVENT_CATEGORY_ALIASES.get(normalized, '')
+
+
+def _event_category_payload(key):
+    category = EVENT_CATEGORY_MAP.get(key) or EVENT_CATEGORY_MAP['ops_transaction']
+    return {
+        'key': category['key'],
+        'label': category['label'],
+        'description': category['description'],
+    }
+
+
+def _event_category_from_traits(*values):
+    for value in values:
+        normalized = _normalize_event_category(value)
+        if normalized:
+            return normalized
+    return ''
+
+
+def _infer_event_category(event, source=None):
+    metadata = event.metadata or {}
+    explicit = _normalize_event_category(metadata.get('event_category') or metadata.get('wall_category') or metadata.get('workorder_type'))
+    if explicit:
+        return explicit
+
+    trait_category = _event_category_from_traits(event.resource_type, event.action, metadata.get('event_type'), metadata.get('event_source_type'))
+    if trait_category:
+        return trait_category
+
+    if source:
+        source_config_key = _normalize_event_category((source.get('config') or {}).get('default_event_category'))
+        if source_config_key:
+            return source_config_key
+
+    if event.resource_type == 'deployment':
+        return 'application_release'
+    if event.resource_type == 'sql_order':
+        return 'db_change'
+    if event.resource_type in {'host_task', 'host_task_batch', 'host_task_schedule'}:
+        return 'ops_transaction'
+    if event.resource_type == 'transaction_ticket':
+        ticket_type = str(metadata.get('ticket_type') or '').lower()
+        if ticket_type == 'change':
+            return 'config_change'
+        return 'ops_transaction'
+    if event.resource_type == 'deployment_approval_flow':
+        return 'application_release'
+    if event.source_type == EventRecord.SOURCE_EXTERNAL:
+        event_type = _normalize_event_category(metadata.get('event_source_type') or event.action)
+        return event_type or 'ops_transaction'
+    return 'ops_transaction'
 
 
 def _event_suspicion(event, fault_at=None):
@@ -341,6 +472,8 @@ class EventRecordViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         _refresh_demo_event_timestamps()
         queryset = super().get_queryset().exclude(result=EventRecord.RESULT_REJECTED)
+        if getattr(self, 'action', '') not in {'operation_audit', 'prune_operation_audit'}:
+            queryset = queryset.filter(_event_wall_record_q())
         params = self.request.query_params
         mapping = {
             'module': 'module',
@@ -455,8 +588,8 @@ class EventRecordViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
             'rejected_sql': [],
             'execution_watchlist': priority_events,
             'tips': [
-                '事件墙默认只保留最终执行结果和关键写操作，驳回但未执行的审批流不会进入事件墙。',
-                '排查问题时优先按业务线、环境、应用缩小范围，再结合操作人和失败结果快速定位。',
+                '事件墙只展示故障定位线索：外部事件源、工单系统和任务中心；平台内部操作请查看操作审计。',
+                '排查问题时优先按业务线、环境、应用缩小范围，再结合执行人、失败结果和关联链路快速定位。',
             ],
         })
 
@@ -589,8 +722,10 @@ class EventRecordViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
 
         for event, payload in zip(ordered_events, serialized):
             source = _classify_event_source(event, catalog)
+            event_category_key = _infer_event_category(event, source)
             score, reasons, minutes_from_fault = _event_suspicion(event, fault_at=fault_at)
             payload['event_source'] = source
+            payload['event_category'] = _event_category_payload(event_category_key)
             payload['minutes_from_fault'] = minutes_from_fault
             payload['suspicion_score'] = score
             payload['suspicion_reasons'] = reasons
@@ -630,6 +765,18 @@ class EventRecordViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
             }
             for lane in lane_payload
         ]
+        category_sections = []
+        for category_def in EVENT_CATEGORY_DEFINITIONS:
+            section_events = [item for item in events if (item.get('event_category') or {}).get('key') == category_def['key']]
+            category_sections.append({
+                'key': category_def['key'],
+                'label': category_def['label'],
+                'description': category_def['description'],
+                'count': len(section_events),
+                'failed': sum(1 for item in section_events if item.get('result') == EventRecord.RESULT_FAILED),
+                'warning': sum(1 for item in section_events if item.get('severity') in {EventRecord.SEVERITY_WARNING, EventRecord.SEVERITY_DANGER}),
+                'events': section_events[:30],
+            })
         suspect_ids = {item['id'] for item in suspects}
         impact_map = {}
         correlation_map = {}
@@ -729,7 +876,10 @@ class EventRecordViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
                 'source_count': len(lane_payload),
                 'scope_count': len(affected_scopes),
                 'chain_count': len(correlation_chains),
+                'category_count': sum(1 for item in category_sections if item['count']),
             },
+            'event_categories': [_event_category_payload(item['key']) for item in EVENT_CATEGORY_DEFINITIONS],
+            'category_sections': category_sections,
             'source_breakdown': source_breakdown,
             'affected_scopes': affected_scopes,
             'correlation_chains': correlation_chains,
@@ -738,8 +888,8 @@ class EventRecordViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
             'events': events,
             'recommendations': recommendations,
             'tips': [
-                '先确定故障时刻，再看故障前 1-4 小时内失败、高风险和变更类事件。',
-                '同一应用、环境、业务线内靠近故障时刻的发布、配置、任务和 K8s 异常优先排查。',
+                '先确定故障时刻，再看故障前 1-4 小时内失败、高风险、工单、任务和外部系统事件。',
+                '同一应用、环境、业务线内靠近故障时刻的发布工单、任务执行和外部流水线异常优先排查。',
             ],
         })
 
@@ -765,7 +915,7 @@ class EventSourceViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         _ensure_default_event_sources()
-        return EventSource.objects.all()
+        return EventSource.objects.exclude(code__in=LEGACY_EVENT_SOURCE_CODES)
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -847,12 +997,43 @@ class ExternalEventIngestView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         data = serializer.validated_data
+        source_default_category = _normalize_event_category((source.config or {}).get('default_event_category'))
+        payload_category = _normalize_event_category(data.get('event_category'))
+        trait_category = _event_category_from_traits(data.get('event_type'), data.get('action'), data.get('resource_type'))
+        event_category = payload_category or trait_category or source_default_category
+        if not event_category:
+            source.status = EventSource.STATUS_WARNING
+            source.last_error = '事件载荷缺少有效事件分类 event_category'
+            source.save(update_fields=['status', 'last_error', 'updated_at'])
+            return Response(
+                {'event_category': '请提供有效事件分类：application_release、db_change、config_change、ops_transaction。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        event_id = data.get('event_id', '')
+        if event_id:
+            existing = EventRecord.objects.filter(
+                metadata__event_source_code=source.code,
+                metadata__external_event_id=event_id,
+            ).order_by('-occurred_at', '-id').first()
+            if existing:
+                source.status = EventSource.STATUS_HEALTHY
+                source.last_error = ''
+                source.last_sync_at = timezone.now()
+                source.last_event_at = existing.occurred_at
+                source.save(update_fields=['status', 'last_error', 'last_sync_at', 'last_event_at', 'updated_at'])
+                response_data = EventRecordSerializer(existing).data
+                response_data['deduplicated'] = True
+                return Response(response_data, status=status.HTTP_200_OK)
+
         metadata = dict(data.get('metadata') or {})
         metadata.update({
             'event_source_code': source.code,
             'event_source_name': source.name,
             'event_source_type': source.source_type,
-            'external_event_id': data.get('event_id', ''),
+            'event_category': event_category,
+            'event_category_label': EVENT_CATEGORY_MAP[event_category]['label'],
+            'event_category_source': 'payload' if payload_category else ('traits' if trait_category else 'source_default'),
+            'external_event_id': event_id,
         })
         event = record_event(
             module='eventwall',

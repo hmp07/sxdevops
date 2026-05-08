@@ -1,50 +1,42 @@
 <template>
   <div class="event-source-page fade-in">
     <section class="hero panel">
-      <div class="hero__title">
-        <el-icon><Share /></el-icon>
-        <h2>事件源</h2>
+      <div class="hero-copy">
+        <div class="hero-title-row">
+          <span class="hero-icon">
+            <el-icon><Share /></el-icon>
+          </span>
+          <h2>事件源</h2>
+        </div>
       </div>
-      <div class="hero__actions">
+      <div class="hero-actions">
         <el-button size="small" :loading="loading" @click="loadAll">
           <el-icon><RefreshRight /></el-icon>
           刷新
         </el-button>
         <el-button v-if="canManageSources" size="small" type="primary" @click="openCreateDialog">
           <el-icon><Plus /></el-icon>
-          新增自定义源
+          新建接入
         </el-button>
+      </div>
+    </section>
+
+    <section class="capability-section">
+      <div class="stats-grid release-stats dashboard-stats capability-card-grid">
+        <div v-for="item in statCards" :key="item.label" class="stat-card release-stat-card" :class="item.tone">
+          <div class="stat-inline">
+            <span class="stat-label">{{ item.label }}</span>
+            <span class="stat-value">{{ item.value }}</span>
+          </div>
+        </div>
       </div>
     </section>
 
     <EventWallTabs />
 
-    <section class="metric-grid">
-      <div v-for="item in statCards" :key="item.label" class="metric-cell">
-        <span>{{ item.kicker }}</span>
-        <strong>{{ item.value }}</strong>
-        <em>{{ item.label }}</em>
-      </div>
-    </section>
-
     <section class="hint-strip">
       <el-icon><InfoFilled /></el-icon>
-      <span>事件源统一进入事件墙，后续故障分析会按时间窗口关联工单、任务、K8s、Jira、Jenkins、ArgoCD、GitLab 和自研系统事件。</span>
-    </section>
-
-    <section class="source-toolbar panel">
-      <el-segmented v-model="activeKind" :options="kindOptions" size="small" />
-      <div class="toolbar-right">
-        <el-input v-model="keyword" size="small" placeholder="搜索事件源" clearable>
-          <template #prefix><el-icon><Search /></el-icon></template>
-        </el-input>
-        <el-select v-model="statusFilter" size="small" placeholder="状态" clearable>
-          <el-option label="健康" value="healthy" />
-          <el-option label="待关注" value="warning" />
-          <el-option label="已停用" value="disabled" />
-          <el-option label="未配置" value="not_configured" />
-        </el-select>
-      </div>
+      <span>事件墙只沉淀故障分析线索：平台内置仅保留工单和任务中心，外部系统通过 Webhook 接入 Jira、Jenkins、ArgoCD、GitLab 和自研事件。</span>
     </section>
 
     <section v-if="activeFilterChips.length" class="active-filter-strip">
@@ -81,6 +73,7 @@
             <div class="source-meta">
               <span>{{ kindLabel(item.source_kind) }}</span>
               <span>{{ typeLabel(item.source_type) }}</span>
+              <span>{{ sourceEventCategoryLabel(item) }}</span>
               <span>{{ statusLabel(item.status) }}</span>
             </div>
             <footer>
@@ -126,25 +119,9 @@
       </aside>
     </section>
 
-    <section v-if="pendingSources.length" class="panel intake-panel">
-      <div class="section-head">
-        <h3>接入待办</h3>
-        <span>{{ pendingSources.length }} 个来源需要处理</span>
-      </div>
-      <div class="intake-list">
-        <div v-for="item in pendingSources" :key="item.code" class="intake-row" @click="openSpec(item)">
-          <span>
-            <strong>{{ item.name }}</strong>
-            <em>{{ statusLabel(item.status) }} · {{ endpointFor(item) }}</em>
-          </span>
-          <el-button size="small" text type="primary" @click.stop="copyEndpoint(item)">复制地址</el-button>
-        </div>
-      </div>
-    </section>
-
     <section class="panel table-panel" v-loading="loading">
       <div class="section-head">
-        <h3>事件源明细</h3>
+        <h3>事件源列表</h3>
         <span>{{ filteredSources.length }} / {{ sources.length }} 个来源</span>
       </div>
       <el-table :data="filteredSources" size="small" row-key="code" class="source-table">
@@ -164,6 +141,9 @@
         <el-table-column label="类型" width="140">
           <template #default="{ row }">{{ typeLabel(row.source_type) }}</template>
         </el-table-column>
+        <el-table-column label="默认事件分类" width="130">
+          <template #default="{ row }">{{ sourceEventCategoryLabel(row) }}</template>
+        </el-table-column>
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
             <el-tag size="small" :type="statusTone(row.status)">{{ statusLabel(row.status) }}</el-tag>
@@ -180,6 +160,7 @@
           <template #default="{ row }">
             <div class="table-actions">
               <el-button size="small" text type="primary" @click="openEvents(row)">看事件</el-button>
+              <el-button v-if="canManageSources && row.source_kind === 'external'" size="small" text @click="openEditAccess(row)">编辑</el-button>
               <el-button v-if="row.source_kind === 'external'" size="small" text @click="openSpec(row)">接入规范</el-button>
               <el-button v-if="row.source_kind === 'external'" size="small" text @click="copyEndpoint(row)">复制地址</el-button>
               <el-button v-if="canManageSources && row.source_kind === 'external'" size="small" text @click="issueToken(row)">签发令牌</el-button>
@@ -197,36 +178,38 @@
       <el-empty v-if="!loading && !filteredSources.length" description="当前筛选条件下没有事件源" />
     </section>
 
-    <section class="panel spec-summary">
-      <div class="section-head">
-        <h3>自定义接入规范</h3>
-        <el-button size="small" @click="openSpec(customSource)">查看示例</el-button>
+    <el-dialog v-model="sourceDialogVisible" title="新建自定义 Webhook 接入" width="620px" append-to-body destroy-on-close>
+      <div class="access-create-tip">
+        <strong>接入流程</strong>
+        <span>先选择默认事件分类并创建来源，平台会立即生成接收地址和令牌；外部系统只负责 POST 事务事件。</span>
       </div>
-      <div class="spec-grid">
-        <div><span>请求方法</span><strong>{{ ingestSpec.method || 'POST' }}</strong></div>
-        <div><span>鉴权</span><strong>{{ ingestSpec.auth || '-' }}</strong></div>
-        <div><span>地址模板</span><strong>{{ ingestSpec.endpoint_template || '-' }}</strong></div>
-      </div>
-    </section>
-
-    <el-dialog v-model="sourceDialogVisible" title="新增自定义事件源" width="560px" append-to-body destroy-on-close>
-      <el-form label-position="top" :model="sourceForm">
-        <el-form-item label="名称">
+      <el-form label-position="top" :model="sourceForm" class="access-create-form">
+        <el-form-item label="接入名称">
           <el-input v-model="sourceForm.name" placeholder="例如：内部发布平台" />
         </el-form-item>
-        <el-form-item label="编码">
+        <el-form-item label="接入编码（用于生成 Webhook 地址，创建后不建议修改）">
           <el-input v-model="sourceForm.code" placeholder="例如：internal-release" />
         </el-form-item>
+        <el-form-item label="默认事件分类">
+          <el-select v-model="sourceForm.event_category" placeholder="请选择接入事件分类" style="width: 100%">
+            <el-option v-for="item in eventCategoryOptions" :key="item.key" :label="item.label" :value="item.key" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="来源系统地址（可选，仅用于备注来源，不是平台接收地址）">
+          <el-input v-model="sourceForm.endpoint_url" placeholder="例如：https://release.example.com" />
+        </el-form-item>
         <el-form-item label="说明">
-          <el-input v-model="sourceForm.description" type="textarea" :rows="3" />
+          <el-input v-model="sourceForm.description" type="textarea" :rows="3" placeholder="说明这个接入会推送哪些事务事件" />
         </el-form-item>
-        <el-form-item label="外部地址">
-          <el-input v-model="sourceForm.endpoint_url" placeholder="可选，用于记录来源系统地址" />
-        </el-form-item>
+        <div class="access-endpoint-preview">
+          <span>创建后的平台接收地址</span>
+          <strong>{{ endpointPreview }}</strong>
+        </div>
       </el-form>
       <template #footer>
         <el-button @click="sourceDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveSource">保存</el-button>
+        <el-button @click="resetSourceForm">重置</el-button>
+        <el-button type="primary" :loading="saving" @click="saveSource">创建并签发令牌</el-button>
       </template>
     </el-dialog>
 
@@ -250,6 +233,16 @@
           </div>
         </section>
         <section class="detail-section">
+          <h4>事件分类结构</h4>
+          <div class="category-spec-list">
+            <div v-for="item in ingestSpec.event_categories || eventCategoryOptions" :key="item.key">
+              <strong>{{ item.label }}</strong>
+              <span>{{ item.description || '-' }}</span>
+              <em>必填：{{ (item.required_fields || []).join(' / ') || 'title / event_category' }}</em>
+            </div>
+          </div>
+        </section>
+        <section class="detail-section">
           <h4>字段映射</h4>
           <div class="mapping-list">
             <span v-for="entry in mappingEntries(activeSource || {})" :key="entry">{{ entry }}</span>
@@ -262,6 +255,42 @@
         </section>
       </div>
     </el-drawer>
+
+    <el-dialog v-model="editDialogVisible" title="编辑当前接入" width="620px" append-to-body destroy-on-close>
+      <el-form label-position="top" :model="sourceEditForm" class="access-edit-form">
+        <el-form-item label="接入编码">
+          <el-input v-model="sourceEditForm.code" disabled />
+        </el-form-item>
+        <el-form-item label="Webhook 接收地址">
+          <el-input :model-value="endpointFor(editingSource)" readonly>
+            <template #append>
+              <el-button @click="copyEndpoint(editingSource)">复制</el-button>
+            </template>
+          </el-input>
+        </el-form-item>
+        <el-form-item label="接入名称">
+          <el-input v-model="sourceEditForm.name" />
+        </el-form-item>
+        <el-form-item label="默认事件分类">
+          <el-select v-model="sourceEditForm.event_category" style="width: 100%">
+            <el-option v-for="item in eventCategoryOptions" :key="item.key" :label="item.label" :value="item.key" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="来源系统地址（可选，仅备注）">
+          <el-input v-model="sourceEditForm.endpoint_url" placeholder="例如：https://release.example.com" />
+        </el-form-item>
+        <el-form-item label="说明">
+          <el-input v-model="sourceEditForm.description" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item label="启用状态">
+          <el-switch v-model="sourceEditForm.enabled" active-text="启用" inactive-text="停用" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="saveEditAccess">保存修改</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="tokenDialogVisible" title="接入令牌" width="560px" append-to-body>
       <div class="token-box">
@@ -280,7 +309,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { InfoFilled, Plus, RefreshRight, Search, Share } from '@element-plus/icons-vue'
+import { InfoFilled, Plus, RefreshRight, Share } from '@element-plus/icons-vue'
 import {
   createEventSource,
   getEventSourceIngestSpec,
@@ -288,6 +317,7 @@ import {
   getEventSources,
   issueEventSourceToken,
   toggleEventSource,
+  updateEventSource,
 } from '@/api/modules/eventwall'
 import EventWallTabs from '@/components/eventwall/EventWallTabs.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -299,42 +329,39 @@ const saving = ref(false)
 const sources = ref([])
 const summary = ref({})
 const ingestSpec = ref({})
-const activeKind = ref('all')
-const keyword = ref('')
 const statusFilter = ref('')
 const specDrawerVisible = ref(false)
 const sourceDialogVisible = ref(false)
+const editDialogVisible = ref(false)
 const tokenDialogVisible = ref(false)
 const activeSource = ref(null)
+const editingSource = ref(null)
 const issuedToken = ref('')
-const sourceForm = reactive({ name: '', code: '', description: '', endpoint_url: '' })
+const sourceForm = reactive({ name: '', code: '', description: '', endpoint_url: '', event_category: 'ops_transaction' })
+const sourceEditForm = reactive({ code: '', name: '', description: '', endpoint_url: '', event_category: 'ops_transaction', enabled: false })
 
 const canManageSources = computed(() => authStore.hasPermission('eventwall.source.manage'))
-const kindOptions = [
-  { label: '全部', value: 'all' },
-  { label: '平台内置', value: 'builtin' },
-  { label: '外部接入', value: 'external' },
+const eventCategoryOptions = [
+  { key: 'application_release', label: '应用发布', description: '应用发布、回滚、启停、下线和流水线发布类事件。' },
+  { key: 'db_change', label: 'DB变更', description: 'SQL 上线、数据库结构变更、数据修复和执行结果类事件。' },
+  { key: 'config_change', label: '配置变更', description: '配置发布、参数调整、网络策略、域名路由和中间件配置类事件。' },
+  { key: 'ops_transaction', label: '运维事务', description: '权限开通、网络配置、机器申请释放、巡检和通用运维处理类事件。' },
 ]
 const statCards = computed(() => [
-  { kicker: 'Sources', value: summary.value.total_sources || 0, label: '事件源总数' },
-  { kicker: 'Built-in', value: summary.value.builtin_sources || 0, label: '平台内置源' },
-  { kicker: 'External', value: summary.value.external_enabled || 0, label: '外部启用源' },
-  { kicker: 'Ingested', value: summary.value.recent_events_7d || 0, label: '7 天入库事件' },
+  { value: `来源 ${summary.value.total_sources || 0}`, label: '事件源总数', tone: '' },
+  { value: `内置 ${summary.value.builtin_sources || 0}`, label: '平台内置源', tone: 'success-card' },
+  { value: `启用 ${summary.value.external_enabled || 0}`, label: '外部启用源', tone: 'warning-card' },
+  { value: `入库 ${summary.value.recent_events_7d || 0}`, label: '7 天入库事件', tone: 'danger-card' },
 ])
 const filteredSources = computed(() => {
-  const key = keyword.value.trim().toLowerCase()
   return sources.value.filter((item) => {
-    if (activeKind.value !== 'all' && item.source_kind !== activeKind.value) return false
     if (statusFilter.value && item.status !== statusFilter.value) return false
-    if (!key) return true
-    return [item.name, item.code, item.description, item.source_type].some(value => String(value || '').toLowerCase().includes(key))
+    return true
   })
 })
 const activeFilterChips = computed(() => {
   const chips = []
-  if (activeKind.value !== 'all') chips.push({ key: 'kind', label: `分类 ${kindLabel(activeKind.value)}` })
   if (statusFilter.value) chips.push({ key: 'status', label: `状态 ${statusLabel(statusFilter.value)}` })
-  if (keyword.value.trim()) chips.push({ key: 'search', label: `搜索 ${keyword.value.trim()}` })
   return chips
 })
 const featuredSources = computed(() => {
@@ -359,12 +386,7 @@ const statusSummary = computed(() => {
     return { ...item, count, percent: `${Math.round((count / total) * 100)}%` }
   })
 })
-const pendingSources = computed(() => {
-  return sources.value
-    .filter(item => item.source_kind === 'external' && (!item.enabled || ['warning', 'not_configured', 'disabled'].includes(item.status)))
-    .slice(0, 5)
-})
-const customSource = computed(() => sources.value.find(item => item.code === 'custom') || null)
+const endpointPreview = computed(() => endpointFor({ code: sourceForm.code.trim() || '{code}' }))
 
 function kindLabel(kind) {
   return kind === 'external' ? '外部接入' : '平台内置'
@@ -374,13 +396,22 @@ function typeLabel(type) {
   return {
     builtin_workorder: '工单系统',
     builtin_task: '任务中心',
-    builtin_k8s: 'K8s 事件',
     jira: 'Jira',
     jenkins: 'Jenkins',
     argocd: 'ArgoCD',
     gitlab: 'GitLab',
     custom: '自定义事件源',
   }[type] || type || '-'
+}
+
+function sourceEventCategoryKey(item) {
+  return item?.config?.default_event_category || ''
+}
+
+function sourceEventCategoryLabel(item) {
+  const key = sourceEventCategoryKey(item)
+  if (!key && item?.source_kind === 'builtin') return '多分类'
+  return eventCategoryOptions.find(option => option.key === key)?.label || '-'
 }
 
 function statusLabel(status) {
@@ -446,40 +477,86 @@ function openSpec(item) {
 }
 
 function openCreateDialog() {
-  Object.assign(sourceForm, { name: '', code: '', description: '', endpoint_url: '' })
+  resetSourceForm()
   sourceDialogVisible.value = true
 }
 
+function resetSourceForm() {
+  Object.assign(sourceForm, { name: '', code: '', description: '', endpoint_url: '', event_category: 'ops_transaction' })
+}
+
+function openEditAccess(item) {
+  if (!item || item.source_kind !== 'external') return
+  editingSource.value = item
+  Object.assign(sourceEditForm, {
+    code: item.code,
+    name: item.name || '',
+    description: item.description || '',
+    endpoint_url: item.endpoint_url || '',
+    event_category: sourceEventCategoryKey(item) || 'ops_transaction',
+    enabled: Boolean(item.enabled),
+  })
+  editDialogVisible.value = true
+}
+
 function clearFilter(key) {
-  if (key === 'kind') activeKind.value = 'all'
-  else if (key === 'status') statusFilter.value = ''
-  else if (key === 'search') keyword.value = ''
+  if (key === 'status') statusFilter.value = ''
 }
 
 function clearAllFilters() {
-  activeKind.value = 'all'
   statusFilter.value = ''
-  keyword.value = ''
 }
 
 async function saveSource() {
-  if (!sourceForm.name.trim() || !sourceForm.code.trim()) {
-    ElMessage.warning('请填写名称和编码')
+  if (!sourceForm.name.trim() || !sourceForm.code.trim() || !sourceForm.event_category) {
+    ElMessage.warning('请填写名称、编码和默认事件分类')
     return
   }
   saving.value = true
   try {
-    await createEventSource({
-      ...sourceForm,
+    const { event_category, ...formData } = sourceForm
+    const createdSource = await createEventSource({
+      ...formData,
       source_kind: 'external',
       source_type: 'custom',
       enabled: false,
       status: 'not_configured',
       auth_type: 'webhook',
-      field_mapping: { event_id: 'event_id', occurred_at: 'occurred_at', title: 'title' },
+      config: { default_event_category: event_category, created_from: 'event_source_page' },
+      field_mapping: { event_id: 'event_id', event_category: 'event_category', occurred_at: 'occurred_at', title: 'title' },
     })
+    const tokenResponse = await issueEventSourceToken(createdSource.code || sourceForm.code.trim())
+    issuedToken.value = tokenResponse.token
+    tokenDialogVisible.value = true
     sourceDialogVisible.value = false
-    ElMessage.success('事件源已创建')
+    ElMessage.success('接入已创建并签发令牌')
+    resetSourceForm()
+    await loadAll()
+  } finally {
+    saving.value = false
+  }
+}
+
+async function saveEditAccess() {
+  if (!editingSource.value?.code) return
+  if (!sourceEditForm.name.trim() || !sourceEditForm.event_category) {
+    ElMessage.warning('请填写接入名称和默认事件分类')
+    return
+  }
+  saving.value = true
+  try {
+    await updateEventSource(editingSource.value.code, {
+      name: sourceEditForm.name.trim(),
+      description: sourceEditForm.description,
+      endpoint_url: sourceEditForm.endpoint_url,
+      enabled: sourceEditForm.enabled,
+      config: {
+        ...(editingSource.value.config || {}),
+        default_event_category: sourceEditForm.event_category,
+      },
+    })
+    editDialogVisible.value = false
+    ElMessage.success('接入配置已更新')
     await loadAll()
   } finally {
     saving.value = false
@@ -516,94 +593,138 @@ onMounted(loadAll)
 .event-source-page {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 8px;
   color: #1f2329;
 }
 
 .panel {
-  border: 1px solid #dee0e3;
-  border-radius: 8px;
-  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #fffdf8 100%);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04);
 }
 
 .hero {
-  min-height: 64px;
-  padding: 14px 18px;
+  min-height: 68px;
+  padding: 12px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
 }
 
-.hero__title,
-.hero__actions,
-.source-toolbar,
-.toolbar-right,
+.hero-copy,
+.hero-title-row,
+.hero-actions,
 .section-head {
   display: flex;
   align-items: center;
 }
 
-.hero__title {
-  gap: 10px;
+.hero-copy {
+  gap: 4px;
+  flex-wrap: wrap;
 }
 
-.hero__title h2 {
+.hero-title-row {
+  align-items: baseline;
+  gap: 12px;
+}
+
+.hero-title-row h2 {
   margin: 0;
-  font-size: 20px;
+  font-size: 23px;
   font-weight: 700;
-  line-height: 1.2;
+  line-height: 1.1;
 }
 
-.hero__title .el-icon {
-  color: #3370ff;
-  font-size: 22px;
+.hero-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #0f766e, #2563eb);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
 }
 
-.hero__actions,
-.toolbar-right,
+.hero-actions,
 .table-actions {
   gap: 8px;
 }
 
-.metric-grid {
+.hero-actions :deep(.el-button) {
+  min-height: 32px;
+  border-radius: 10px;
+  font-weight: 500;
+  padding: 0 14px;
+}
+
+.hero.panel {
+  border-radius: 20px;
+}
+
+.capability-section {
+  display: block;
+}
+
+.capability-card-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
+  margin-bottom: 0;
 }
 
-.metric-cell {
-  min-height: 82px;
-  padding: 13px 14px;
-  border: 1px solid #dee0e3;
-  border-radius: 8px;
+.release-stat-card {
+  min-height: 68px;
+  padding: 9px 11px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
   background: #fff;
+  box-shadow: 0 6px 18px rgba(31, 35, 41, 0.04);
   display: flex;
-  flex-direction: column;
-  gap: 5px;
+  align-items: center;
 }
 
-.metric-cell span {
-  font-size: 12px;
-  color: #8f959e;
+.success-card {
+  background: linear-gradient(135deg, #dcfce7, #86efac);
 }
 
-.metric-cell strong {
-  font-size: 26px;
-  line-height: 1;
+.warning-card {
+  background: linear-gradient(135deg, #fef3c7, #fdba74);
 }
 
-.metric-cell em {
-  font-style: normal;
-  color: #646a73;
+.danger-card {
+  background: linear-gradient(135deg, #fee2e2, #fca5a5);
+}
+
+.stat-inline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.stat-label {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.stat-value {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .hint-strip {
   min-height: 38px;
   padding: 9px 12px;
-  border: 1px solid #bacefd;
-  border-radius: 8px;
-  background: #f3f7ff;
+  border: 1px solid rgba(51, 112, 255, 0.18);
+  border-radius: 12px;
+  background: linear-gradient(90deg, #f7faff, #f8fbff);
   color: #245bdb;
   display: flex;
   align-items: center;
@@ -611,26 +732,78 @@ onMounted(loadAll)
   font-size: 13px;
 }
 
-.source-toolbar {
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px;
+.access-create-tip {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(51, 112, 255, 0.14);
+  border-radius: 12px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.toolbar-right :deep(.el-input) {
-  width: 220px;
+.access-create-tip strong {
+  color: #1f2329;
+  font-size: 14px;
 }
 
-.toolbar-right :deep(.el-select) {
-  width: 130px;
+.access-create-tip span {
+  color: #646a73;
+  font-size: 13px;
+}
+
+.access-create-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 12px;
+}
+
+.access-create-form :deep(.el-form-item:nth-child(5)),
+.access-endpoint-preview {
+  grid-column: 1 / -1;
+}
+
+.access-endpoint-preview {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.access-endpoint-preview span {
+  color: #8f959e;
+  font-size: 12px;
+}
+
+.access-endpoint-preview strong {
+  color: #245bdb;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.access-edit-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 12px;
+}
+
+.access-edit-form :deep(.el-form-item:nth-child(2)),
+.access-edit-form :deep(.el-form-item:nth-child(5)),
+.access-edit-form :deep(.el-form-item:nth-child(6)) {
+  grid-column: 1 / -1;
 }
 
 .active-filter-strip {
   min-height: 34px;
   padding: 6px 8px;
-  border: 1px solid #dee0e3;
-  border-radius: 8px;
-  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -672,36 +845,35 @@ onMounted(loadAll)
 .source-board {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 280px;
-  gap: 12px;
+  gap: 8px;
 }
 
 .source-map-panel,
 .status-panel,
-.table-panel,
-.spec-summary,
-.intake-panel {
+.table-panel {
   padding: 14px;
 }
 
 .source-card-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .source-card {
   min-width: 0;
   padding: 12px;
-  border: 1px solid #dee0e3;
-  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
   background: #fff;
+  box-shadow: 0 6px 18px rgba(31, 35, 41, 0.035);
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
 .source-card:hover {
-  border-color: #bacefd;
+  border-color: rgba(51, 112, 255, 0.24);
   background: #f7faff;
 }
 
@@ -759,7 +931,7 @@ onMounted(loadAll)
 .source-avatar {
   width: 30px;
   height: 30px;
-  border-radius: 8px;
+  border-radius: 12px;
   background: #e8f0ff;
   color: #245bdb;
   display: grid;
@@ -907,51 +1079,6 @@ onMounted(loadAll)
   background: #3370ff;
 }
 
-.intake-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.intake-row {
-  width: 100%;
-  padding: 10px;
-  border: 1px solid #dee0e3;
-  border-radius: 8px;
-  background: #fff;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  text-align: left;
-  cursor: pointer;
-}
-
-.intake-row:hover {
-  border-color: #bacefd;
-  background: #f7faff;
-}
-
-.intake-row span {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.intake-row strong,
-.intake-row em {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.intake-row em {
-  color: #646a73;
-  font-size: 12px;
-  font-style: normal;
-}
-
 .source-name {
   display: flex;
   flex-direction: column;
@@ -964,9 +1091,13 @@ onMounted(loadAll)
 }
 
 .source-table :deep(.el-table__header th) {
-  background: #f7f8fa;
+  background: #f8fafc;
   color: #646a73;
   font-weight: 600;
+}
+
+.source-table :deep(.el-table__inner-wrapper::before) {
+  display: none;
 }
 
 .source-table :deep(.el-table__row) {
@@ -986,37 +1117,13 @@ onMounted(loadAll)
 .section-head {
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .section-head h3 {
   margin: 0;
   font-size: 15px;
   font-weight: 700;
-}
-
-.spec-grid {
-  display: grid;
-  grid-template-columns: 140px 260px minmax(0, 1fr);
-  gap: 10px;
-}
-
-.spec-grid div {
-  padding: 10px;
-  border-radius: 8px;
-  background: #f7f8fa;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.spec-grid span {
-  color: #8f959e;
-  font-size: 12px;
-}
-
-.spec-grid strong {
-  overflow-wrap: anywhere;
 }
 
 .drawer-stack {
@@ -1079,6 +1186,32 @@ onMounted(loadAll)
   font-style: normal;
 }
 
+.category-spec-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.category-spec-list div {
+  padding: 10px;
+  border-radius: 8px;
+  background: #f7f8fa;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.category-spec-list strong {
+  color: #1f2329;
+}
+
+.category-spec-list span,
+.category-spec-list em {
+  color: #646a73;
+  font-style: normal;
+  font-size: 12px;
+}
+
 .token-box {
   display: flex;
   flex-direction: column;
@@ -1098,9 +1231,8 @@ pre {
 }
 
 @media (max-width: 980px) {
-  .metric-grid,
-  .source-board,
-  .spec-grid {
+  .capability-card-grid,
+  .source-board {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -1108,30 +1240,22 @@ pre {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .source-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
 }
 
 @media (max-width: 700px) {
   .hero,
-  .hero__actions,
-  .toolbar-right {
+  .hero-actions {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .metric-grid,
+  .capability-card-grid,
+  .access-create-form,
+  .access-edit-form,
   .source-board,
-  .source-card-grid,
-  .spec-grid {
+  .source-card-grid {
     grid-template-columns: 1fr;
   }
 
-  .toolbar-right :deep(.el-input),
-  .toolbar-right :deep(.el-select) {
-    width: 100%;
-  }
 }
 </style>

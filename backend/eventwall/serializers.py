@@ -126,6 +126,7 @@ class EventSourceIngestSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255)
     summary = serializers.CharField(max_length=255, required=False, allow_blank=True)
     detail = serializers.CharField(required=False, allow_blank=True)
+    event_category = serializers.CharField(max_length=64, required=False, allow_blank=True)
     event_type = serializers.CharField(max_length=64, required=False, allow_blank=True)
     action = serializers.CharField(max_length=64, required=False, allow_blank=True)
     result = serializers.ChoiceField(choices=EventRecord.RESULT_CHOICES, required=False, default=EventRecord.RESULT_SUCCESS)

@@ -69,6 +69,7 @@
             @input="handleFilterChange"
           />
           <el-segmented v-model="eventMode" size="small" :options="eventModeOptions" @change="refreshEvents" />
+          <el-button size="small" :icon="Refresh" :loading="loading" @click="refreshEvents">&#x5237;&#x65B0;</el-button>
           <div class="toolbar-spacer" />
           <el-button
             v-if="canManageAlerts && eventMode === 'list'"
@@ -869,7 +870,7 @@ const dimensionOptions = [
 const filters = reactive({
   search: '',
   level: '',
-  status: 'active',
+  status: '',
   source_type: '',
   environment: '',
 })

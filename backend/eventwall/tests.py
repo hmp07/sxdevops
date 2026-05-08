@@ -13,10 +13,10 @@ class EventSourceTests(TestCase):
     def test_default_event_sources_include_builtin_and_external_sources(self):
         _ensure_default_event_sources()
 
-        self.assertEqual(EventSource.objects.count(), 8)
+        self.assertEqual(EventSource.objects.exclude(code='builtin-k8s').count(), 7)
         self.assertTrue(EventSource.objects.filter(code='builtin-workorder', source_kind=EventSource.KIND_BUILTIN).exists())
         self.assertTrue(EventSource.objects.filter(code='builtin-task-center', source_kind=EventSource.KIND_BUILTIN).exists())
-        self.assertTrue(EventSource.objects.filter(code='builtin-k8s', source_kind=EventSource.KIND_BUILTIN).exists())
+        self.assertFalse(EventSource.objects.filter(code='builtin-k8s', enabled=True).exists())
         self.assertTrue(EventSource.objects.filter(code='jira', source_kind=EventSource.KIND_EXTERNAL).exists())
         self.assertTrue(EventSource.objects.filter(code='jenkins', source_kind=EventSource.KIND_EXTERNAL).exists())
         self.assertTrue(EventSource.objects.filter(code='argocd', source_kind=EventSource.KIND_EXTERNAL).exists())
@@ -35,6 +35,7 @@ class EventSourceTests(TestCase):
             '/api/event-sources/custom/ingest/',
             {
                 'event_id': 'unit-001',
+                'event_category': 'application_release',
                 'title': '自研系统变更事件',
                 'summary': '自研系统推送变更事件',
                 'result': EventRecord.RESULT_SUCCESS,
@@ -50,6 +51,109 @@ class EventSourceTests(TestCase):
         self.assertEqual(event.title, '自研系统变更事件')
         self.assertEqual(event.source_type, EventRecord.SOURCE_EXTERNAL)
         self.assertEqual(event.application, 'payment-api')
+
+    def test_external_ingest_deduplicates_by_event_id_per_source(self):
+        _ensure_default_event_sources()
+        source = EventSource.objects.get(code='custom')
+        token = source.issue_token()
+        source.enabled = True
+        source.status = EventSource.STATUS_HEALTHY
+        source.save(update_fields=['token_hash', 'token_preview', 'enabled', 'status', 'updated_at'])
+        payload = {
+            'event_id': 'repeat-001',
+            'event_category': 'ops_transaction',
+            'title': '重复外部事件',
+            'result': EventRecord.RESULT_FAILED,
+            'severity': EventRecord.SEVERITY_WARNING,
+        }
+
+        client = APIClient()
+        first_response = client.post(
+            '/api/event-sources/custom/ingest/',
+            payload,
+            format='json',
+            HTTP_AUTHORIZATION=f'Bearer {token}',
+        )
+        second_response = client.post(
+            '/api/event-sources/custom/ingest/',
+            payload,
+            format='json',
+            HTTP_AUTHORIZATION=f'Bearer {token}',
+        )
+
+        self.assertEqual(first_response.status_code, 201)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertTrue(second_response.data['deduplicated'])
+        self.assertEqual(EventRecord.objects.filter(metadata__event_source_code='custom', metadata__external_event_id='repeat-001').count(), 1)
+
+    def test_external_ingest_requires_event_category_without_source_default(self):
+        _ensure_default_event_sources()
+        source = EventSource.objects.get(code='custom')
+        token = source.issue_token()
+        source.enabled = True
+        source.status = EventSource.STATUS_HEALTHY
+        source.save(update_fields=['token_hash', 'token_preview', 'enabled', 'status', 'updated_at'])
+
+        response = APIClient().post(
+            '/api/event-sources/custom/ingest/',
+            {'event_id': 'missing-category', 'title': '缺少分类'},
+            format='json',
+            HTTP_AUTHORIZATION=f'Bearer {token}',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('event_category', response.data)
+
+    def test_pipeline_events_are_classified_as_application_release(self):
+        _ensure_default_event_sources()
+        source = EventSource.objects.get(code='gitlab')
+        token = source.issue_token()
+        source.enabled = True
+        source.status = EventSource.STATUS_HEALTHY
+        source.save(update_fields=['token_hash', 'token_preview', 'enabled', 'status', 'updated_at'])
+
+        response = APIClient().post(
+            '/api/event-sources/gitlab/ingest/',
+            {
+                'checkout_sha': 'pipe-001',
+                'object_kind': 'pipeline',
+                'event_name': 'pipeline',
+                'project': {'id': 1, 'name': 'payment-api', 'path_with_namespace': 'trade/payment-api'},
+                'user_username': 'release-bot',
+            },
+            format='json',
+            HTTP_AUTHORIZATION=f'Bearer {token}',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        event = EventRecord.objects.get(metadata__event_source_code='gitlab', metadata__external_event_id='pipe-001')
+        self.assertEqual(event.action, 'pipeline')
+        self.assertEqual(event.metadata['event_category'], 'application_release')
+        self.assertEqual(event.metadata['event_category_source'], 'traits')
+
+    def test_deployment_approval_flow_is_classified_as_application_release(self):
+        user = get_user_model().objects.create_superuser(username='flow-admin', password='pass')
+        now = timezone.now()
+        EventRecord.objects.create(
+            occurred_at=now - timedelta(minutes=5),
+            module='ops',
+            category='resource_change',
+            action='create',
+            result=EventRecord.RESULT_SUCCESS,
+            severity=EventRecord.SEVERITY_INFO,
+            title='创建发布审批流',
+            resource_type='deployment_approval_flow',
+            resource_id='1',
+            resource_name='生产发布审批',
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get('/api/events/analysis_wall/', {'fault_at': now.isoformat(), 'lookback_minutes': 60, 'after_minutes': 10})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['events'][0]['event_category']['key'], 'application_release')
+        self.assertEqual(response.data['category_sections'][0]['count'], 1)
 
     def test_analysis_wall_groups_events_by_source_and_returns_suspects(self):
         user = get_user_model().objects.create_superuser(username='analysis-admin', password='pass')
@@ -83,7 +187,47 @@ class EventSourceTests(TestCase):
         self.assertEqual(response.data['affected_scopes'][0]['application'], 'payment-api')
         self.assertEqual(response.data['lanes'][0]['source']['code'], 'builtin-workorder')
         self.assertEqual(response.data['suspects'][0]['title'], '发布失败')
+        self.assertEqual(response.data['events'][0]['event_category']['key'], 'application_release')
+        self.assertEqual(response.data['category_sections'][0]['key'], 'application_release')
+        self.assertEqual(response.data['category_sections'][0]['count'], 1)
         self.assertTrue(response.data['recommendations'])
+
+    def test_analysis_wall_excludes_internal_operations_outside_workorders_and_tasks(self):
+        user = get_user_model().objects.create_superuser(username='analysis-filter-admin', password='pass')
+        now = timezone.now()
+        EventRecord.objects.create(
+            occurred_at=now - timedelta(minutes=20),
+            module='ops',
+            category='execution',
+            action='refresh_info',
+            result=EventRecord.RESULT_FAILED,
+            severity=EventRecord.SEVERITY_WARNING,
+            title='刷新主机信息失败',
+            resource_type='host',
+            resource_id='1',
+            resource_name='host-01',
+        )
+        EventRecord.objects.create(
+            occurred_at=now - timedelta(minutes=10),
+            module='ops',
+            category='execution',
+            action='create_task',
+            result=EventRecord.RESULT_FAILED,
+            severity=EventRecord.SEVERITY_DANGER,
+            title='任务中心执行失败',
+            resource_type='host_task',
+            resource_id='2',
+            resource_name='批量巡检',
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get('/api/events/analysis_wall/', {'fault_at': now.isoformat(), 'lookback_minutes': 60, 'after_minutes': 10})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['summary']['total'], 1)
+        self.assertEqual(response.data['events'][0]['title'], '任务中心执行失败')
+        self.assertEqual(response.data['lanes'][0]['source']['code'], 'builtin-task-center')
 
     def test_operation_audit_excludes_external_ingest_events(self):
         user = get_user_model().objects.create_superuser(username='audit-admin', password='pass')
