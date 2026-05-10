@@ -378,44 +378,62 @@
       </section>
     </template>
 
-    <el-drawer v-model="detailVisible" size="520px" title="&#x544A;&#x8B66;&#x8BE6;&#x60C5;">
+    <el-drawer v-model="detailVisible" class="alert-detail-drawer" size="520px" title="&#x544A;&#x8B66;&#x8BE6;&#x60C5;">
       <template v-if="selectedAlert">
-        <div class="detail-head">
-          <el-tag :type="levelType(selectedAlert.level)">{{ selectedAlert.level_display || levelText(selectedAlert.level) }}</el-tag>
-          <el-tag :type="statusType(selectedAlert.status)">{{ selectedAlert.status_display || statusText(selectedAlert.status) }}</el-tag>
-          <span class="detail-title">{{ selectedAlert.title }}</span>
-        </div>
-        <el-descriptions :column="1" size="small" border>
-          <el-descriptions-item label="&#x6765;&#x6E90;">{{ providerText(selectedAlert.source_type) }} / {{ selectedAlert.source }}</el-descriptions-item>
-          <el-descriptions-item label="&#x8D44;&#x6E90;">{{ selectedAlert.resource || selectedAlert.host_name || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="&#x670D;&#x52A1;">{{ selectedAlert.service || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="&#x73AF;&#x5883;">{{ selectedAlert.environment || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="&#x8BA4;&#x9886;">
-            <div class="claimant-cell" v-if="selectedAlert.claimants?.length">
-              <el-tag v-for="item in selectedAlert.claimants" :key="item.id" size="small" class="mini-tag claimant-tag">{{ item.claimant }}</el-tag>
+        <div class="alert-detail-body">
+          <div class="detail-head">
+            <div class="detail-badges">
+              <el-tag :type="levelType(selectedAlert.level)">{{ selectedAlert.level_display || levelText(selectedAlert.level) }}</el-tag>
+              <el-tag :type="statusType(selectedAlert.status)">{{ selectedAlert.status_display || statusText(selectedAlert.status) }}</el-tag>
             </div>
-            <span v-else>-</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="&#x805A;&#x5408;&#x952E;">{{ selectedAlert.group_key || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="&#x63CF;&#x8FF0;">{{ selectedAlert.message }}</el-descriptions-item>
-        </el-descriptions>
-        <div v-if="canManageAlerts || canNotifyAlerts" class="detail-actions">
-          <el-button v-if="!selectedAlert.current_user_claimed" size="small" type="success" @click="runAlertAction(selectedAlert, 'claim')">&#x8BA4;&#x9886;</el-button>
-          <el-button v-if="selectedAlert.current_user_claimed" size="small" @click="runAlertAction(selectedAlert, 'unclaim')">&#x53D6;&#x6D88;&#x8BA4;&#x9886;</el-button>
-          <el-button v-if="canManageAlerts" size="small" type="warning" @click="openMuteDialog(selectedAlert)">&#x5C4F;&#x853D;</el-button>
-          <el-button v-if="canNotifyAlerts" size="small" type="primary" @click="runAlertAction(selectedAlert, 'notify')">&#x53D1;&#x9001;&#x901A;&#x77E5;</el-button>
-          <el-button v-if="canManageAlerts" size="small" @click="runAlertAction(selectedAlert, 'close')">&#x5173;&#x95ED;&#x544A;&#x8B66;</el-button>
+            <span class="detail-title">{{ selectedAlert.title }}</span>
+          </div>
+          <section class="alert-detail-card">
+            <el-descriptions class="alert-detail-summary" :column="1" size="small" border>
+              <el-descriptions-item label="&#x6765;&#x6E90;">{{ providerText(selectedAlert.source_type) }} / {{ selectedAlert.source }}</el-descriptions-item>
+              <el-descriptions-item label="&#x8D44;&#x6E90;">{{ selectedAlert.resource || selectedAlert.host_name || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="&#x670D;&#x52A1;">{{ selectedAlert.service || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="&#x73AF;&#x5883;">{{ selectedAlert.environment || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="&#x8BA4;&#x9886;&#x4EBA;">
+                <div class="claimant-cell" v-if="selectedAlert.claimants?.length">
+                  <el-tag v-for="item in selectedAlert.claimants" :key="item.id" size="small" class="mini-tag claimant-tag">{{ item.claimant }}</el-tag>
+                </div>
+                <span v-else>-</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="&#x805A;&#x5408;&#x952E;">{{ selectedAlert.group_key || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="&#x63CF;&#x8FF0;">{{ selectedAlert.message }}</el-descriptions-item>
+            </el-descriptions>
+          </section>
+          <div v-if="canManageAlerts || canNotifyAlerts" class="detail-actions">
+            <el-button v-if="!selectedAlert.current_user_claimed" size="small" type="success" @click="runAlertAction(selectedAlert, 'claim')">&#x8BA4;&#x9886;</el-button>
+            <el-button v-if="selectedAlert.current_user_claimed" size="small" @click="runAlertAction(selectedAlert, 'unclaim')">&#x53D6;&#x6D88;&#x8BA4;&#x9886;</el-button>
+            <el-button v-if="canManageAlerts" size="small" type="warning" @click="openMuteDialog(selectedAlert)">&#x5C4F;&#x853D;</el-button>
+            <el-button v-if="canNotifyAlerts" size="small" type="primary" @click="runAlertAction(selectedAlert, 'notify')">&#x53D1;&#x9001;&#x901A;&#x77E5;</el-button>
+            <el-button v-if="canManageAlerts" size="small" @click="runAlertAction(selectedAlert, 'close')">&#x5173;&#x95ED;&#x544A;&#x8B66;</el-button>
+          </div>
+          <section class="alert-detail-card">
+            <div class="detail-section-title">
+              <h4>&#x6807;&#x7B7E;</h4>
+              <span>{{ Object.keys(selectedAlert.labels || {}).length }} 项</span>
+            </div>
+            <div class="kv-list">
+              <el-tag v-for="(value, key) in selectedAlert.labels" :key="key" size="small">{{ key }}={{ value }}</el-tag>
+              <span v-if="!Object.keys(selectedAlert.labels || {}).length" class="detail-empty">暂无标签</span>
+            </div>
+          </section>
+          <section class="alert-detail-card">
+            <div class="detail-section-title">
+              <h4>&#x5904;&#x7406;&#x8BB0;&#x5F55;</h4>
+              <span>{{ (selectedAlert.actions || []).length }} 条</span>
+            </div>
+            <el-timeline class="alert-detail-timeline">
+              <el-timeline-item v-for="item in selectedAlert.actions || []" :key="item.id" :timestamp="formatTime(item.created_at)">
+                {{ item.actor || '\u7CFB\u7EDF' }} / {{ item.action_display || item.action }} / {{ item.note || '-' }}
+              </el-timeline-item>
+            </el-timeline>
+            <span v-if="!(selectedAlert.actions || []).length" class="detail-empty">暂无处理记录</span>
+          </section>
         </div>
-        <h4>&#x6807;&#x7B7E;</h4>
-        <div class="kv-list">
-          <el-tag v-for="(value, key) in selectedAlert.labels" :key="key" size="small">{{ key }}={{ value }}</el-tag>
-        </div>
-        <h4>&#x5904;&#x7406;&#x8BB0;&#x5F55;</h4>
-        <el-timeline>
-          <el-timeline-item v-for="item in selectedAlert.actions || []" :key="item.id" :timestamp="formatTime(item.created_at)">
-            {{ item.actor || '\u7CFB\u7EDF' }} / {{ item.action_display || item.action }} / {{ item.note || '-' }}
-          </el-timeline-item>
-        </el-timeline>
       </template>
     </el-drawer>
 
@@ -1801,24 +1819,115 @@ onMounted(async () => {
   word-break: break-all;
 }
 
+.alert-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .detail-head {
   align-items: flex-start;
-  background: #fbfcff;
-  border: 1px solid var(--alert-border-soft);
-  border-radius: 12px;
+  background: linear-gradient(135deg, #ffffff 0%, #f6faff 100%);
+  border: 1px solid rgba(51, 112, 255, 0.16);
+  border-radius: 10px;
+  box-shadow: 0 8px 20px rgba(31, 35, 41, 0.05);
   display: flex;
-  gap: 8px;
-  margin: -6px 0 8px;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
   padding: 10px 12px;
 }
 
+.detail-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .detail-title {
+  color: var(--alert-text);
+  font-size: 14px;
   font-weight: 700;
-  line-height: 1.5;
+  line-height: 1.45;
+}
+
+.alert-detail-card {
+  background: #fff;
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 10px;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.035);
+  padding: 8px;
+}
+
+.alert-detail-summary {
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.alert-detail-summary :deep(.el-descriptions__table) {
+  border-radius: 8px;
+}
+
+.alert-detail-summary :deep(.el-descriptions__cell) {
+  border-color: #edf0f5;
+}
+
+.alert-detail-summary :deep(.el-descriptions__label) {
+  background: #f8fafc;
+  box-sizing: border-box;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 64px;
+  padding: 6px 8px;
+  text-align: left;
+  white-space: nowrap;
+  width: 64px;
+  word-break: keep-all;
+}
+
+.alert-detail-summary :deep(.el-descriptions__content) {
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 6px 8px;
+  word-break: break-word;
 }
 
 .detail-actions {
-  margin: 8px 0;
+  background: #fff;
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 10px;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.035);
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 8px;
+}
+
+.detail-actions :deep(.el-button) {
+  margin-left: 0;
+}
+
+.detail-section-title {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 7px;
+}
+
+.detail-section-title h4 {
+  color: var(--alert-text);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  margin: 0;
+}
+
+.detail-section-title span,
+.detail-empty {
+  color: var(--alert-muted);
+  font-size: 12px;
 }
 
 .field-suffix {
@@ -1835,8 +1944,29 @@ onMounted(async () => {
 .kv-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
+  gap: 5px;
+  margin-bottom: 0;
+}
+
+.alert-detail-timeline {
+  margin-top: 2px;
+  padding-left: 2px;
+}
+
+.alert-detail-timeline :deep(.el-timeline-item) {
+  padding-bottom: 10px;
+}
+
+.alert-detail-timeline :deep(.el-timeline-item__timestamp) {
+  color: #8f959e;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.alert-detail-timeline :deep(.el-timeline-item__content) {
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .matcher-editor,
@@ -1891,6 +2021,17 @@ onMounted(async () => {
   padding-top: 8px;
 }
 
+.alerts-page :deep(.alert-detail-drawer .el-drawer__header) {
+  border-bottom: 1px solid #edf0f5;
+  margin-bottom: 0;
+  padding: 14px 18px 10px;
+}
+
+.alerts-page :deep(.alert-detail-drawer .el-drawer__body) {
+  background: #f7f8fa;
+  padding: 10px 14px 14px;
+}
+
 .alerts-page :deep(.el-button--primary) {
   --el-button-bg-color: var(--alert-primary);
   --el-button-border-color: var(--alert-primary);
@@ -1928,7 +2069,7 @@ onMounted(async () => {
 
 .alerts-page :deep(.el-dialog),
 .alerts-page :deep(.el-drawer) {
-  border-radius: 16px;
+  border-radius: 10px;
 }
 
 @media (max-width: 1100px) {

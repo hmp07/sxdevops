@@ -164,7 +164,7 @@ class EventSource(models.Model):
         (AUTH_WEBHOOK, 'Webhook Token'),
     ]
 
-    code = models.SlugField('事件源编码', max_length=64, unique=True)
+    code = models.SlugField('接入类型', max_length=64, unique=True)
     name = models.CharField('事件源名称', max_length=128)
     source_kind = models.CharField('事件源类别', max_length=16, choices=KIND_CHOICES)
     source_type = models.CharField('事件源类型', max_length=32, choices=TYPE_CHOICES)

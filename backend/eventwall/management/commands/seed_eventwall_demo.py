@@ -8,6 +8,7 @@ from eventwall.services import build_resource, record_event
 
 
 DEMO_WINDOW_MINUTES = 7 * 24 * 60 - 1
+EXCLUDED_DEMO_ENVIRONMENTS = {'prod', 'staging'}
 
 
 class Command(BaseCommand):
@@ -19,6 +20,8 @@ class Command(BaseCommand):
         self.stdout.write('正在生成事件墙最近 7 天演示数据...')
 
         for payload in self.build_demo_events():
+            if payload.get('environment') in EXCLUDED_DEMO_ENVIRONMENTS:
+                continue
             self._record_demo(**payload)
 
         count = EventRecord.objects.filter(is_demo=True).count()

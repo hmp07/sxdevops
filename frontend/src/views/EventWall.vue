@@ -27,7 +27,7 @@
           <span>环境必选，先选择环境，再选择系统、应用和事件源。</span>
         </div>
         <div class="query-actions">
-          <el-button size="small" type="primary" :loading="loading" @click="applyQuery">分析</el-button>
+          <el-button size="small" type="primary" :loading="loading" @click="applyQuery">查询</el-button>
           <el-button size="small" plain @click="clearAllFilters">重置</el-button>
         </div>
       </div>
@@ -117,17 +117,16 @@
         <div class="axis-label">事件窗口</div>
         <div
           class="axis-track"
-          :class="{ selecting: timelineSelection.active }"
-          @mousedown="startTimelineSelection"
+          :class="{ selecting: timelineSelection.active && timelineDrag.source === 'axis' }"
         >
           <span>{{ formatShortTime(transactionTimelineWindow.start_at) }}</span>
           <strong ref="axisRailRef">
             <i
-              v-if="timelineSelection.active"
+              v-if="timelineSelection.active && timelineDrag.source === 'axis'"
               class="axis-selection"
               :style="timelineSelectionStyle"
             ></i>
-            <em v-if="timelineSelection.active">{{ timelineSelection.label }}</em>
+            <em v-if="timelineSelection.active && timelineDrag.source === 'axis'">{{ timelineSelection.label }}</em>
           </strong>
           <span>{{ formatShortTime(transactionTimelineWindow.end_at) }}</span>
         </div>
@@ -144,7 +143,19 @@
             <span>{{ lane.count }} 条 · 失败 {{ lane.failed }}</span>
             <em>{{ timelineCategoryFilter === lane.key ? '再次点击显示全部' : '点击聚焦' }}</em>
           </button>
-          <div class="lane-track" :style="laneTrackStyle(lane)">
+          <div
+            class="lane-track"
+            :class="{ selecting: timelineSelection.active }"
+            :style="laneTrackStyle(lane)"
+            @mousedown="startTimelineSelection($event, 'lane')"
+          >
+            <i
+              v-if="timelineSelection.active"
+              class="lane-selection"
+              :style="timelineSelectionStyle"
+            >
+              <em>{{ timelineSelection.label }}</em>
+            </i>
             <button
               v-for="event in lane.events"
               :key="event.id"
@@ -153,6 +164,7 @@
               :class="[`is-${event.result}`, { 'is-suspect': event.suspicion_score >= 35 }]"
               :style="eventDotStyle(event)"
               :title="event.title"
+              @mousedown.stop
               @click="openDetail(event)"
             >
               <span>{{ formatDotTime(event.occurred_at) }}</span>
@@ -226,6 +238,9 @@
           <template #default="{ row }">{{ releaseAction(row) }}</template>
         </el-table-column>
         <el-table-column prop="title" label="事件" min-width="180" show-overflow-tooltip />
+        <el-table-column label="操作人" width="116" show-overflow-tooltip>
+          <template #default="{ row }">{{ actorLabel(row) }}</template>
+        </el-table-column>
         <el-table-column label="结果" width="86">
           <template #default="{ row }">
             <el-tag size="small" :type="tagType(row.result)">{{ resultLabel(row) }}</el-tag>
@@ -235,7 +250,7 @@
       <el-empty v-if="!loading && !activeCategorySection.events.length" :description="`暂无${activeCategorySection.label}事件`" />
     </section>
 
-    <el-drawer v-model="drawerVisible" title="事件详情" size="720px" append-to-body destroy-on-close>
+    <el-drawer v-model="drawerVisible" class="event-detail-drawer" title="事件详情" size="720px" append-to-body destroy-on-close>
       <div v-if="activeEvent" class="detail-stack">
         <section class="detail-section detail-section--main">
           <strong>{{ activeEvent.title }}</strong>
@@ -244,14 +259,14 @@
             <span v-for="reason in visibleSuspicionReasons(activeEvent)" :key="reason">{{ reason }}</span>
           </div>
         </section>
-        <section class="detail-section">
+        <section class="detail-section detail-section--meta">
           <div class="detail-row"><span>时间</span><b>{{ formatTime(activeEvent.occurred_at) }}</b></div>
           <div class="detail-row"><span>事件源</span><b>{{ activeEvent.event_source?.name || moduleLabel(activeEvent.module) }}</b></div>
           <div class="detail-row"><span>事件分类</span><b>{{ eventCategoryLabel(activeEvent) }}</b></div>
           <div class="detail-row"><span>结果</span><b>{{ resultLabel(activeEvent) }}</b></div>
           <div class="detail-row"><span>环境 / 系统</span><b>{{ scopeLabel(activeEvent) }}</b></div>
           <div class="detail-row"><span>资源</span><b>{{ activeEvent.resource_type || '-' }} / {{ activeEvent.resource_name || activeEvent.resource_id || '-' }}</b></div>
-          <div class="detail-row"><span>操作人</span><b>{{ activeEvent.actor_username || activeEvent.actor_display || 'system' }}</b></div>
+          <div class="detail-row"><span>操作人</span><b>{{ actorLabel(activeEvent) }}</b></div>
           <div class="detail-row"><span>关联 ID</span><b>{{ activeEvent.correlation_id || '-' }}</b></div>
         </section>
         <section class="detail-section">
@@ -301,7 +316,7 @@ const resultFilter = ref('')
 const keyword = ref('')
 const scope = reactive({ system_name: '', environment: '', application: '' })
 const timelineSelection = reactive({ active: false, startPercent: 0, endPercent: 0, label: '' })
-const timelineDrag = reactive({ active: false, startX: 0, currentX: 0, moved: false })
+const timelineDrag = reactive({ active: false, source: '', startX: 0, currentX: 0, moved: false, railLeft: 0, railWidth: 0 })
 const rangeShortcuts = [
   { text: '最近 30 分钟', value: () => defaultAnalysisRange(30) },
   { text: '最近 1 小时', value: () => defaultAnalysisRange(60) },
@@ -659,8 +674,11 @@ function laneTrackStyle(lane) {
   }
 }
 
-function startTimelineSelection(event) {
-  if (event.button !== 0 || loading.value || !axisRailRef.value) return
+function startTimelineSelection(event, source = 'axis') {
+  const railRect = source === 'lane'
+    ? event.currentTarget?.getBoundingClientRect()
+    : axisRailRef.value?.getBoundingClientRect()
+  if (event.button !== 0 || loading.value || !railRect?.width) return
   const start = new Date(transactionTimelineWindow.value.start_at).getTime()
   const end = new Date(transactionTimelineWindow.value.end_at).getTime()
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return
@@ -669,6 +687,9 @@ function startTimelineSelection(event) {
   timelineDrag.startX = event.clientX
   timelineDrag.currentX = event.clientX
   timelineDrag.moved = false
+  timelineDrag.railLeft = railRect.left
+  timelineDrag.railWidth = railRect.width
+  timelineDrag.source = source
   timelineSelection.active = true
   updateTimelineSelection(event.clientX)
   window.addEventListener('mousemove', handleTimelineSelectionMove)
@@ -688,6 +709,7 @@ function finishTimelineSelection() {
   window.removeEventListener('mouseup', finishTimelineSelection)
   const shouldApply = timelineDrag.moved
   timelineDrag.active = false
+  timelineDrag.source = ''
   if (!shouldApply) {
     timelineSelection.active = false
     return
@@ -709,9 +731,8 @@ function updateTimelineSelection(clientX) {
 }
 
 function timelineClientXToPercent(clientX) {
-  const rect = axisRailRef.value?.getBoundingClientRect()
-  if (!rect?.width) return 0
-  return Math.min(100, Math.max(0, ((clientX - rect.left) / rect.width) * 100))
+  if (!timelineDrag.railWidth) return 0
+  return Math.min(100, Math.max(0, ((clientX - timelineDrag.railLeft) / timelineDrag.railWidth) * 100))
 }
 
 function timelineSelectionRange() {
@@ -743,6 +764,10 @@ function tagType(result) {
 
 function resultLabel(row) {
   return row.result_display || { success: '成功', failed: '失败', partial: '部分成功', pending: '待处理' }[row.result] || row.result || '-'
+}
+
+function actorLabel(row) {
+  return row?.actor_display || row?.actor_username || row?.metadata?.actor || row?.metadata?.user || 'system'
 }
 
 function moduleLabel(module) {
@@ -1411,7 +1436,7 @@ onUnmounted(cleanupTimelineSelection)
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  cursor: crosshair;
+  cursor: default;
   user-select: none;
 }
 
@@ -1556,6 +1581,38 @@ onUnmounted(cleanupTimelineSelection)
   border-radius: 8px;
   background: #f7f8fa;
   overflow: hidden;
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M12 3v18M3 12h18' stroke='%231f2329' stroke-width='2' stroke-linecap='round'/%3E%3Ccircle cx='12' cy='12' r='2' fill='%231f2329'/%3E%3C/svg%3E") 12 12, crosshair;
+  user-select: none;
+}
+
+.lane-track.selecting {
+  background: #eef4ff;
+}
+
+.lane-selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 4px;
+  border-radius: 8px;
+  background: rgba(36, 91, 219, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(36, 91, 219, 0.22);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.lane-selection em {
+  position: absolute;
+  left: 50%;
+  top: 6px;
+  transform: translateX(-50%);
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: #1f2329;
+  color: #fff;
+  font-size: 11px;
+  font-style: normal;
+  white-space: nowrap;
 }
 
 .event-dot {
@@ -1571,6 +1628,7 @@ onUnmounted(cleanupTimelineSelection)
   overflow: hidden;
   box-shadow: 0 5px 12px rgba(15, 23, 42, 0.05);
   transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+  z-index: 3;
 }
 
 .event-dot:hover {
@@ -1615,11 +1673,11 @@ onUnmounted(cleanupTimelineSelection)
 .detail-stack {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
 .detail-section {
-  padding: 12px;
+  padding: 10px 12px;
   border: 1px solid #dee0e3;
   border-radius: 8px;
   background: #fff;
@@ -1631,18 +1689,33 @@ onUnmounted(cleanupTimelineSelection)
 }
 
 .detail-section strong {
-  font-size: 16px;
+  font-size: 15px;
 }
 
 .detail-section p {
-  margin: 8px 0 0;
+  margin: 4px 0 0;
   color: #646a73;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
 .detail-section h4 {
-  margin: 0 0 10px;
-  font-size: 14px;
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.detail-section--meta {
+  font-size: 12px;
+  padding: 8px 10px;
+}
+
+.detail-section--meta .detail-row {
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.detail-section--meta .detail-row span,
+.detail-section--meta .detail-row b {
+  font-size: 12px;
 }
 
 .chain-event-row {
@@ -1690,7 +1763,7 @@ onUnmounted(cleanupTimelineSelection)
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);
   gap: 12px;
-  padding: 8px 0;
+  padding: 7px 0;
   border-bottom: 1px solid #eff0f1;
 }
 
@@ -1706,6 +1779,15 @@ onUnmounted(cleanupTimelineSelection)
   min-width: 0;
   font-weight: 500;
   overflow-wrap: anywhere;
+}
+
+:deep(.event-detail-drawer .el-drawer__header) {
+  margin-bottom: 0;
+  padding: 10px 18px 2px;
+}
+
+:deep(.event-detail-drawer .el-drawer__body) {
+  padding: 0 18px 18px;
 }
 
 .reason-tags {

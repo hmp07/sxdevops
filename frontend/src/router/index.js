@@ -21,7 +21,7 @@ const routes = [
     path: '/ai-agent-promo',
     name: 'AIAgentPromo',
     component: () => import('@/views/AIAgentPromo.vue'),
-    meta: { public: true, title: 'AI Agent 产品演示' },
+    meta: { public: true, title: 'AI Agent 产品介绍' },
   },
   {
     path: '/',

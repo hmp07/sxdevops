@@ -4,9 +4,10 @@
       <div class="hero-copy">
         <div class="hero-title-row">
           <span class="hero-icon">
-            <el-icon><DataLine /></el-icon>
+            <el-icon><component :is="overviewHero.icon" /></el-icon>
           </span>
-          <h2>可观测性平台</h2>
+          <h2>{{ overviewHero.title }}</h2>
+          <span class="hero-tagline">{{ overviewHero.description }}</span>
         </div>
       </div>
       <div class="hero-actions">
@@ -14,17 +15,6 @@
           <el-icon><RefreshRight /></el-icon>
           刷新
         </el-button>
-      </div>
-    </section>
-
-    <section class="capability-section">
-      <div class="stats-grid release-stats dashboard-stats capability-card-grid">
-        <div v-for="card in capabilityCards" :key="card.label" class="stat-card release-stat-card" :class="card.tone">
-          <div class="stat-inline">
-            <span class="stat-label">{{ card.label }}</span>
-            <span class="stat-value">{{ card.value }}</span>
-          </div>
-        </div>
       </div>
     </section>
 
@@ -48,6 +38,17 @@
       </button>
     </div>
 
+    <section v-if="activeOverviewTab === 'capabilities'" class="capability-section">
+      <div class="stats-grid release-stats dashboard-stats capability-card-grid">
+        <div v-for="card in capabilityCards" :key="card.label" class="stat-card release-stat-card" :class="card.tone">
+          <div class="stat-inline">
+            <span class="stat-label">{{ card.label }}</span>
+            <span class="stat-value">{{ card.value }}</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <ObservabilitySystemPosture v-if="activeOverviewTab === 'system-posture' && canViewSystemPosture" embedded />
     <section v-if="activeOverviewTab === 'capabilities' && canViewLinks" class="panel">
       <div class="section-head">
@@ -61,7 +62,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { Aim, DataLine, RefreshRight, Share } from '@element-plus/icons-vue'
+import { Aim, RefreshRight, Share } from '@element-plus/icons-vue'
 import { getObservabilityOverview } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
 import ObservabilityDataSourceLinks from './ObservabilityDataSourceLinks.vue'
@@ -73,6 +74,21 @@ const overview = ref({ modules: {}, summary: {} })
 const canViewLinks = computed(() => authStore.hasPermission('ops.observability.link.view'))
 const canViewSystemPosture = computed(() => authStore.hasPermission('ops.observability.system_posture.view'))
 const activeOverviewTab = ref(canViewSystemPosture.value ? 'system-posture' : 'capabilities')
+
+const overviewHero = computed(() => {
+  if (activeOverviewTab.value === 'system-posture') {
+    return {
+      title: '系统态势',
+      description: '按环境与系统聚合健康态势，结果导向定义系统 SLO，划清故障边界，快速定位异常节点、关键依赖与风险范围。',
+      icon: Aim,
+    }
+  }
+  return {
+    title: '关联配置',
+    description: '统一维护日志、链路、看板与告警的关联关系，为故障排查关联跳转和 AIOps 分析提供上下文。',
+    icon: Share,
+  }
+})
 
 const capabilityCards = computed(() => [
   {
@@ -161,7 +177,7 @@ onMounted(loadOverview)
 }
 
 .hero-title-row {
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
 }
 
@@ -169,6 +185,12 @@ onMounted(loadOverview)
   font-size: 23px;
   line-height: 1.1;
   margin: 0;
+}
+
+.hero-tagline {
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .hero-icon {

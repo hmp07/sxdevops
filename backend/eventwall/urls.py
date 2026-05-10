@@ -8,6 +8,6 @@ router.register('events', EventRecordViewSet, basename='event-record')
 router.register('event-sources', EventSourceViewSet, basename='event-source')
 
 urlpatterns = [
-    path('event-sources/<slug:code>/ingest/', ExternalEventIngestView.as_view(), name='event-source-ingest'),
+    path('event-sources/<slug:type>/ingest/', ExternalEventIngestView.as_view(), name='event-source-ingest'),
     path('', include(router.urls)),
 ]

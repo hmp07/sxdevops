@@ -17,7 +17,7 @@
 
           <div class="overview-actions">
             <router-link class="promo-link" to="/ai-agent-promo">
-              查看 AI Agent 产品演示
+              查看 AI Agent 产品介绍
             </router-link>
           </div>
 

@@ -56,10 +56,10 @@
           <span class="breadcrumb">{{ currentTitle }}</span>
         </div>
         <div class="header-right">
-          <el-tooltip content="查看 AI Agent 产品演示" placement="bottom">
+          <el-tooltip content="查看 AI Agent 产品介绍" placement="bottom">
             <button class="promo-trigger" type="button" @click="openAIAgentPromo">
               <el-icon :size="17"><Promotion /></el-icon>
-              <span>产品演示</span>
+              <span>产品介绍</span>
             </button>
           </el-tooltip>
 
@@ -167,7 +167,7 @@
           </transition>
         </router-view>
       </main>
-      <AIOpsChatWidget />
+      <AIOpsChatWidget v-if="!isAIOpsChatRoute" />
     </div>
   </div>
 </template>
@@ -460,7 +460,8 @@ const userInitials = computed(() => {
   return source.slice(0, 1).toUpperCase()
 })
 
-const canOpenAIOpsAssistant = computed(() => authStore.hasPermission('aiops.chat.view'))
+const isAIOpsChatRoute = computed(() => route.name === 'AIOpsChat' || route.path === '/aiops/chat')
+const canOpenAIOpsAssistant = computed(() => authStore.hasPermission('aiops.chat.view') && !isAIOpsChatRoute.value)
 
 const notificationSections = computed(() => {
   const sectionOrder = ['approval', 'alert', 'event']
@@ -782,16 +783,16 @@ onBeforeUnmount(() => {
   min-width: 102px;
   padding: 0 12px;
   gap: 6px;
-  color: #2563eb;
+  color: #5b7fc7;
   border-color: rgba(96, 165, 250, 0.22);
   background: linear-gradient(135deg, rgba(239, 246, 255, 0.92) 0%, rgba(236, 253, 245, 0.74) 100%);
   box-shadow: 0 8px 18px rgba(59, 130, 246, 0.08);
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .promo-trigger:hover {
-  color: #1d4ed8;
+  color: #3f6fbd;
   border-color: rgba(96, 165, 250, 0.36);
   background: linear-gradient(135deg, rgba(219, 234, 254, 0.98) 0%, rgba(209, 250, 229, 0.84) 100%);
   transform: translateY(-1px);

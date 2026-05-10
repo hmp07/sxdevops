@@ -39,7 +39,7 @@
               <div class="source-avatar" :class="`is-${item.source_kind}`">{{ sourceInitial(item) }}</div>
               <span>
                 <strong>{{ item.name }}</strong>
-                <em>{{ item.code }}</em>
+                <em>事件源类型：{{ item.code }}</em>
               </span>
               <i class="status-dot" :class="item.enabled ? 'is-enabled' : 'is-disabled'"></i>
             </header>
@@ -97,14 +97,18 @@
           <article
             v-for="item in externalSources"
             :key="item.code"
-            class="source-card"
+            class="source-card source-card--clickable"
             :class="{ disabled: !item.enabled }"
+            role="button"
+            tabindex="0"
+            @click="openSpec(item)"
+            @keydown.enter.prevent="openSpec(item)"
           >
             <header>
               <div class="source-avatar" :class="`is-${item.source_kind}`">{{ sourceInitial(item) }}</div>
               <span>
                 <strong>{{ item.name }}</strong>
-                <em>{{ item.code }}</em>
+                <em>事件源类型：{{ item.code }}</em>
               </span>
               <i class="status-dot" :class="item.enabled ? 'is-enabled' : 'is-disabled'"></i>
             </header>
@@ -125,9 +129,9 @@
               </span>
             </footer>
             <div class="card-actions">
-              <el-button size="small" text type="primary" @click="openEvents(item)">看事件</el-button>
-              <el-button v-if="canManageSources && item.source_kind === 'external'" size="small" text @click="openEditAccess(item)">编辑</el-button>
-              <el-button v-if="item.source_kind === 'external'" size="small" text @click="openSpec(item)">接入规范</el-button>
+              <el-button size="small" text type="primary" @click.stop="openEvents(item)">看事件</el-button>
+              <el-button v-if="canManageSources && item.source_kind === 'external'" size="small" text @click.stop="openEditAccess(item)">编辑</el-button>
+              <el-button v-if="canDeleteSource(item)" size="small" text type="danger" @click.stop="removeSource(item)">删除</el-button>
             </div>
           </article>
         </div>
@@ -139,8 +143,8 @@
       <div class="help-doc">
         <section>
           <h4>接入入口</h4>
-          <p>外部系统通过统一 Webhook 写入事件中心，平台按事件源编码区分来源。</p>
-          <pre>POST /api/event-sources/{code}/ingest/
+          <p>外部系统通过统一 Webhook 写入事件中心，平台按事件源类型区分来源。</p>
+          <pre>POST /api/event-sources/{type}/ingest/
 Authorization: Bearer &lt;token&gt;
 Content-Type: application/json</pre>
           <p>也可以使用请求头 <code>X-Event-Token: &lt;token&gt;</code> 传递令牌。</p>
@@ -205,7 +209,7 @@ Content-Type: application/json</pre>
         <el-form-item label="接入名称">
           <el-input v-model="sourceForm.name" placeholder="例如：内部发布平台" />
         </el-form-item>
-        <el-form-item label="接入编码（用于生成 Webhook 地址，创建后不建议修改）">
+        <el-form-item label="接入类型（用于生成 Webhook 地址，创建后不建议修改）">
           <el-input v-model="sourceForm.code" placeholder="例如：internal-release" />
         </el-form-item>
         <el-form-item label="默认事件分类">
@@ -287,13 +291,13 @@ Content-Type: application/json</pre>
 
     <el-dialog v-model="editDialogVisible" title="编辑事件源接入" width="620px" append-to-body destroy-on-close>
       <el-form label-position="top" :model="sourceEditForm" class="access-edit-form">
-        <el-form-item label="接入编码">
-          <el-input v-model="sourceEditForm.code" disabled />
+        <el-form-item label="接入类型">
+          <el-input v-model="sourceEditForm.code" placeholder="例如：jenkins-prod" />
         </el-form-item>
         <el-form-item label="Webhook 接收地址">
-          <el-input :model-value="endpointFor(editingSource)" readonly>
+          <el-input :model-value="editEndpointPreview" readonly>
             <template #append>
-              <el-button @click="copyEndpoint(editingSource)">复制</el-button>
+              <el-button @click="copyText(editEndpointPreview, '接入地址已复制')">复制</el-button>
             </template>
           </el-input>
         </el-form-item>
@@ -337,10 +341,11 @@ Content-Type: application/json</pre>
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, RefreshRight, Share } from '@element-plus/icons-vue'
 import {
   createEventSource,
+  deleteEventSource,
   getEventSourceIngestSpec,
   getEventSourceSummary,
   getEventSources,
@@ -395,7 +400,8 @@ const enabledSummary = computed(() => {
     return { ...item, count }
   })
 })
-const endpointPreview = computed(() => endpointFor({ code: sourceForm.code.trim() || '{code}' }))
+const endpointPreview = computed(() => endpointFor({ code: sourceForm.code.trim() || '{type}' }))
+const editEndpointPreview = computed(() => endpointFor({ code: sourceEditForm.code.trim() || editingSource.value?.code || '{type}' }))
 
 function typeLabel(type) {
   return {
@@ -423,6 +429,10 @@ function enabledLabel(item) {
   return item?.enabled ? '启用' : '停用'
 }
 
+function canDeleteSource(item) {
+  return canManageSources.value && item?.source_kind === 'external'
+}
+
 function sourceInitial(item) {
   return String(item?.name || item?.code || '?').trim().slice(0, 1).toUpperCase()
 }
@@ -446,8 +456,10 @@ function mappingEntries(item) {
 }
 
 function endpointFor(item) {
-  const code = item?.code || '{code}'
-  return (ingestSpec.value.endpoint_template || '/api/event-sources/{code}/ingest/').replace('{code}', code)
+  const type = item?.code || '{type}'
+  return (ingestSpec.value.endpoint_template || '/api/event-sources/{type}/ingest/')
+    .replaceAll('{type}', type)
+    .replaceAll('{code}', type)
 }
 
 function prettyJson(value) {
@@ -508,7 +520,7 @@ function clearAllFilters() {
 
 async function saveSource() {
   if (!sourceForm.name.trim() || !sourceForm.code.trim() || !sourceForm.event_category) {
-    ElMessage.warning('请填写名称、编码和默认事件分类')
+    ElMessage.warning('请填写名称、接入类型和默认事件分类')
     return
   }
   saving.value = true
@@ -538,13 +550,14 @@ async function saveSource() {
 
 async function saveEditAccess() {
   if (!editingSource.value?.code) return
-  if (!sourceEditForm.name.trim() || !sourceEditForm.event_category) {
-    ElMessage.warning('请填写接入名称和默认事件分类')
+  if (!sourceEditForm.name.trim() || !sourceEditForm.code.trim() || !sourceEditForm.event_category) {
+    ElMessage.warning('请填写接入名称、接入类型和默认事件分类')
     return
   }
   saving.value = true
   try {
     await updateEventSource(editingSource.value.code, {
+      code: sourceEditForm.code.trim(),
       name: sourceEditForm.name.trim(),
       description: sourceEditForm.description,
       endpoint_url: sourceEditForm.endpoint_url,
@@ -568,9 +581,10 @@ async function copyToken() {
   ElMessage.success('令牌已复制')
 }
 
-async function copyEndpoint(item) {
-  await navigator.clipboard.writeText(endpointFor(item))
-  ElMessage.success('接入地址已复制')
+async function copyText(text, message = '已复制') {
+  if (!text) return
+  await navigator.clipboard.writeText(text)
+  ElMessage.success(message)
 }
 
 async function reissueActiveToken() {
@@ -591,6 +605,24 @@ async function reissueActiveToken() {
   } finally {
     saving.value = false
   }
+}
+
+async function removeSource(item) {
+  if (!item?.code || item.source_kind !== 'external') return
+  try {
+    await ElMessageBox.confirm(`确认删除事件源「${item.name}」吗？删除后该接入地址将不可用，历史事件不会被删除。`, '删除事件源', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch (error) {
+    return
+  }
+  await deleteEventSource(item.code)
+  ElMessage.success('事件源已删除')
+  if (activeSource.value?.code === item.code) activeSource.value = null
+  if (editingSource.value?.code === item.code) editDialogVisible.value = false
+  await loadAll()
 }
 
 onMounted(loadAll)
@@ -829,6 +861,15 @@ onMounted(loadAll)
   background: #f7faff;
 }
 
+.source-card--clickable {
+  cursor: pointer;
+}
+
+.source-card--clickable:focus-visible {
+  outline: 2px solid rgba(51, 112, 255, 0.32);
+  outline-offset: 2px;
+}
+
 .source-card.disabled {
   background: #fbfbfc;
   color: #646a73;
@@ -994,17 +1035,18 @@ onMounted(loadAll)
 }
 
 :deep(.event-source-spec-drawer .el-drawer__body) {
-  padding-top: 0;
+  padding: 0 18px 18px;
 }
 
 :deep(.event-source-spec-drawer .el-drawer__header) {
-  margin-bottom: 4px;
+  margin-bottom: 0;
+  padding: 10px 18px 0;
 }
 
 .drawer-stack {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
 .detail-section {

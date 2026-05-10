@@ -6,7 +6,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from .models import EventRecord, EventSource
-from .views import _ensure_default_event_sources
+from .views import _ensure_default_event_sources, _ensure_hourly_ecommerce_demo_events
 
 
 class EventSourceTests(TestCase):
@@ -22,6 +22,34 @@ class EventSourceTests(TestCase):
         self.assertTrue(EventSource.objects.filter(code='argocd', source_kind=EventSource.KIND_EXTERNAL).exists())
         self.assertTrue(EventSource.objects.filter(code='gitlab', source_kind=EventSource.KIND_EXTERNAL).exists())
         self.assertTrue(EventSource.objects.filter(code='custom', source_kind=EventSource.KIND_EXTERNAL).exists())
+
+    def test_hourly_ecommerce_demo_events_are_generated_idempotently(self):
+        _ensure_hourly_ecommerce_demo_events(hours=4)
+        first_count = EventRecord.objects.filter(metadata__hourly_demo_environment='电商测试环境-k3s').count()
+        _ensure_hourly_ecommerce_demo_events(hours=4)
+        second_count = EventRecord.objects.filter(metadata__hourly_demo_environment='电商测试环境-k3s').count()
+
+        self.assertEqual(first_count, second_count)
+        self.assertGreaterEqual(first_count, 8)
+        allowed_categories = {'db_change', 'config_change', 'ops_transaction', 'task_center'}
+        by_hour = {}
+        for event in EventRecord.objects.filter(metadata__hourly_demo_environment='电商测试环境-k3s'):
+            self.assertEqual(event.environment, '电商测试环境-k3s')
+            self.assertEqual(event.business_line, '电商')
+            self.assertIn(event.metadata['event_category'], allowed_categories)
+            by_hour.setdefault(event.metadata['hourly_demo_hour'], 0)
+            by_hour[event.metadata['hourly_demo_hour']] += 1
+        self.assertTrue(all(count in {2, 3} for count in by_hour.values()))
+
+    def test_ingest_spec_uses_type_placeholder(self):
+        user = get_user_model().objects.create_superuser(username='spec-admin', password='pass')
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get('/api/event-sources/ingest_spec/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['endpoint_template'], '/api/event-sources/{type}/ingest/')
 
     def test_external_ingest_records_event_with_source_metadata(self):
         _ensure_default_event_sources()
@@ -255,6 +283,70 @@ class EventSourceTests(TestCase):
         self.assertEqual(response.data['category_sections'][0]['key'], 'application_release')
         self.assertEqual(response.data['category_sections'][0]['count'], 1)
         self.assertTrue(response.data['recommendations'])
+
+    def test_external_event_source_can_be_deleted(self):
+        _ensure_default_event_sources()
+        source = EventSource.objects.create(
+            code='internal-release',
+            name='内部发布平台',
+            source_kind=EventSource.KIND_EXTERNAL,
+            source_type=EventSource.TYPE_CUSTOM,
+            enabled=True,
+            status=EventSource.STATUS_HEALTHY,
+            auth_type=EventSource.AUTH_WEBHOOK,
+        )
+        user = get_user_model().objects.create_superuser(username='source-admin', password='pass')
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.delete(f'/api/event-sources/{source.code}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(EventSource.objects.filter(code=source.code).exists())
+
+    def test_builtin_event_source_cannot_be_deleted(self):
+        _ensure_default_event_sources()
+        user = get_user_model().objects.create_superuser(username='builtin-source-admin', password='pass')
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.delete('/api/event-sources/builtin-workorder/')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(EventSource.objects.filter(code='builtin-workorder').exists())
+
+    def test_default_external_event_source_can_be_deleted_and_is_not_recreated(self):
+        _ensure_default_event_sources()
+        user = get_user_model().objects.create_superuser(username='default-source-admin', password='pass')
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.delete('/api/event-sources/jenkins/')
+        list_response = client.get('/api/event-sources/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(EventSource.objects.filter(code='jenkins').exists())
+        self.assertNotIn('jenkins', [item['code'] for item in list_response.data['results']])
+
+    def test_default_external_event_source_can_be_renamed(self):
+        _ensure_default_event_sources()
+        user = get_user_model().objects.create_superuser(username='rename-source-admin', password='pass')
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.patch(
+            '/api/event-sources/jenkins/',
+            {'code': 'jenkins-prod', 'name': '生产 Jenkins'},
+            format='json',
+        )
+        list_response = client.get('/api/event-sources/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['code'], 'jenkins-prod')
+        self.assertEqual(response.data['name'], '生产 Jenkins')
+        self.assertFalse(EventSource.objects.filter(code='jenkins').exists())
+        self.assertTrue(EventSource.objects.filter(code='jenkins-prod', name='生产 Jenkins').exists())
+        self.assertNotIn('jenkins', [item['code'] for item in list_response.data['results']])
 
     def test_analysis_wall_excludes_internal_operations_outside_workorders_and_tasks(self):
         user = get_user_model().objects.create_superuser(username='analysis-filter-admin', password='pass')

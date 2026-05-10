@@ -1,10 +1,10 @@
 ﻿<template>
-  <div v-if="available" class="aiops-widget" :style="fabStyle">
+  <div v-if="available" class="aiops-widget" :class="{ embedded }" :style="embedded ? null : fabStyle">
     <transition name="aiops-panel">
-      <div v-if="visible" class="aiops-layer">
-        <button type="button" class="aiops-backdrop" @click="closePanel" />
+      <div v-if="embedded || visible" class="aiops-layer" :class="{ embedded }">
+        <button v-if="!embedded" type="button" class="aiops-backdrop" @click="closePanel" />
 
-        <div class="aiops-panel">
+        <div class="aiops-panel" :class="{ embedded }">
           <div class="aiops-panel-header">
             <div class="header-copy">
               <div class="aiops-title-row">
@@ -21,7 +21,7 @@
             </div>
             <div class="aiops-header-actions">
               <el-button size="small" text @click="handleCreateSession">新会话</el-button>
-              <el-button size="small" text @click="closePanel">收起</el-button>
+              <el-button v-if="!embedded" size="small" text @click="closePanel">收起</el-button>
             </div>
           </div>
 
@@ -363,6 +363,7 @@
     </transition>
 
     <button
+      v-if="!embedded"
       type="button"
       ref="fabButtonRef"
       class="aiops-fab"
@@ -399,6 +400,13 @@ import {
 import botAvatar from '@/assets/aiops-bot.svg'
 import { useAuthStore } from '@/stores/auth'
 
+const props = defineProps({
+  embedded: {
+    type: Boolean,
+    default: false,
+  },
+})
+
 const STORAGE_SESSION_KEY = 'sxdevops_aiops_current_session'
 const STORAGE_VISIBLE_KEY = 'sxdevops_aiops_visible'
 const STORAGE_ANALYSIS_KEY = 'sxdevops_aiops_analysis_only'
@@ -407,7 +415,8 @@ const STORAGE_DRAFT_PREFIX = 'sxdevops_aiops_draft_'
 const router = useRouter()
 const authStore = useAuthStore()
 
-const visible = ref(localStorage.getItem(STORAGE_VISIBLE_KEY) === '1')
+const embedded = computed(() => props.embedded)
+const visible = ref(props.embedded || localStorage.getItem(STORAGE_VISIBLE_KEY) === '1')
 const analysisOnly = ref(localStorage.getItem(STORAGE_ANALYSIS_KEY) === '1')
 const bootstrap = ref({ permissions: {}, suggested_questions: [], runtime: {} })
 const sessions = ref([])
@@ -786,6 +795,7 @@ function handleFabPointerUp(event) {
 }
 
 function handleFabPointerDown(event) {
+  if (embedded.value) return
   if (visible.value) return
   const fabEl = event.currentTarget
   fabButtonRef.value = fabEl
@@ -1171,6 +1181,10 @@ function clearDraft() {
 function handleComposerKeydown(event) {
   if (event.key === 'Escape') {
     event.preventDefault()
+    if (embedded.value) {
+      composerRef.value?.blur?.()
+      return
+    }
     closePanel()
     return
   }
@@ -1225,6 +1239,7 @@ function openTaskCenter() {
 }
 
 async function handleOpenRequest() {
+  if (embedded.value) return
   resetFabPosition()
   visible.value = true
   localStorage.setItem(STORAGE_VISIBLE_KEY, '1')
@@ -1245,12 +1260,14 @@ async function handleOpenRequest() {
 }
 
 function closePanel() {
+  if (embedded.value) return
   visible.value = false
   mobileSessionVisible.value = false
   localStorage.setItem(STORAGE_VISIBLE_KEY, '0')
 }
 
 function handleGlobalKeydown(event) {
+  if (embedded.value) return
   if (event.key !== 'Escape' || !visible.value) return
   if (mobileSessionVisible.value) {
     mobileSessionVisible.value = false
@@ -1260,6 +1277,7 @@ function handleGlobalKeydown(event) {
 }
 
 async function toggleVisible() {
+  if (embedded.value) return
   if (ignoreNextFabClick) {
     ignoreNextFabClick = false
     return
@@ -1315,11 +1333,16 @@ watch(visible, value => {
 onMounted(async () => {
   if (!authStore.isAuthenticated) return
   window.addEventListener('resize', handleResize)
-  window.addEventListener('keydown', handleGlobalKeydown)
-  window.addEventListener('sxdevops-aiops-open', handleOpenRequest)
+  if (!embedded.value) {
+    window.addEventListener('keydown', handleGlobalKeydown)
+    window.addEventListener('sxdevops-aiops-open', handleOpenRequest)
+  }
   await fetchBootstrap()
-  if (visible.value) {
+  if ((embedded.value || visible.value) && bootstrap.value.enabled) {
     await fetchSessions()
+    await nextTick()
+    scrollToBottom(true)
+    focusComposer()
   }
 })
 
@@ -1327,8 +1350,10 @@ onBeforeUnmount(() => {
   stopMessagePolling()
   cleanupFabPointerListeners()
   window.removeEventListener('resize', handleResize)
-  window.removeEventListener('keydown', handleGlobalKeydown)
-  window.removeEventListener('sxdevops-aiops-open', handleOpenRequest)
+  if (!embedded.value) {
+    window.removeEventListener('keydown', handleGlobalKeydown)
+    window.removeEventListener('sxdevops-aiops-open', handleOpenRequest)
+  }
 })
 </script>
 
@@ -1336,6 +1361,8 @@ onBeforeUnmount(() => {
 .aiops-widget{position:fixed;right:24px;bottom:24px;z-index:80}
 .aiops-layer{position:fixed;inset:0;z-index:79;overflow:hidden}
 .aiops-backdrop{position:absolute;inset:0;border:none;background:rgba(15,23,42,.12);backdrop-filter:blur(4px);cursor:pointer}
+.aiops-widget.embedded{position:relative;inset:auto;z-index:1;width:100%;height:100%;min-height:0}
+.aiops-layer.embedded{position:relative;inset:auto;z-index:1;width:100%;height:100%;min-height:0;overflow:hidden}
 .aiops-fab{position:relative;z-index:81;display:flex;align-items:center;gap:9px;min-width:132px;height:58px;padding:7px 12px 7px 7px;border:none;border-radius:999px;background:linear-gradient(135deg,#ffffff 0%,#f7fbff 100%);box-shadow:0 12px 24px rgba(59,130,246,.12);cursor:grab;border:1px solid #bdd5fb;transition:transform .18s ease,box-shadow .18s ease;touch-action:none;user-select:none}
 .aiops-fab:hover{transform:translateY(-2px);box-shadow:0 16px 30px rgba(59,130,246,.16)}
 .aiops-fab.dragging{cursor:grabbing;transform:none;box-shadow:0 18px 34px rgba(59,130,246,.2)}
@@ -1347,6 +1374,7 @@ onBeforeUnmount(() => {
 .aiops-fab-label small{margin-top:2px;font-size:10px;color:#64748b}
 .aiops-fab-dot{position:absolute;top:9px;right:10px;width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 3px rgba(255,255,255,.96),0 0 0 5px rgba(34,197,94,.1)}
 .aiops-panel{position:absolute;right:24px;bottom:88px;width:980px;max-width:calc(100vw - 36px);height:min(760px,calc(100vh - 120px));display:flex;flex-direction:column;background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border:1px solid #dbe4f0;border-radius:24px;box-shadow:0 26px 56px rgba(15,23,42,.18);overflow:hidden}
+.aiops-panel.embedded{position:relative;right:auto;bottom:auto;width:100%;max-width:none;height:100%;min-height:0;border-radius:20px;box-shadow:0 14px 32px rgba(15,23,42,.06)}
 .aiops-panel-header{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid #e2e8f0;background:linear-gradient(135deg,#fff7ed 0%,#f0f9ff 100%)}
 .header-copy{min-width:0}
 .aiops-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -1526,6 +1554,7 @@ onBeforeUnmount(() => {
   .aiops-fab-core{width:38px;height:38px;border-radius:18px}
   .aiops-fab-avatar{width:26px;height:26px}
   .aiops-panel{right:12px;bottom:84px;width:min(100vw - 20px,660px);height:min(84vh,calc(100vh - 116px))}
+  .aiops-panel.embedded{width:100%;height:100%;min-height:0}
   .aiops-panel-body{grid-template-columns:1fr}
   .aiops-session-list{display:none}
   .pending-detail-grid{grid-template-columns:1fr}

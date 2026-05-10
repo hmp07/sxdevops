@@ -5,7 +5,7 @@
         <el-icon><ArrowLeft /></el-icon>
         <span>返回</span>
       </button>
-      <div class="promo-title">SxDevOps AI Agent 产品演示</div>
+      <div class="promo-title">SxDevOps AI Agent 产品介绍</div>
       <a class="promo-open" href="/promo/sxdevops-ai-agent-promo.html" target="_blank" rel="noopener">
         新窗口打开
       </a>
@@ -13,7 +13,7 @@
     <iframe
       class="promo-frame"
       src="/promo/sxdevops-ai-agent-promo.html"
-      title="SxDevOps AI Agent 产品演示"
+      title="SxDevOps AI Agent 产品介绍"
     ></iframe>
   </div>
 </template>

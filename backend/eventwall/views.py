@@ -14,7 +14,7 @@ from rbac.permissions import RBACPermissionMixin
 
 from .models import EventRecord, EventSource
 from .serializers import EventRecordSerializer, EventSourceIngestSerializer, EventSourceSerializer
-from .services import record_event
+from .services import build_resource, record_event
 
 
 DEMO_WINDOW_MINUTES = 7 * 24 * 60 - 1
@@ -138,12 +138,138 @@ WALL_BUILTIN_RESOURCE_TYPES = {
     for resource_types in BUILTIN_RESOURCE_TYPES.values()
     for resource_type in resource_types
 }
+HOURLY_DEMO_ENVIRONMENT = '电商测试环境-k3s'
+HOURLY_DEMO_SYSTEM = '电商'
+HOURLY_DEMO_CATEGORIES = ('db_change', 'config_change', 'ops_transaction', 'task_center')
+
+HOURLY_DEMO_EVENT_TEMPLATES = {
+    'db_change': [
+        {
+            'module': 'sqlaudit',
+            'action': 'execute',
+            'title': '订单库索引变更执行完成',
+            'summary': '电商测试环境订单库索引变更已执行完成，影响行数符合预期。',
+            'result': EventRecord.RESULT_SUCCESS,
+            'severity': EventRecord.SEVERITY_INFO,
+            'actor_username': 'dba.bot',
+            'actor_display': 'DBA Bot',
+            'resource_type': 'sql_order',
+            'resource_name': '订单库索引变更',
+            'application': 'order-db',
+            'metadata': {'database': 'order_test', 'sql_type': 'alter_index', 'affected_rows': 0, 'duration_ms': 1460},
+        },
+        {
+            'module': 'sqlaudit',
+            'action': 'execute',
+            'title': '会员库数据修复待复核',
+            'summary': '会员库数据修复脚本执行完成，存在少量待 DBA 复核记录。',
+            'result': EventRecord.RESULT_PARTIAL,
+            'severity': EventRecord.SEVERITY_WARNING,
+            'actor_username': 'audit.bot',
+            'actor_display': 'SQL Audit Bot',
+            'resource_type': 'sql_order',
+            'resource_name': '会员库数据修复',
+            'application': 'member-db',
+            'metadata': {'database': 'member_test', 'sql_type': 'data_fix', 'affected_rows': 37, 'duration_ms': 5280},
+        },
+    ],
+    'config_change': [
+        {
+            'module': 'ops',
+            'action': 'config_change',
+            'title': '网关灰度参数更新',
+            'summary': '电商测试环境网关灰度参数已更新，新的路由权重进入观测窗口。',
+            'result': EventRecord.RESULT_SUCCESS,
+            'severity': EventRecord.SEVERITY_INFO,
+            'actor_username': 'release.bot',
+            'actor_display': 'Release Bot',
+            'resource_type': 'transaction_ticket',
+            'resource_name': '网关灰度参数',
+            'application': 'gateway-service',
+            'metadata': {'ticket_type': 'change', 'config_key': 'gateway.gray.weight', 'before': '10', 'after': '20'},
+        },
+        {
+            'module': 'ops',
+            'action': 'config_change',
+            'title': '缓存 TTL 配置调整',
+            'summary': '商品缓存 TTL 从 10 分钟调整到 5 分钟，用于验证活动页刷新策略。',
+            'result': EventRecord.RESULT_SUCCESS,
+            'severity': EventRecord.SEVERITY_WARNING,
+            'actor_username': 'config.bot',
+            'actor_display': 'Config Bot',
+            'resource_type': 'transaction_ticket',
+            'resource_name': '商品缓存 TTL',
+            'application': 'product-service',
+            'metadata': {'ticket_type': 'change', 'config_key': 'product.cache.ttl', 'before': '600s', 'after': '300s'},
+        },
+    ],
+    'ops_transaction': [
+        {
+            'module': 'ops',
+            'action': 'ticket_finish',
+            'title': '测试账号权限开通完成',
+            'summary': '电商测试环境临时排障账号权限已开通，过期时间已同步到权限中心。',
+            'result': EventRecord.RESULT_SUCCESS,
+            'severity': EventRecord.SEVERITY_INFO,
+            'actor_username': 'ops.bot',
+            'actor_display': 'Ops Bot',
+            'resource_type': 'transaction_ticket',
+            'resource_name': '临时权限开通',
+            'application': 'sxdevops',
+            'metadata': {'ticket_type': 'access_change', 'permission_scope': 'ecommerce-test', 'ttl_hours': 4},
+        },
+        {
+            'module': 'ops',
+            'action': 'ticket_pending',
+            'title': '网络白名单调整待确认',
+            'summary': '电商测试环境联调白名单调整已提交，等待网络策略生效确认。',
+            'result': EventRecord.RESULT_PENDING,
+            'severity': EventRecord.SEVERITY_WARNING,
+            'actor_username': 'netops.bot',
+            'actor_display': 'NetOps Bot',
+            'resource_type': 'transaction_ticket',
+            'resource_name': '联调白名单调整',
+            'application': 'gateway-service',
+            'metadata': {'ticket_type': 'network_change', 'cidr': '10.42.18.0/24', 'target': 'gateway-service'},
+        },
+    ],
+    'task_center': [
+        {
+            'module': 'ops',
+            'action': 'run_task',
+            'title': '节点健康巡检完成',
+            'summary': '电商测试环境节点健康巡检执行完成，发现 1 台节点负载偏高。',
+            'result': EventRecord.RESULT_PARTIAL,
+            'severity': EventRecord.SEVERITY_WARNING,
+            'actor_username': 'task.bot',
+            'actor_display': 'Task Bot',
+            'resource_type': 'host_task',
+            'resource_name': '节点健康巡检',
+            'application': 'node-health-check',
+            'metadata': {'task_type': 'health_check', 'target_count': 12, 'success_count': 11, 'failed_count': 1},
+        },
+        {
+            'module': 'ops',
+            'action': 'run_schedule',
+            'title': '日志采集任务执行成功',
+            'summary': '电商测试环境日志采集 Agent 状态检查任务执行成功。',
+            'result': EventRecord.RESULT_SUCCESS,
+            'severity': EventRecord.SEVERITY_INFO,
+            'actor_username': 'task.bot',
+            'actor_display': 'Task Bot',
+            'resource_type': 'host_task_schedule',
+            'resource_name': '日志采集 Agent 检查',
+            'application': 'log-agent',
+            'metadata': {'task_type': 'agent_check', 'target_count': 12, 'success_count': 12, 'duration_ms': 3200},
+        },
+    ],
+}
 
 INGEST_SPEC = {
     'method': 'POST',
     'auth': 'Authorization: Bearer <token> 或 X-Event-Token: <token>',
     'content_type': 'application/json',
-    'endpoint_template': '/api/event-sources/{code}/ingest/',
+    'endpoint_template': '/api/event-sources/{type}/ingest/',
     'required_fields': ['title', 'event_category'],
     'recommended_fields': ['event_id', 'occurred_at', 'summary', 'event_type', 'action', 'result', 'severity', 'actor', 'system_name', 'environment', 'application', 'resource_type', 'resource_id', 'resource_name', 'correlation_id', 'tags', 'related_resources', 'changes', 'metadata'],
     'event_categories': EVENT_CATEGORY_DEFINITIONS,
@@ -181,12 +307,23 @@ def _ensure_default_event_sources():
         status=EventSource.STATUS_DISABLED,
         last_error='事件墙已收敛为故障分析视图，平台内置事件仅保留工单系统和任务中心。',
     )
+    has_active_sources = EventSource.objects.exclude(code__in=LEGACY_EVENT_SOURCE_CODES).exists()
     for item in DEFAULT_EVENT_SOURCES:
-        source, created = EventSource.objects.get_or_create(code=item['code'], defaults={key: value for key, value in item.items() if key != 'code'})
+        should_create = item['source_kind'] == EventSource.KIND_BUILTIN or not has_active_sources
+        if should_create:
+            source, created = EventSource.objects.get_or_create(code=item['code'], defaults={key: value for key, value in item.items() if key != 'code'})
+        else:
+            try:
+                source = EventSource.objects.get(code=item['code'])
+                created = False
+            except EventSource.DoesNotExist:
+                continue
         if created:
             continue
         update_fields = []
-        for key in ('name', 'source_kind', 'source_type', 'description', 'auth_type', 'field_mapping', 'config'):
+        default_update_keys = ('name', 'source_kind', 'source_type', 'description', 'auth_type', 'field_mapping', 'config')
+        update_keys = default_update_keys if item['source_kind'] == EventSource.KIND_BUILTIN else ('source_kind', 'source_type', 'auth_type')
+        for key in update_keys:
             if key in item and getattr(source, key) != item[key]:
                 setattr(source, key, item[key])
                 update_fields.append(key)
@@ -431,6 +568,74 @@ def _refresh_demo_event_timestamps():
         EventRecord.objects.bulk_update(changed, ['occurred_at'])
 
 
+def _hourly_demo_event_time(hour_start, index, count, now):
+    if hour_start.date() == now.date() and hour_start.hour == now.hour:
+        span = max(1, now.minute)
+        minute = min(now.minute, int((index + 1) * span / (count + 1)))
+    else:
+        slots = (9, 29, 49)
+        minute = slots[index] if index < len(slots) else min(55, 9 + index * 15)
+    return hour_start.replace(minute=minute, second=0, microsecond=0)
+
+
+def _ensure_hourly_ecommerce_demo_events(hours=24):
+    now = timezone.localtime().replace(second=0, microsecond=0)
+    current_hour = now.replace(minute=0, second=0, microsecond=0)
+    created = []
+    for hour_offset in range(hours):
+        hour_start = current_hour - timedelta(hours=hour_offset)
+        hour_key = hour_start.strftime('%Y%m%d%H')
+        target_count = 2 + ((hour_start.hour + hour_start.day) % 2)
+        for index in range(target_count):
+            category_key = HOURLY_DEMO_CATEGORIES[(hour_start.hour + index) % len(HOURLY_DEMO_CATEGORIES)]
+            demo_key = f'ecommerce-k3s-hourly:{hour_key}:{index}'
+            if EventRecord.objects.filter(metadata__hourly_demo_key=demo_key).exists():
+                continue
+            templates = HOURLY_DEMO_EVENT_TEMPLATES[category_key]
+            template = templates[(hour_start.hour + index) % len(templates)]
+            occurred_at = _hourly_demo_event_time(hour_start, index, target_count, now)
+            resource_id = f'{category_key}-{hour_key}-{index + 1}'
+            metadata = dict(template.get('metadata') or {})
+            metadata.update({
+                'event_category': category_key,
+                'event_category_label': EVENT_CATEGORY_MAP[category_key]['label'],
+                'hourly_demo_key': demo_key,
+                'hourly_demo_environment': HOURLY_DEMO_ENVIRONMENT,
+                'hourly_demo_hour': hour_key,
+            })
+            event = record_event(
+                module=template['module'],
+                category='workflow' if category_key == 'ops_transaction' else ('resource_change' if category_key == 'config_change' else 'execution'),
+                action=template['action'],
+                title=template['title'],
+                summary=template['summary'],
+                result=template['result'],
+                severity=template['severity'],
+                actor_username=template['actor_username'],
+                actor_display=template['actor_display'],
+                actor_type=EventRecord.ACTOR_SYSTEM,
+                source_type=EventRecord.SOURCE_SEED,
+                resource_type=template['resource_type'],
+                resource_id=resource_id,
+                resource_name=template['resource_name'],
+                business_line=HOURLY_DEMO_SYSTEM,
+                environment=HOURLY_DEMO_ENVIRONMENT,
+                application=template['application'],
+                tags=['hourly-demo', category_key],
+                related_resources=[
+                    build_resource('ops', 'k8s_cluster', 'ecommerce-test-k3s', HOURLY_DEMO_ENVIRONMENT),
+                    build_resource(template['module'], template['resource_type'], resource_id, template['resource_name']),
+                ],
+                metadata=metadata,
+                correlation_id=f'hourly-demo:{HOURLY_DEMO_ENVIRONMENT}:{hour_key}:{index + 1}',
+                occurred_at=occurred_at,
+                is_demo=True,
+            )
+            if event:
+                created.append(event)
+    return created
+
+
 def _parse_time_range(params):
     start_at = params.get('start_at', '').strip()
     end_at = params.get('end_at', '').strip()
@@ -489,11 +694,12 @@ class EventRecordViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
     }
 
     def get_queryset(self):
-        _refresh_demo_event_timestamps()
+        params = self.request.query_params
+        if params.get('environment') == HOURLY_DEMO_ENVIRONMENT:
+            _ensure_hourly_ecommerce_demo_events()
         queryset = super().get_queryset().exclude(result=EventRecord.RESULT_REJECTED)
         if getattr(self, 'action', '') not in {'operation_audit', 'prune_operation_audit'}:
             queryset = queryset.filter(_event_wall_record_q())
-        params = self.request.query_params
         mapping = {
             'module': 'module',
             'category': 'category',
@@ -1000,6 +1206,12 @@ class EventSourceViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     def ingest_spec(self, request):
         return Response(INGEST_SPEC)
 
+    def destroy(self, request, *args, **kwargs):
+        source = self.get_object()
+        if source.source_kind == EventSource.KIND_BUILTIN:
+            return Response({'detail': '平台内置事件源不允许删除。'}, status=status.HTTP_400_BAD_REQUEST)
+        return super().destroy(request, *args, **kwargs)
+
     @action(detail=True, methods=['post'])
     def issue_token(self, request, code=None):
         source = self.get_object()
@@ -1028,10 +1240,11 @@ class ExternalEventIngestView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
 
-    def post(self, request, code):
+    def post(self, request, type=None, code=None):
         _ensure_default_event_sources()
+        source_key = type or code
         try:
-            source = EventSource.objects.get(code=code, source_kind=EventSource.KIND_EXTERNAL)
+            source = EventSource.objects.get(code=source_key, source_kind=EventSource.KIND_EXTERNAL)
         except EventSource.DoesNotExist:
             return Response({'detail': '事件源不存在。'}, status=status.HTTP_404_NOT_FOUND)
 
