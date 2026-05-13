@@ -68,6 +68,7 @@ urlpatterns = [
     path('docker/containers/<str:container_id>/inspect/', docker_views.container_inspect, name='docker-container-inspect'),
     path('middleware/overview/', middleware_views.middleware_overview, name='middleware-overview'),
     path('middleware/action/', middleware_views.middleware_action, name='middleware-action'),
+    path('observability/system-posture/history/', observability_views.observability_system_posture_history, name='observability-system-posture-history'),
     path('observability/system-posture/', observability_views.observability_system_posture, name='observability-system-posture'),
     path('observability/overview/', observability_views.observability_overview, name='observability-overview'),
     path('observability/grafana/config/', observability_views.grafana_setting_view, name='observability-grafana-config'),

@@ -143,6 +143,7 @@ export const testLogDataSource = (id) => request.post(`/log/datasources/${id}/te
 
 export const getObservabilityOverview = (params) => request.get('/observability/overview/', { params })
 export const getObservabilitySystemPosture = (params) => request.get('/observability/system-posture/', { params })
+export const getObservabilitySystemPostureHistory = (params) => request.get('/observability/system-posture/history/', { params })
 export const getSystemPostureEnvironments = (params) => request.get('/observability/system-posture/environments/', { params })
 export const createSystemPostureEnvironment = (data) => request.post('/observability/system-posture/environments/', data)
 export const updateSystemPostureEnvironment = (id, data) => request.patch(`/observability/system-posture/environments/${id}/`, data)

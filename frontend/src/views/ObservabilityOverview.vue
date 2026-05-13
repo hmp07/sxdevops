@@ -29,6 +29,15 @@
         系统态势
       </button>
       <button
+        v-if="canViewSystemPosture"
+        class="neo-tab-btn"
+        :class="{ active: activeOverviewTab === 'posture-history' }"
+        @click="activeOverviewTab = 'posture-history'"
+      >
+        <el-icon><Calendar /></el-icon>
+        态势历史
+      </button>
+      <button
         class="neo-tab-btn"
         :class="{ active: activeOverviewTab === 'capabilities' }"
         @click="activeOverviewTab = 'capabilities'"
@@ -50,6 +59,7 @@
     </section>
 
     <ObservabilitySystemPosture v-if="activeOverviewTab === 'system-posture' && canViewSystemPosture" embedded />
+    <ObservabilityPostureHistory v-if="activeOverviewTab === 'posture-history' && canViewSystemPosture" embedded />
     <section v-if="activeOverviewTab === 'capabilities' && canViewLinks" class="panel">
       <div class="section-head">
         <h3>关联配置</h3>
@@ -62,18 +72,22 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { Aim, RefreshRight, Share } from '@element-plus/icons-vue'
+import { useRoute, useRouter } from 'vue-router'
+import { Aim, Calendar, RefreshRight, Share } from '@element-plus/icons-vue'
 import { getObservabilityOverview } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
 import ObservabilityDataSourceLinks from './ObservabilityDataSourceLinks.vue'
+import ObservabilityPostureHistory from './ObservabilityPostureHistory.vue'
 import ObservabilitySystemPosture from './ObservabilitySystemPosture.vue'
 
 const authStore = useAuthStore()
+const route = useRoute()
+const router = useRouter()
 const loading = ref(false)
 const overview = ref({ modules: {}, summary: {} })
 const canViewLinks = computed(() => authStore.hasPermission('ops.observability.link.view'))
 const canViewSystemPosture = computed(() => authStore.hasPermission('ops.observability.system_posture.view'))
-const activeOverviewTab = ref(canViewSystemPosture.value ? 'system-posture' : 'capabilities')
+const activeOverviewTab = ref(resolveOverviewTab(route.query.tab))
 
 const overviewHero = computed(() => {
   if (activeOverviewTab.value === 'system-posture') {
@@ -81,6 +95,13 @@ const overviewHero = computed(() => {
       title: '系统态势',
       description: '按环境与系统聚合健康态势，结果导向定义系统 SLO，划清故障边界，快速定位异常节点、关键依赖与风险范围。',
       icon: Aim,
+    }
+  }
+  if (activeOverviewTab.value === 'posture-history') {
+    return {
+      title: '态势历史',
+      description: '以系统态势数据生成 Statuspage 风格历史视图，集中查看近期运行状态、组件可用性和影响事件。',
+      icon: Calendar,
     }
   }
   return {
@@ -113,8 +134,29 @@ const capabilityCards = computed(() => [
   },
 ])
 
+function resolveOverviewTab(tab) {
+  if (tab === 'system-posture' && canViewSystemPosture.value) return 'system-posture'
+  if (tab === 'posture-history' && canViewSystemPosture.value) return 'posture-history'
+  if (tab === 'capabilities') return 'capabilities'
+  return canViewSystemPosture.value ? 'system-posture' : 'capabilities'
+}
+
+watch(() => route.query.tab, (tab) => {
+  activeOverviewTab.value = resolveOverviewTab(tab)
+})
+
+watch(activeOverviewTab, (tab) => {
+  if (!tab || route.query.tab === tab) return
+  router.replace({
+    query: {
+      ...route.query,
+      tab,
+    },
+  })
+})
+
 watch(canViewSystemPosture, (canView) => {
-  if (!canView && activeOverviewTab.value === 'system-posture') {
+  if (!canView && ['system-posture', 'posture-history'].includes(activeOverviewTab.value)) {
     activeOverviewTab.value = 'capabilities'
   }
 })

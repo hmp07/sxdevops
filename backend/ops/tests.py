@@ -17,6 +17,7 @@ from ops.models import (
     AlertRecipientGroup,
     DockerHost,
     SystemPostureSystem,
+    SystemPostureSLAHistory,
     GrafanaSetting,
     Host,
     K8sCluster,
@@ -1092,6 +1093,24 @@ class ObservabilityViewsTests(TestCase):
             if action['key'] in {'trace', 'log'}:
                 self.assertNotIn('traceId', action.get('query') or {})
                 self.assertNotIn('trace_id', action.get('query') or {})
+
+    def test_observability_system_posture_history_persists_daily_sla_snapshot(self):
+        response = self.client.get('/api/observability/system-posture/history/?days=7')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload['days']), 7)
+        self.assertGreaterEqual(payload['summary']['system_count'], 4)
+        self.assertGreaterEqual(len(payload['systems']), 4)
+        self.assertGreaterEqual(SystemPostureSLAHistory.objects.count(), 4)
+        first_system = payload['systems'][0]
+        self.assertEqual(len(first_system['records']), 1)
+        self.assertIn('sla', first_system['records'][0])
+        self.assertEqual(payload['context']['source'], 'sla_history')
+
+        backfill_response = self.client.get('/api/observability/system-posture/history/?days=7&backfill=1')
+        self.assertEqual(backfill_response.status_code, 200)
+        self.assertGreaterEqual(SystemPostureSLAHistory.objects.count(), 8)
 
     @override_settings(OBSERVABILITY_CONFIG={
         **TEST_OBSERVABILITY_CONFIG,

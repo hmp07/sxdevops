@@ -1106,6 +1106,54 @@ class SystemPostureEnvironment(models.Model):
         return self.name
 
 
+class SystemPostureSLAHistory(models.Model):
+    STATUS_UNKNOWN = 'unknown'
+    STATUS_HEALTHY = 'healthy'
+    STATUS_WARNING = 'warning'
+    STATUS_CRITICAL = 'critical'
+    STATUS_CHOICES = [
+        (STATUS_UNKNOWN, '未知'),
+        (STATUS_HEALTHY, '健康'),
+        (STATUS_WARNING, '风险'),
+        (STATUS_CRITICAL, '故障'),
+    ]
+
+    day = models.DateField('统计日期')
+    system_key = models.CharField('系统标识', max_length=128)
+    system_name = models.CharField('系统名称', max_length=128)
+    environment = models.CharField('环境', max_length=32, blank=True, default='prod')
+    domain = models.CharField('业务域', max_length=64, blank=True, default='')
+    status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_UNKNOWN)
+    sla_value = models.DecimalField('SLA', max_digits=6, decimal_places=3, null=True, blank=True)
+    sla_target = models.DecimalField('SLA 目标', max_digits=6, decimal_places=3, null=True, blank=True)
+    health_score = models.PositiveSmallIntegerField(
+        '健康分',
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+    )
+    metric_label = models.CharField('指标名称', max_length=64, blank=True, default='SLA')
+    metric_unit = models.CharField('指标单位', max_length=16, blank=True, default='%')
+    snapshot = models.JSONField('快照', default=dict, blank=True)
+    captured_at = models.DateTimeField('采集时间', auto_now=True)
+
+    class Meta:
+        db_table = 'ops_systemposture_sla_history'
+        verbose_name = '系统态势 SLA 历史'
+        verbose_name_plural = '系统态势 SLA 历史'
+        ordering = ['-day', 'environment', 'system_name']
+        constraints = [
+            models.UniqueConstraint(fields=['day', 'system_key'], name='ops_posture_sla_day_system_uniq'),
+        ]
+        indexes = [
+            models.Index(fields=['day', 'status'], name='ops_posture_sla_day_status_idx'),
+            models.Index(fields=['system_key', '-day'], name='ops_posture_sla_system_day_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.system_name} / {self.day} / {self.sla_value}'
+
+
 class LogDataSource(models.Model):
     PROVIDER_CHOICES = [
         ('loki', 'Loki'),

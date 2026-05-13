@@ -4,7 +4,8 @@ import json
 import copy
 import math
 import re
-from datetime import datetime, timedelta, timezone as datetime_timezone
+from decimal import Decimal, InvalidOperation
+from datetime import datetime, time, timedelta, timezone as datetime_timezone
 from urllib.parse import urlparse
 
 import requests as http_requests
@@ -22,7 +23,7 @@ from eventwall.services import record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import user_has_permissions
 from .alerting import _has_claimants
-from .models import Alert, Deployment, GrafanaSetting, LogDataSource, LogEntry, ObservabilityDataSourceLink, SystemPostureEnvironment, SystemPostureSystem, TracingDataSource
+from .models import Alert, Deployment, GrafanaSetting, LogDataSource, LogEntry, ObservabilityDataSourceLink, SystemPostureEnvironment, SystemPostureSLAHistory, SystemPostureSystem, TracingDataSource
 from .serializers import (
     AlertSerializer,
     SystemPostureEnvironmentSerializer,
@@ -3083,6 +3084,166 @@ def _system_posture_timeline(template):
     return items[:8]
 
 
+def _system_posture_decimal(value):
+    if value is None or value == '':
+        return None
+    try:
+        number = Decimal(str(value).replace('%', '').replace(',', '').strip())
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    return max(Decimal('0'), min(Decimal('100'), number)).quantize(Decimal('0.001'))
+
+
+def _system_posture_sla_from_system(system):
+    north_star = system.get('north_star') if isinstance(system.get('north_star'), dict) else {}
+    value = _system_posture_decimal(north_star.get('value'))
+    target = _system_posture_decimal(north_star.get('target'))
+    if value is None:
+        value = _system_posture_decimal(system.get('health_score'))
+    return {
+        'value': value,
+        'target': target,
+        'label': north_star.get('label') or 'SLA',
+        'unit': north_star.get('unit') or '%',
+    }
+
+
+def _system_posture_history_status(status):
+    if status in {'healthy', 'warning', 'critical', 'unknown'}:
+        return status
+    if status == 'offline':
+        return 'critical'
+    return 'unknown'
+
+
+def _system_posture_day_time_context(day):
+    current_tz = timezone.get_current_timezone()
+    local_start = timezone.make_aware(datetime.combine(day, time.min), current_tz)
+    if day >= timezone.localdate():
+        end = timezone.now()
+        start = local_start if local_start < end else end - timedelta(minutes=5)
+    else:
+        start = local_start
+        end = local_start + timedelta(days=1)
+    duration_seconds = max(60, int((end - start).total_seconds()))
+    return {
+        'start': start.astimezone(datetime_timezone.utc),
+        'end': end.astimezone(datetime_timezone.utc),
+        'start_iso': start.astimezone(datetime_timezone.utc).isoformat(),
+        'end_iso': end.astimezone(datetime_timezone.utc).isoformat(),
+        'duration_seconds': duration_seconds,
+        'duration_minutes': max(1, int(math.ceil(duration_seconds / 60))),
+        'promql_window': _prometheus_duration(duration_seconds),
+        'explicit': True,
+        'label': f'{start.strftime("%Y-%m-%d %H:%M")} - {end.astimezone(current_tz).strftime("%Y-%m-%d %H:%M")}',
+    }
+
+
+def _capture_system_posture_sla_history(request, access, day=None, time_context=None):
+    day = day or timezone.localdate()
+    provider = request.query_params.get('provider', '')
+    layer = request.query_params.get('layer', '')
+    catalog = None
+    if access.get('trace'):
+        try:
+            catalog = load_tracing_catalog(
+                provider=provider,
+                layer=layer,
+                datasource_id=request.query_params.get('datasource_id', ''),
+            )
+        except ObservabilityError:
+            catalog = None
+
+    templates = _system_posture_templates()
+    time_context = time_context or _system_posture_day_time_context(day)
+    evidence = _system_posture_evidence(access, catalog if isinstance(catalog, dict) else None, time_context=time_context)
+    systems = [
+        _build_system_posture_system_payload(template, access, catalog if isinstance(catalog, dict) else None, evidence=evidence, time_context=time_context)
+        for template in templates
+    ]
+
+    captured = 0
+    for system in systems:
+        sla = _system_posture_sla_from_system(system)
+        health_score = system.get('health_score')
+        if health_score is not None:
+            try:
+                health_score = max(0, min(100, int(health_score)))
+            except (TypeError, ValueError):
+                health_score = None
+        SystemPostureSLAHistory.objects.update_or_create(
+            day=day,
+            system_key=system.get('id') or system.get('name') or '',
+            defaults={
+                'system_name': system.get('name') or system.get('id') or '未命名系统',
+                'environment': system.get('environment') or system.get('env') or system.get('form', {}).get('environment') or 'prod',
+                'domain': system.get('domain') or '',
+                'status': _system_posture_history_status(system.get('status')),
+                'sla_value': sla['value'],
+                'sla_target': sla['target'],
+                'health_score': health_score,
+                'metric_label': str(sla['label'] or 'SLA')[:64],
+                'metric_unit': str(sla['unit'] or '%')[:16],
+                'snapshot': {
+                    'north_star': system.get('north_star') or {},
+                    'signals': system.get('signals') or {},
+                    'dependencies': len(system.get('dependencies') or []),
+                    'children': len(system.get('children') or []),
+                },
+            },
+        )
+        captured += 1
+    return captured
+
+
+def _system_posture_history_record(record):
+    return {
+        'day': record.day.isoformat(),
+        'sla': float(record.sla_value) if record.sla_value is not None else None,
+        'target': float(record.sla_target) if record.sla_target is not None else None,
+        'status': record.status,
+        'health_score': record.health_score,
+        'captured_at': record.captured_at.isoformat() if record.captured_at else '',
+    }
+
+
+def _system_posture_history_summary(records, latest_day):
+    latest_records = [record for record in records if record.day == latest_day]
+    sla_values = [record.sla_value for record in latest_records if record.sla_value is not None]
+    critical_count = sum(1 for record in latest_records if record.status == 'critical')
+    warning_count = sum(1 for record in latest_records if record.status == 'warning')
+    unknown_count = sum(1 for record in latest_records if record.status == 'unknown')
+    if critical_count:
+        overall_status = 'critical'
+    elif warning_count:
+        overall_status = 'warning'
+    elif unknown_count and unknown_count == len(latest_records):
+        overall_status = 'unknown'
+    else:
+        overall_status = 'healthy' if latest_records else 'unknown'
+    average_sla = None
+    if sla_values:
+        average_sla = float((sum(sla_values, Decimal('0')) / len(sla_values)).quantize(Decimal('0.001')))
+    return {
+        'latest_day': latest_day.isoformat(),
+        'system_count': len(latest_records),
+        'average_sla': average_sla,
+        'critical_systems': critical_count,
+        'warning_systems': warning_count,
+        'unknown_systems': unknown_count,
+        'overall_status': overall_status,
+    }
+
+
+def _parse_system_posture_history_day(value):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value)[:10], '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        return None
+
+
 class SystemPostureEnvironmentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = SystemPostureEnvironment.objects.all()
     serializer_class = SystemPostureEnvironmentSerializer
@@ -3482,6 +3643,114 @@ def grafana_setting_view(request):
     response_data = GrafanaSettingSerializer(saved).data
     response_data['persisted'] = True
     return Response(response_data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.observability.system_posture.view')])
+def observability_system_posture_history(request):
+    access = _observability_access(request)
+    try:
+        days = int(request.query_params.get('days') or 90)
+    except (TypeError, ValueError):
+        days = 90
+    days = max(7, min(180, days))
+    today = timezone.localdate()
+    requested_start = _parse_system_posture_history_day(request.query_params.get('start') or request.query_params.get('start_day'))
+    requested_end = _parse_system_posture_history_day(request.query_params.get('end') or request.query_params.get('end_day'))
+    latest_day = min(requested_end or today, today)
+    start_day = requested_start or (latest_day - timedelta(days=days - 1))
+    if start_day > latest_day:
+        start_day = latest_day
+    if (latest_day - start_day).days > 179:
+        start_day = latest_day - timedelta(days=179)
+    days = (latest_day - start_day).days + 1
+    force_refresh = str(request.query_params.get('refresh') or '').lower() in {'1', 'true', 'yes'}
+    backfill_enabled = str(request.query_params.get('backfill') or '').lower() in {'1', 'true', 'yes'}
+
+    templates = _system_posture_templates()
+    environments = _system_posture_environments(templates)
+    environment_lookup = {
+        item['key']: item
+        for item in environments
+    }
+    expected_keys = {
+        template.get('id') or template.get('name') or ''
+        for template in templates
+        if template.get('id') or template.get('name')
+    }
+    captured = 0
+    backfill_days = []
+    existing_by_day = {}
+    existing_pairs = (
+        SystemPostureSLAHistory.objects
+        .filter(day__gte=start_day, day__lte=latest_day)
+        .values_list('day', 'system_key')
+    )
+    for day, system_key in existing_pairs:
+        existing_by_day.setdefault(day, set()).add(system_key)
+    today_existing_keys = existing_by_day.get(latest_day, set())
+    if force_refresh or (expected_keys and not expected_keys.issubset(today_existing_keys)):
+        backfill_days.append(latest_day)
+    if backfill_enabled:
+        for offset in range(days):
+            day = start_day + timedelta(days=offset)
+            if day == latest_day:
+                continue
+            existing_keys = existing_by_day.get(day, set())
+            if expected_keys and not expected_keys.issubset(existing_keys):
+                backfill_days.append(day)
+                break
+    for day in backfill_days:
+        captured += _capture_system_posture_sla_history(
+            request,
+            access,
+            day,
+            time_context=_system_posture_day_time_context(day),
+        )
+
+    records = list(
+        SystemPostureSLAHistory.objects
+        .filter(day__gte=start_day, day__lte=latest_day)
+        .order_by('system_name', 'day')
+    )
+    system_map = {}
+    for record in records:
+        if record.system_key not in system_map:
+            environment = environment_lookup.get(record.environment) or {}
+            system_map[record.system_key] = {
+                'id': record.system_key,
+                'name': record.system_name,
+                'environment': record.environment,
+                'environment_name': environment.get('name') or _system_posture_environment_label(record.environment),
+                'environment_sort_order': environment.get('sort_order', 1000),
+                'domain': record.domain,
+                'metric_label': record.metric_label,
+                'metric_unit': record.metric_unit,
+                'target': float(record.sla_target) if record.sla_target is not None else None,
+                'records': [],
+            }
+        system_map[record.system_key]['records'].append(_system_posture_history_record(record))
+
+    day_items = []
+    for offset in range(days):
+        day = start_day + timedelta(days=offset)
+        day_items.append({
+            'key': day.isoformat(),
+            'label': day.strftime('%m-%d'),
+        })
+
+    return Response({
+        'days': day_items,
+        'systems': list(system_map.values()),
+        'summary': _system_posture_history_summary(records, latest_day),
+        'context': {
+            'days': days,
+            'start_day': start_day.isoformat(),
+            'end_day': latest_day.isoformat(),
+            'captured': captured,
+            'source': 'sla_history',
+        },
+    })
 
 
 @api_view(['GET'])
