@@ -22,6 +22,7 @@ from rbac.permissions import RBACPermissionMixin
 
 logger = logging.getLogger(__name__)
 K8S_SUMMARY_CACHE_TTL = 15
+K8S_RESOURCE_CACHE_TTL = 8
 K8S_DEMO_STATE_CACHE_TTL = 86400
 
 
@@ -226,6 +227,55 @@ def _clear_summary_cache(cluster_or_id):
     cluster_id = cluster_or_id.pk if hasattr(cluster_or_id, 'pk') else cluster_or_id
     if cluster_id:
         cache.delete(_summary_cache_key(cluster_id))
+
+
+def _resource_cache_version_key(cluster_id):
+    return f'ops:k8s:list-version:{cluster_id}'
+
+
+def _get_resource_cache_version(cluster_id):
+    cache_key = _resource_cache_version_key(cluster_id)
+    version = cache.get(cache_key)
+    if version is None:
+        version = 1
+        cache.set(cache_key, version, K8S_DEMO_STATE_CACHE_TTL)
+    return version
+
+
+def _bump_resource_cache_version(cluster_or_id):
+    cluster_id = cluster_or_id.pk if hasattr(cluster_or_id, 'pk') else cluster_or_id
+    if not cluster_id:
+        return
+    cache_key = _resource_cache_version_key(cluster_id)
+    current = cache.get(cache_key)
+    if current is None:
+        cache.set(cache_key, 2, K8S_DEMO_STATE_CACHE_TTL)
+        return
+    try:
+        cache.incr(cache_key)
+    except Exception:
+        cache.set(cache_key, int(current) + 1, K8S_DEMO_STATE_CACHE_TTL)
+
+
+def _resource_cache_key(cluster_id, resource, namespace=''):
+    version = _get_resource_cache_version(cluster_id)
+    scope = namespace or '_cluster'
+    return f'ops:k8s:list:{cluster_id}:{version}:{resource}:{scope}'
+
+
+def _get_or_set_resource_cache(cluster, resource, namespace, loader):
+    cache_key = _resource_cache_key(cluster.id, resource, namespace)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    data = loader()
+    cache.set(cache_key, data, K8S_RESOURCE_CACHE_TTL)
+    return data
+
+
+def _invalidate_cluster_runtime_cache(cluster_or_id):
+    _clear_summary_cache(cluster_or_id)
+    _bump_resource_cache_version(cluster_or_id)
 
 
 def _demo_state_key(cluster_id, resource):
@@ -503,14 +553,14 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         instance = serializer.save()
-        _clear_summary_cache(instance)
+        _invalidate_cluster_runtime_cache(instance)
 
     def perform_update(self, serializer):
         instance = serializer.save()
-        _clear_summary_cache(instance)
+        _invalidate_cluster_runtime_cache(instance)
 
     def perform_destroy(self, instance):
-        _clear_summary_cache(instance)
+        _invalidate_cluster_runtime_cache(instance)
         instance.delete()
 
     @action(detail=True, methods=['post'])
@@ -518,7 +568,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         """测试集群连接"""
         cluster = self.get_object()
         if _is_demo(cluster):
-            _clear_summary_cache(cluster)
+            _invalidate_cluster_runtime_cache(cluster)
             return Response({'success': True, 'message': '连接成功 (Kubernetes v1.29.3) [演示模式]'})
         try:
             k8s = _get_k8s_client(cluster)
@@ -526,7 +576,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             version = k8s.VersionApi().get_code()
             cluster.status = 'connected'
             cluster.save(update_fields=['status'])
-            _clear_summary_cache(cluster)
+            _invalidate_cluster_runtime_cache(cluster)
             return Response({
                 'success': True,
                 'message': f'连接成功 (Kubernetes {version.git_version})',
@@ -534,7 +584,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         except Exception as e:
             cluster.status = 'error'
             cluster.save(update_fields=['status'])
-            _clear_summary_cache(cluster)
+            _invalidate_cluster_runtime_cache(cluster)
             error_text = str(e)
             if isinstance(e, ssl.SSLCertVerificationError) or 'CERTIFICATE_VERIFY_FAILED' in error_text or 'certificate verify failed' in error_text.lower():
                 error_text = (
@@ -575,15 +625,18 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if _is_demo(cluster):
             return Response(DEMO_NAMESPACES)
         try:
-            k8s = _get_k8s_client(cluster)
-            v1 = k8s.CoreV1Api()
-            ns_list = v1.list_namespace()
-            data = [{
-                'name': ns.metadata.name,
-                'status': ns.status.phase,
-                'created': ns.metadata.creation_timestamp.isoformat() if ns.metadata.creation_timestamp else '',
-                'labels': ns.metadata.labels or {},
-            } for ns in ns_list.items]
+            def loader():
+                k8s = _get_k8s_client(cluster)
+                v1 = k8s.CoreV1Api()
+                ns_list = v1.list_namespace()
+                return [{
+                    'name': ns.metadata.name,
+                    'status': ns.status.phase,
+                    'created': ns.metadata.creation_timestamp.isoformat() if ns.metadata.creation_timestamp else '',
+                    'labels': ns.metadata.labels or {},
+                } for ns in ns_list.items]
+
+            data = _get_or_set_resource_cache(cluster, 'namespaces', '_all', loader)
             return Response(data)
         except Exception as e:
             return Response({'detail': f'获取命名空间失败: {str(e)}'}, status=400)
@@ -596,38 +649,42 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if _is_demo(cluster):
             return Response(_filter_by_ns(DEMO_PODS, namespace))
         try:
-            k8s = _get_k8s_client(cluster)
-            v1 = k8s.CoreV1Api()
-            if namespace == '_all':
-                pod_list = v1.list_pod_for_all_namespaces()
-            else:
-                pod_list = v1.list_namespaced_pod(namespace=namespace)
+            def loader():
+                k8s = _get_k8s_client(cluster)
+                v1 = k8s.CoreV1Api()
+                if namespace == '_all':
+                    pod_list = v1.list_pod_for_all_namespaces()
+                else:
+                    pod_list = v1.list_namespaced_pod(namespace=namespace)
 
-            data = []
-            for pod in pod_list.items:
-                containers = [{
-                    'name': c.name,
-                    'image': c.image,
-                    'ready': False,
-                } for c in (pod.spec.containers or [])]
+                data = []
+                for pod in pod_list.items:
+                    containers = [{
+                        'name': c.name,
+                        'image': c.image,
+                        'ready': False,
+                    } for c in (pod.spec.containers or [])]
 
-                if pod.status.container_statuses:
-                    for cs in pod.status.container_statuses:
-                        for c in containers:
-                            if c['name'] == cs.name:
-                                c['ready'] = cs.ready or False
-                                c['restart_count'] = cs.restart_count or 0
+                    if pod.status.container_statuses:
+                        for cs in pod.status.container_statuses:
+                            for c in containers:
+                                if c['name'] == cs.name:
+                                    c['ready'] = cs.ready or False
+                                    c['restart_count'] = cs.restart_count or 0
 
-                data.append({
-                    'name': pod.metadata.name,
-                    'namespace': pod.metadata.namespace,
-                    'status': pod.status.phase,
-                    'node': pod.spec.node_name or '',
-                    'ip': pod.status.pod_ip or '',
-                    'containers': containers,
-                    'restarts': sum(c.get('restart_count', 0) for c in containers),
-                    'created': pod.metadata.creation_timestamp.isoformat() if pod.metadata.creation_timestamp else '',
-                })
+                    data.append({
+                        'name': pod.metadata.name,
+                        'namespace': pod.metadata.namespace,
+                        'status': pod.status.phase,
+                        'node': pod.spec.node_name or '',
+                        'ip': pod.status.pod_ip or '',
+                        'containers': containers,
+                        'restarts': sum(c.get('restart_count', 0) for c in containers),
+                        'created': pod.metadata.creation_timestamp.isoformat() if pod.metadata.creation_timestamp else '',
+                    })
+                return data
+
+            data = _get_or_set_resource_cache(cluster, 'pods', namespace, loader)
             return Response(data)
         except Exception as e:
             return Response({'detail': f'获取 Pod 列表失败: {str(e)}'}, status=400)
@@ -640,25 +697,28 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if _is_demo(cluster):
             return Response(_filter_by_ns(DEMO_SERVICES, namespace))
         try:
-            k8s = _get_k8s_client(cluster)
-            v1 = k8s.CoreV1Api()
-            if namespace == '_all':
-                svc_list = v1.list_service_for_all_namespaces()
-            else:
-                svc_list = v1.list_namespaced_service(namespace=namespace)
+            def loader():
+                k8s = _get_k8s_client(cluster)
+                v1 = k8s.CoreV1Api()
+                if namespace == '_all':
+                    svc_list = v1.list_service_for_all_namespaces()
+                else:
+                    svc_list = v1.list_namespaced_service(namespace=namespace)
 
-            data = [{
-                'name': svc.metadata.name,
-                'namespace': svc.metadata.namespace,
-                'type': svc.spec.type,
-                'cluster_ip': svc.spec.cluster_ip or '',
-                'external_ip': ','.join(svc.spec.external_i_ps or []) if svc.spec.external_i_ps else '',
-                'ports': ', '.join([
-                    f"{p.port}{'→'+str(p.node_port) if p.node_port else ''}/{p.protocol}"
-                    for p in (svc.spec.ports or [])
-                ]),
-                'created': svc.metadata.creation_timestamp.isoformat() if svc.metadata.creation_timestamp else '',
-            } for svc in svc_list.items]
+                return [{
+                    'name': svc.metadata.name,
+                    'namespace': svc.metadata.namespace,
+                    'type': svc.spec.type,
+                    'cluster_ip': svc.spec.cluster_ip or '',
+                    'external_ip': ','.join(svc.spec.external_i_ps or []) if svc.spec.external_i_ps else '',
+                    'ports': ', '.join([
+                        f"{p.port}{'→'+str(p.node_port) if p.node_port else ''}/{p.protocol}"
+                        for p in (svc.spec.ports or [])
+                    ]),
+                    'created': svc.metadata.creation_timestamp.isoformat() if svc.metadata.creation_timestamp else '',
+                } for svc in svc_list.items]
+
+            data = _get_or_set_resource_cache(cluster, 'services', namespace, loader)
             return Response(data)
         except Exception as e:
             return Response({'detail': f'获取 Service 列表失败: {str(e)}'}, status=400)
@@ -672,22 +732,25 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             demo_items = _get_demo_state(cluster.id, 'deployments', DEMO_DEPLOYMENTS)
             return Response(_filter_by_ns(demo_items, namespace))
         try:
-            k8s = _get_k8s_client(cluster)
-            apps_v1 = k8s.AppsV1Api()
-            if namespace == '_all':
-                dep_list = apps_v1.list_deployment_for_all_namespaces()
-            else:
-                dep_list = apps_v1.list_namespaced_deployment(namespace=namespace)
+            def loader():
+                k8s = _get_k8s_client(cluster)
+                apps_v1 = k8s.AppsV1Api()
+                if namespace == '_all':
+                    dep_list = apps_v1.list_deployment_for_all_namespaces()
+                else:
+                    dep_list = apps_v1.list_namespaced_deployment(namespace=namespace)
 
-            data = [{
-                'name': dep.metadata.name,
-                'namespace': dep.metadata.namespace,
-                'replicas': dep.spec.replicas or 0,
-                'ready_replicas': dep.status.ready_replicas or 0,
-                'available_replicas': dep.status.available_replicas or 0,
-                'images': ', '.join([c.image for c in dep.spec.template.spec.containers]),
-                'created': dep.metadata.creation_timestamp.isoformat() if dep.metadata.creation_timestamp else '',
-            } for dep in dep_list.items]
+                return [{
+                    'name': dep.metadata.name,
+                    'namespace': dep.metadata.namespace,
+                    'replicas': dep.spec.replicas or 0,
+                    'ready_replicas': dep.status.ready_replicas or 0,
+                    'available_replicas': dep.status.available_replicas or 0,
+                    'images': ', '.join([c.image for c in dep.spec.template.spec.containers]),
+                    'created': dep.metadata.creation_timestamp.isoformat() if dep.metadata.creation_timestamp else '',
+                } for dep in dep_list.items]
+
+            data = _get_or_set_resource_cache(cluster, 'deployments', namespace, loader)
             return Response(data)
         except Exception as e:
             return Response({'detail': f'获取 Deployment 列表失败: {str(e)}'}, status=400)
@@ -697,14 +760,14 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         """删除 Pod 以触发重启"""
         cluster = self.get_object()
         if _is_demo(cluster):
-            _clear_summary_cache(cluster)
+            _invalidate_cluster_runtime_cache(cluster)
             return Response({'success': True, 'message': f'Pod {pod_name} 正在重启 [演示模式]'})
         namespace = request.data.get('namespace', 'default')
         try:
             k8s = _get_k8s_client(cluster)
             v1 = k8s.CoreV1Api()
             v1.delete_namespaced_pod(name=pod_name, namespace=namespace)
-            _clear_summary_cache(cluster)
+            _invalidate_cluster_runtime_cache(cluster)
             return Response({'success': True, 'message': f'Pod {pod_name} 正在重启'})
         except Exception as e:
             return Response({'success': False, 'message': f'重启失败: {str(e)}'}, status=400)
@@ -751,15 +814,18 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             demo_items = _get_demo_state(cluster.id, 'statefulsets', DEMO_STATEFULSETS)
             return Response(_filter_by_ns(demo_items, namespace))
         try:
-            k8s = _get_k8s_client(cluster)
-            apps_v1 = k8s.AppsV1Api()
-            items = (apps_v1.list_stateful_set_for_all_namespaces() if namespace == '_all'
-                     else apps_v1.list_namespaced_stateful_set(namespace=namespace)).items
-            data = [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
-                     'replicas': i.spec.replicas or 0, 'ready_replicas': i.status.ready_replicas or 0,
-                     'images': ', '.join([c.image for c in i.spec.template.spec.containers]),
-                     'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
-                     } for i in items]
+            def loader():
+                k8s = _get_k8s_client(cluster)
+                apps_v1 = k8s.AppsV1Api()
+                items = (apps_v1.list_stateful_set_for_all_namespaces() if namespace == '_all'
+                         else apps_v1.list_namespaced_stateful_set(namespace=namespace)).items
+                return [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
+                         'replicas': i.spec.replicas or 0, 'ready_replicas': i.status.ready_replicas or 0,
+                         'images': ', '.join([c.image for c in i.spec.template.spec.containers]),
+                         'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
+                         } for i in items]
+
+            data = _get_or_set_resource_cache(cluster, 'statefulsets', namespace, loader)
             return Response(data)
         except Exception as e:
             return Response({'detail': str(e)}, status=400)
@@ -771,17 +837,20 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if _is_demo(cluster):
             return Response(_filter_by_ns(DEMO_DAEMONSETS, namespace))
         try:
-            k8s = _get_k8s_client(cluster)
-            apps_v1 = k8s.AppsV1Api()
-            items = (apps_v1.list_daemon_set_for_all_namespaces() if namespace == '_all'
-                     else apps_v1.list_namespaced_daemon_set(namespace=namespace)).items
-            data = [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
-                     'desired': i.status.desired_number_scheduled or 0, 'current': i.status.current_number_scheduled or 0,
-                     'ready': i.status.number_ready or 0,
-                     'images': ', '.join([c.image for c in i.spec.template.spec.containers]),
-                     'node_selector': str(i.spec.template.spec.node_selector or ''),
-                     'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
-                     } for i in items]
+            def loader():
+                k8s = _get_k8s_client(cluster)
+                apps_v1 = k8s.AppsV1Api()
+                items = (apps_v1.list_daemon_set_for_all_namespaces() if namespace == '_all'
+                         else apps_v1.list_namespaced_daemon_set(namespace=namespace)).items
+                return [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
+                         'desired': i.status.desired_number_scheduled or 0, 'current': i.status.current_number_scheduled or 0,
+                         'ready': i.status.number_ready or 0,
+                         'images': ', '.join([c.image for c in i.spec.template.spec.containers]),
+                         'node_selector': str(i.spec.template.spec.node_selector or ''),
+                         'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
+                         } for i in items]
+
+            data = _get_or_set_resource_cache(cluster, 'daemonsets', namespace, loader)
             return Response(data)
         except Exception as e:
             return Response({'detail': str(e)}, status=400)
@@ -793,16 +862,19 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if _is_demo(cluster):
             return Response(_filter_by_ns(DEMO_JOBS, namespace))
         try:
-            k8s = _get_k8s_client(cluster)
-            batch_v1 = k8s.BatchV1Api()
-            items = (batch_v1.list_job_for_all_namespaces() if namespace == '_all'
-                     else batch_v1.list_namespaced_job(namespace=namespace)).items
-            data = [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
-                     'completions': f'{i.status.succeeded or 0}/{i.spec.completions or 1}',
-                     'duration': '', 'status': 'Complete' if (i.status.succeeded or 0) >= (i.spec.completions or 1) else 'Running',
-                     'images': ', '.join([c.image for c in i.spec.template.spec.containers]),
-                     'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
-                     } for i in items]
+            def loader():
+                k8s = _get_k8s_client(cluster)
+                batch_v1 = k8s.BatchV1Api()
+                items = (batch_v1.list_job_for_all_namespaces() if namespace == '_all'
+                         else batch_v1.list_namespaced_job(namespace=namespace)).items
+                return [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
+                         'completions': f'{i.status.succeeded or 0}/{i.spec.completions or 1}',
+                         'duration': '', 'status': 'Complete' if (i.status.succeeded or 0) >= (i.spec.completions or 1) else 'Running',
+                         'images': ', '.join([c.image for c in i.spec.template.spec.containers]),
+                         'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
+                         } for i in items]
+
+            data = _get_or_set_resource_cache(cluster, 'jobs', namespace, loader)
             return Response(data)
         except Exception as e:
             return Response({'detail': str(e)}, status=400)
@@ -814,17 +886,20 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if _is_demo(cluster):
             return Response(_filter_by_ns(DEMO_CRONJOBS, namespace))
         try:
-            k8s = _get_k8s_client(cluster)
-            batch_v1 = k8s.BatchV1Api()
-            items = (batch_v1.list_cron_job_for_all_namespaces() if namespace == '_all'
-                     else batch_v1.list_namespaced_cron_job(namespace=namespace)).items
-            data = [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
-                     'schedule': i.spec.schedule, 'suspend': i.spec.suspend or False,
-                     'active': len(i.status.active or []),
-                     'last_schedule': i.status.last_schedule_time.isoformat() if i.status.last_schedule_time else '',
-                     'images': ', '.join([c.image for c in i.spec.job_template.spec.template.spec.containers]),
-                     'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
-                     } for i in items]
+            def loader():
+                k8s = _get_k8s_client(cluster)
+                batch_v1 = k8s.BatchV1Api()
+                items = (batch_v1.list_cron_job_for_all_namespaces() if namespace == '_all'
+                         else batch_v1.list_namespaced_cron_job(namespace=namespace)).items
+                return [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
+                         'schedule': i.spec.schedule, 'suspend': i.spec.suspend or False,
+                         'active': len(i.status.active or []),
+                         'last_schedule': i.status.last_schedule_time.isoformat() if i.status.last_schedule_time else '',
+                         'images': ', '.join([c.image for c in i.spec.job_template.spec.template.spec.containers]),
+                         'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
+                         } for i in items]
+
+            data = _get_or_set_resource_cache(cluster, 'cronjobs', namespace, loader)
             return Response(data)
         except Exception as e:
             return Response({'detail': str(e)}, status=400)
@@ -837,17 +912,20 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if _is_demo(cluster):
             return Response(_filter_by_ns(DEMO_INGRESSES, namespace))
         try:
-            k8s = _get_k8s_client(cluster)
-            net_v1 = k8s.NetworkingV1Api()
-            items = (net_v1.list_ingress_for_all_namespaces() if namespace == '_all'
-                     else net_v1.list_namespaced_ingress(namespace=namespace)).items
-            data = [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
-                     'class': i.spec.ingress_class_name or '',
-                     'hosts': ', '.join([r.host for r in (i.spec.rules or []) if r.host]),
-                     'address': ', '.join([lb.ip or lb.hostname or '' for lb in (i.status.load_balancer.ingress or [])]) if i.status.load_balancer and i.status.load_balancer.ingress else '',
-                     'ports': '80, 443' if i.spec.tls else '80',
-                     'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
-                     } for i in items]
+            def loader():
+                k8s = _get_k8s_client(cluster)
+                net_v1 = k8s.NetworkingV1Api()
+                items = (net_v1.list_ingress_for_all_namespaces() if namespace == '_all'
+                         else net_v1.list_namespaced_ingress(namespace=namespace)).items
+                return [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
+                         'class': i.spec.ingress_class_name or '',
+                         'hosts': ', '.join([r.host for r in (i.spec.rules or []) if r.host]),
+                         'address': ', '.join([lb.ip or lb.hostname or '' for lb in (i.status.load_balancer.ingress or [])]) if i.status.load_balancer and i.status.load_balancer.ingress else '',
+                         'ports': '80, 443' if i.spec.tls else '80',
+                         'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
+                         } for i in items]
+
+            data = _get_or_set_resource_cache(cluster, 'ingresses', namespace, loader)
             return Response(data)
         except Exception as e:
             return Response({'detail': str(e)}, status=400)
@@ -880,17 +958,20 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if _is_demo(cluster):
             return Response(_filter_by_ns(DEMO_PVCS, namespace))
         try:
-            k8s = _get_k8s_client(cluster)
-            v1 = k8s.CoreV1Api()
-            items = (v1.list_persistent_volume_claim_for_all_namespaces() if namespace == '_all'
-                     else v1.list_namespaced_persistent_volume_claim(namespace=namespace)).items
-            data = [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
-                     'status': i.status.phase, 'volume': i.spec.volume_name or '',
-                     'capacity': (i.status.capacity or {}).get('storage', ''),
-                     'access_modes': ','.join(i.spec.access_modes or []),
-                     'storage_class': i.spec.storage_class_name or '',
-                     'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
-                     } for i in items]
+            def loader():
+                k8s = _get_k8s_client(cluster)
+                v1 = k8s.CoreV1Api()
+                items = (v1.list_persistent_volume_claim_for_all_namespaces() if namespace == '_all'
+                         else v1.list_namespaced_persistent_volume_claim(namespace=namespace)).items
+                return [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
+                         'status': i.status.phase, 'volume': i.spec.volume_name or '',
+                         'capacity': (i.status.capacity or {}).get('storage', ''),
+                         'access_modes': ','.join(i.spec.access_modes or []),
+                         'storage_class': i.spec.storage_class_name or '',
+                         'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
+                         } for i in items]
+
+            data = _get_or_set_resource_cache(cluster, 'pvcs', namespace, loader)
             return Response(data)
         except Exception as e:
             return Response({'detail': str(e)}, status=400)
@@ -901,16 +982,19 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if _is_demo(cluster):
             return Response(DEMO_STORAGECLASSES)
         try:
-            k8s = _get_k8s_client(cluster)
-            storage_v1 = k8s.StorageV1Api()
-            items = storage_v1.list_storage_class().items
-            data = [{'name': i.metadata.name, 'provisioner': i.provisioner,
-                     'reclaim_policy': i.reclaim_policy or 'Delete',
-                     'binding_mode': i.volume_binding_mode or 'Immediate',
-                     'allow_expansion': i.allow_volume_expansion or False,
-                     'is_default': (i.metadata.annotations or {}).get('storageclass.kubernetes.io/is-default-class') == 'true',
-                     'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
-                     } for i in items]
+            def loader():
+                k8s = _get_k8s_client(cluster)
+                storage_v1 = k8s.StorageV1Api()
+                items = storage_v1.list_storage_class().items
+                return [{'name': i.metadata.name, 'provisioner': i.provisioner,
+                         'reclaim_policy': i.reclaim_policy or 'Delete',
+                         'binding_mode': i.volume_binding_mode or 'Immediate',
+                         'allow_expansion': i.allow_volume_expansion or False,
+                         'is_default': (i.metadata.annotations or {}).get('storageclass.kubernetes.io/is-default-class') == 'true',
+                         'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
+                         } for i in items]
+
+            data = _get_or_set_resource_cache(cluster, 'storageclasses', '_all', loader)
             return Response(data)
         except Exception as e:
             return Response({'detail': str(e)}, status=400)
@@ -924,14 +1008,17 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             demo_items = _get_demo_state(cluster.id, 'configmaps', DEMO_CONFIGMAPS)
             return Response(_filter_by_ns(demo_items, namespace))
         try:
-            k8s = _get_k8s_client(cluster)
-            v1 = k8s.CoreV1Api()
-            items = (v1.list_config_map_for_all_namespaces() if namespace == '_all'
-                     else v1.list_namespaced_config_map(namespace=namespace)).items
-            data = [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
-                     'data_count': len(i.data or {}),
-                     'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
-                     } for i in items]
+            def loader():
+                k8s = _get_k8s_client(cluster)
+                v1 = k8s.CoreV1Api()
+                items = (v1.list_config_map_for_all_namespaces() if namespace == '_all'
+                         else v1.list_namespaced_config_map(namespace=namespace)).items
+                return [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
+                         'data_count': len(i.data or {}),
+                         'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
+                         } for i in items]
+
+            data = _get_or_set_resource_cache(cluster, 'configmaps', namespace, loader)
             return Response(data)
         except Exception as e:
             return Response({'detail': str(e)}, status=400)
@@ -944,14 +1031,17 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             demo_items = _get_demo_state(cluster.id, 'secrets', DEMO_SECRETS)
             return Response(_filter_by_ns(demo_items, namespace))
         try:
-            k8s = _get_k8s_client(cluster)
-            v1 = k8s.CoreV1Api()
-            items = (v1.list_secret_for_all_namespaces() if namespace == '_all'
-                     else v1.list_namespaced_secret(namespace=namespace)).items
-            data = [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
-                     'type': i.type or 'Opaque', 'data_count': len(i.data or {}),
-                     'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
-                     } for i in items]
+            def loader():
+                k8s = _get_k8s_client(cluster)
+                v1 = k8s.CoreV1Api()
+                items = (v1.list_secret_for_all_namespaces() if namespace == '_all'
+                         else v1.list_namespaced_secret(namespace=namespace)).items
+                return [{'name': i.metadata.name, 'namespace': i.metadata.namespace,
+                         'type': i.type or 'Opaque', 'data_count': len(i.data or {}),
+                         'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
+                         } for i in items]
+
+            data = _get_or_set_resource_cache(cluster, 'secrets', namespace, loader)
             return Response(data)
         except Exception as e:
             return Response({'detail': str(e)}, status=400)
@@ -1179,7 +1269,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                     if workload_type == 'deployment':
                         item['available_replicas'] = min(item.get('available_replicas', item.get('ready_replicas', 0)), replicas)
                     _set_demo_state(cluster.id, cache_name, items)
-                    _clear_summary_cache(cluster)
+                    _invalidate_cluster_runtime_cache(cluster)
                     return Response({'success': True, 'message': f'{name} scaled to {replicas} replicas'})
             return Response({'detail': f'Resource not found: {workload_type}/{namespace}/{name}'}, status=404)
 
@@ -1191,7 +1281,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 apps_v1.patch_namespaced_deployment_scale(name, namespace, body)
             else:
                 apps_v1.patch_namespaced_stateful_set_scale(name, namespace, body)
-            _clear_summary_cache(cluster)
+            _invalidate_cluster_runtime_cache(cluster)
             return Response({'success': True, 'message': f'{name} scaled to {replicas} replicas'})
         except Exception as e:
             return Response({'detail': f'Scale failed: {str(e)}'}, status=400)
@@ -1248,7 +1338,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 detail = self._update_demo_config_resource(cluster, resource_type, namespace, name, data, username)
             else:
                 detail = self._apply_live_config_resource(cluster, resource_type, namespace, name, data, username)
-            _clear_summary_cache(cluster)
+            _invalidate_cluster_runtime_cache(cluster)
             detail['rollback_available'] = True
             detail['revision_count'] = _config_revision_queryset(cluster, resource_type, namespace, name).count()
             return Response({'success': True, 'message': f'{resource_type} updated', 'resource': detail})
@@ -1333,7 +1423,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 detail = self._update_demo_config_resource(cluster, resource_type, namespace, name, backup.get('data', {}), username)
             else:
                 detail = self._apply_live_config_resource(cluster, resource_type, namespace, name, backup.get('data', {}), username)
-            _clear_summary_cache(cluster)
+            _invalidate_cluster_runtime_cache(cluster)
             detail['rollback_available'] = True
             detail['revision_count'] = _config_revision_queryset(cluster, resource_type, namespace, name).count()
             return Response({'success': True, 'message': f'{resource_type} rolled back', 'resource': detail})
@@ -1363,7 +1453,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 detail = self._update_demo_config_resource(cluster, resource_type, namespace, name, target_data, username)
             else:
                 detail = self._apply_live_config_resource(cluster, resource_type, namespace, name, target_data, username)
-            _clear_summary_cache(cluster)
+            _invalidate_cluster_runtime_cache(cluster)
             detail['rollback_available'] = True
             detail['revision_count'] = _config_revision_queryset(cluster, resource_type, namespace, name).count()
             return Response({

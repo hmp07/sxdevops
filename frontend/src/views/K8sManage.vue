@@ -88,7 +88,6 @@
       </div>
       <div class="hero-actions">
         <el-button @click="refreshView"><el-icon><RefreshRight /></el-icon>刷新</el-button>
-        <el-button v-if="canManageK8s && activeTab === 'clusters'" type="primary" @click="openClusterDialog()"><el-icon><Plus /></el-icon>新增集群</el-button>
       </div>
     </section>
 
@@ -1115,6 +1114,7 @@ const tableSearchKeyword = ref('')
 const selectedCluster = computed(() => clusters.value.find(item => item.id === selectedClusterId.value) || null)
 const selectedClusterConnected = computed(() => selectedCluster.value?.status === 'connected')
 const namespaceOptions = computed(() => normalizeNamespaceItems(namespaces.value))
+const namespaceCache = ref({})
 
 const needsNamespace = computed(() => ['pods', 'namespaces', 'workloads', 'network', 'config'].includes(activeTab.value) || (activeTab.value === 'storage' && storageSub.value === 'PVC'))
 
@@ -1338,6 +1338,30 @@ function setClusterStatus(clusterId, status) {
   }
 }
 
+async function loadNamespaces(clusterId, options = {}) {
+  const { force = false } = options
+  if (!clusterId) {
+    namespaces.value = []
+    return []
+  }
+  if (!force && namespaceCache.value[clusterId]?.length) {
+    namespaces.value = namespaceCache.value[clusterId]
+    return namespaces.value
+  }
+  try {
+    const items = normalizeNamespaceItems(await getK8sNamespaces(clusterId))
+    namespaces.value = items
+    namespaceCache.value = {
+      ...namespaceCache.value,
+      [clusterId]: items,
+    }
+    return items
+  } catch (e) {
+    namespaces.value = []
+    return []
+  }
+}
+
 async function fetchClusters() {
   loading.value = true
   try {
@@ -1392,28 +1416,33 @@ function refreshView() {
     fetchClusters()
     return
   }
-  onClusterChange()
+  refreshClusterContext()
 }
 
-async function onClusterChange() {
+async function refreshClusterContext(options = {}) {
+  const { forceSummary = true, forceNamespaces = true } = options
   const previousNamespace = selectedNamespace.value
-  namespaces.value = []
   if (!selectedClusterId.value) {
     summary.value = createEmptySummary()
     return
   }
-  selectedNamespace.value = '_all'
-  const summaryReady = await fetchSummary({ probe: true })
+  const namespaceTask = needsNamespace.value
+    ? loadNamespaces(selectedClusterId.value, { force: forceNamespaces })
+    : Promise.resolve([])
+  const summaryTask = forceSummary
+    ? fetchSummary({ probe: true })
+    : Promise.resolve(selectedClusterConnected.value)
+  const [summaryReady] = await Promise.all([summaryTask, namespaceTask])
   if (!summaryReady) {
     return
   }
-  try {
-    namespaces.value = normalizeNamespaceItems(await getK8sNamespaces(selectedClusterId.value))
-  } catch (e) {
-    namespaces.value = []
-  }
   syncSelectedNamespace(previousNamespace)
   await fetchCurrentTab()
+}
+
+async function onClusterChange() {
+  selectedNamespace.value = '_all'
+  await refreshClusterContext({ forceSummary: true, forceNamespaces: false })
 }
 
 async function fetchCurrentTab() {
@@ -1424,7 +1453,12 @@ async function fetchCurrentTab() {
   try {
     switch (activeTab.value) {
       case 'nodes': nodes.value = await getK8sNodes(id); break
-      case 'namespaces': nsData.value = normalizeNamespaceItems(await getK8sNamespaces(id)); break
+      case 'namespaces':
+        if (!namespaceOptions.value.length) {
+          await loadNamespaces(id, { force: false })
+        }
+        nsData.value = namespaceOptions.value
+        break
       case 'pods': pods.value = await getK8sPods(id, ns); break
       case 'workloads':
         if (workloadSub.value === 'Deployment') deployments.value = await getK8sDeployments(id, ns)
@@ -2116,7 +2150,7 @@ watch(activeTab, (tab, prev) => {
   if (tab === 'clusters') {
     fetchClusters()
   } else if (selectedClusterId.value) {
-    onClusterChange()
+    refreshClusterContext({ forceSummary: false, forceNamespaces: false })
   }
 })
 
@@ -2379,6 +2413,7 @@ onBeforeUnmount(() => { disposeExecTerminal() })
 
 :deep(.k8s-context-popper.el-select-dropdown),
 :deep(.k8s-context-popper.el-popper) {
+  box-sizing: border-box;
   background: #ffffff !important;
   border-radius: 16px;
   border: 1px solid rgba(203, 213, 225, 0.72) !important;
@@ -2389,14 +2424,16 @@ onBeforeUnmount(() => { disposeExecTerminal() })
 
 :deep(.k8s-context-popper--cluster.el-select-dropdown),
 :deep(.k8s-context-popper--cluster.el-popper) {
-  width: 264px !important;
-  min-width: 264px !important;
+  width: 220px !important;
+  min-width: 220px !important;
+  max-width: 220px !important;
 }
 
 :deep(.k8s-context-popper--namespace.el-select-dropdown),
 :deep(.k8s-context-popper--namespace.el-popper) {
-  width: 248px !important;
-  min-width: 248px !important;
+  width: 220px !important;
+  min-width: 220px !important;
+  max-width: 220px !important;
 }
 
 :deep(.k8s-context-popper .el-popper__arrow::before) {
@@ -2411,14 +2448,14 @@ onBeforeUnmount(() => { disposeExecTerminal() })
 }
 
 :deep(.k8s-context-popper .el-scrollbar__view) {
-  padding: 6px;
+  padding: 4px;
   background: #ffffff;
 }
 
 :deep(.k8s-context-popper .el-select-dropdown__item) {
   min-height: 52px;
   height: auto;
-  padding: 8px 12px;
+  padding: 8px 10px;
   border-radius: 12px;
   color: #0f172a !important;
   font-family: inherit !important;
@@ -2447,7 +2484,7 @@ onBeforeUnmount(() => { disposeExecTerminal() })
 }
 
 .context-dropdown-empty {
-  padding: 18px 14px;
+  padding: 16px 10px;
   text-align: center;
   font-size: 12px;
   color: #64748b;

@@ -3274,6 +3274,22 @@ def _system_posture_day_time_context(day):
     }
 
 
+def _scheduler_observability_access():
+    return {
+        'system_posture': True,
+        'system_posture_manage': True,
+        'log_query': True,
+        'log_entry': True,
+        'log_datasource': True,
+        'alerts': True,
+        'trace': True,
+        'trace_datasource': True,
+        'links': True,
+        'grafana': True,
+        'eventwall': True,
+    }
+
+
 def _capture_system_posture_sla_history(request, access, day=None, time_context=None):
     day = day or timezone.localdate()
     provider = request.query_params.get('provider', '')
@@ -3333,6 +3349,29 @@ def _capture_system_posture_sla_history(request, access, day=None, time_context=
             continue
         captured += 1
     return captured
+
+
+def refresh_today_system_posture_history(force_refresh=True, actor='system-scheduler'):
+    class _SchedulerRequest:
+        query_params = {
+            'refresh': '1' if force_refresh else '0',
+        }
+
+    request = _SchedulerRequest()
+    access = _scheduler_observability_access()
+    today = timezone.localdate()
+    captured = _capture_system_posture_sla_history(
+        request,
+        access,
+        today,
+        time_context=_system_posture_day_time_context(today),
+    )
+    return {
+        'day': today.isoformat(),
+        'captured': captured,
+        'actor': actor,
+        'force_refresh': force_refresh,
+    }
 
 
 def _system_posture_history_record(record):

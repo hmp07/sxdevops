@@ -1,21 +1,14 @@
 ﻿<template>
   <div class="fade-in">
-    <section class="sql-module-bar">
-      <div class="sql-module-copy">
-        <div class="sql-module-title">数据源管理</div>
-        <div class="sql-module-desc">维护 MySQL / PolarDB / MongoDB 数据源，支持测试连接与库列表发现。</div>
-      </div>
-      <div class="sql-module-actions">
-        <el-button v-if="canManageSqlDatasources" type="primary" @click="openDialog()">
-          <el-icon><Plus /></el-icon> 新增数据源
-        </el-button>
-      </div>
-    </section>
-
     <div class="table-card">
       <div class="filter-bar">
         <el-input v-model="search" placeholder="搜索名称 / 地址" clearable style="width: 280px"
           :prefix-icon="Search" @input="fetchData" />
+        <div class="filter-bar-actions">
+          <el-button v-if="canManageSqlDatasources" type="primary" @click="openDialog()">
+            <el-icon><Plus /></el-icon> 新增数据源
+          </el-button>
+        </div>
       </div>
 
       <el-table :data="items" stripe v-loading="loading" style="width: 100%">
@@ -237,27 +230,18 @@ onMounted(fetchData)
 </script>
 
 <style scoped>
-.sql-module-bar {
+.filter-bar-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 8px;
-  padding: 14px 16px;
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.9));
-  border: 1px solid rgba(148,163,184,.16);
-  box-shadow: 0 14px 28px rgba(15,23,42,.05);
+  gap: 8px;
+  margin-left: auto;
 }
 
-.sql-module-copy { min-width: 0; }
-.sql-module-title { font-size: 15px; font-weight: 700; color: #0f172a; }
-.sql-module-desc { margin-top: 4px; font-size: 12px; line-height: 1.5; color: #64748b; }
-.sql-module-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-
 @media (max-width: 900px) {
-  .sql-module-bar { flex-direction: column; align-items: stretch; }
-  .sql-module-actions { justify-content: flex-end; }
+  .filter-bar-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
 }
 </style>
 

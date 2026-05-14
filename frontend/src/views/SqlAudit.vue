@@ -2,10 +2,10 @@
   <div class="fade-in sql-audit-page">
     <section class="hero panel">
       <div class="release-hero-copy">
-        <div class="release-hero-title-row release-hero-title-inline">
+        <div class="release-hero-title-row">
           <span class="sql-header-icon"><el-icon><Tickets /></el-icon></span>
           <h2>SQL 审计</h2>
-          <p class="page-desc inline-subtitle">{{ SQL_AUDIT_SUPPORT_TEXT }}</p>
+          <p class="page-desc page-desc--secondary">{{ activeTabDescription }}</p>
         </div>
       </div>
     </section>
@@ -50,7 +50,6 @@ import { useAuthStore } from '@/stores/auth'
 import SqlDatasources from '@/views/SqlDatasources.vue'
 import SqlOrders from '@/views/SqlOrders.vue'
 import SqlQuery from '@/views/SqlQuery.vue'
-import { SQL_AUDIT_SUPPORT_TEXT } from '@/utils/sqlaudit'
 
 const route = useRoute()
 const router = useRouter()
@@ -86,6 +85,15 @@ const availableTabs = computed(() => {
     tabs.push({ name: 'query', label: '查询', icon: Search })
   }
   return tabs
+})
+
+const activeTabDescription = computed(() => {
+  const descMap = {
+    datasources: '维护 MySQL / PolarDB / MongoDB 数据源，支持测试连接与库列表发现。',
+    orders: '覆盖提交、预检查、审核与执行链路，适合演示标准数据库变更流程。',
+    query: '只读查询入口，支持 SQL / MongoDB 查询并自动沉淀到历史记录。',
+  }
+  return descMap[activeTab.value] || descMap.datasources
 })
 
 const normalizeTab = (tab) => {
@@ -145,9 +153,6 @@ const handleTabChange = (tab) => {
   display: flex;
   align-items: center;
   gap: 12px;
-}
-
-.release-hero-title-inline {
   flex-wrap: wrap;
 }
 
@@ -198,8 +203,9 @@ const handleTabChange = (tab) => {
   line-height: 1.45;
 }
 
-.inline-subtitle {
-  max-width: none;
+.page-desc--secondary {
+  color: #64748b;
+  flex: 0 1 auto;
 }
 .hero.panel { border-radius: 20px; }
 </style>

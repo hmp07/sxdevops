@@ -35,7 +35,6 @@
       </div>
       <div class="hero-actions">
         <el-button @click="refreshView"><el-icon><RefreshRight /></el-icon>刷新</el-button>
-        <el-button v-if="canManageDocker && activeTab === 'hosts'" type="primary" @click="openHostDialog()"><el-icon><Plus /></el-icon>新增环境</el-button>
       </div>
     </section>
 

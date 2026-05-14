@@ -39,9 +39,9 @@
         <span v-else class="focus-strip__text">{{ focusText }}</span>
       </div>
       <div class="focus-strip__actions">
-        <el-button size="small" type="primary" @click="refreshDashboard">
+        <el-button size="small" type="primary" @click="recalculateToday">
           <el-icon><RefreshRight /></el-icon>
-          刷新首页
+          重算今日
         </el-button>
         <el-button size="small" @click="openOverview('system-posture')">查看系统态势</el-button>
         <el-button size="small" text @click="openOverview('posture-history')">查看完整历史</el-button>
@@ -277,11 +277,11 @@ function openOverview(tab) {
   })
 }
 
-async function loadDashboardSummary(showMessage = false) {
+async function loadDashboardSummary(showMessage = false, refresh = false) {
   loading.value = true
   try {
-    dashboardHistory.value = await getObservabilitySystemPostureHistory({ days: 30 })
-    if (showMessage) ElMessage.success('首页态势已刷新')
+    dashboardHistory.value = await getObservabilitySystemPostureHistory({ days: 30, refresh: refresh ? 1 : undefined })
+    if (showMessage) ElMessage.success(refresh ? '今日态势已重算' : '首页态势已刷新')
   } catch (error) {
     console.error('获取首页态势摘要失败', error)
     ElMessage.error('获取首页态势摘要失败')
@@ -290,8 +290,8 @@ async function loadDashboardSummary(showMessage = false) {
   }
 }
 
-async function refreshDashboard() {
-  await loadDashboardSummary(true)
+async function recalculateToday() {
+  await loadDashboardSummary(true, true)
   historyPanelKey.value += 1
 }
 
