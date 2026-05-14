@@ -1214,8 +1214,9 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(selected['health_score'], 0)
         self.assertEqual(selected['north_star']['label'], '环境可用率')
         self.assertEqual(selected['north_star']['value'], 0)
+        self.assertEqual(selected['north_star']['target'], 99)
         self.assertEqual(selected['live']['runtime_availability'], 0)
-        self.assertTrue(any(item['label'] == '环境可用率' and item['value'] == 0 for item in selected['metrics']))
+        self.assertTrue(any(item['label'] == '环境可用率' and item['value'] == 0 and item['target'] == 99 for item in selected['metrics']))
         self.assertTrue(all(item['status'] == 'critical' for item in selected['children']))
 
     @override_settings(OBSERVABILITY_CONFIG={
@@ -1245,6 +1246,7 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(selected['health_score'], 0)
         self.assertEqual(selected['north_star']['label'], '环境可用率')
         self.assertEqual(selected['north_star']['value'], 0)
+        self.assertEqual(selected['north_star']['target'], 99)
         self.assertTrue(selected['live']['unavailable'])
         self.assertNotEqual(selected['north_star']['value'], 93.8)
 
@@ -1258,6 +1260,7 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(selected['health_score'], 0)
         self.assertEqual(selected['north_star']['label'], '环境可用率')
         self.assertEqual(selected['north_star']['value'], 0)
+        self.assertEqual(selected['north_star']['target'], 99)
         self.assertTrue(selected['live']['unavailable'])
         self.assertNotEqual(selected['north_star']['value'], 93.8)
 

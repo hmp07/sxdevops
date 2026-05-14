@@ -192,7 +192,7 @@ const notificationItems = ref([])
 const notificationCount = ref(0)
 let notificationTimer = null
 
-const menuItems = [
+const legacyMenuItems = [
   { path: '/dashboard', title: '仪表盘', icon: 'Odometer', permission: 'ops.dashboard.view' },
   {
     title: 'CMDB',
@@ -380,6 +380,194 @@ const menuItems = [
   },
 ]
 
+const menuItems = [
+  { path: '/dashboard', title: '仪表盘', icon: 'Odometer', permission: 'ops.dashboard.view' },
+  {
+    title: 'AIOps',
+    icon: 'ChatDotSquare',
+    children: [
+      { path: '/aiops/chat', title: '智能助手', icon: 'Service', permission: 'aiops.chat.view' },
+      { path: '/aiops/knowledge', title: '知识图谱', icon: 'Share', permission: 'aiops.knowledge.view' },
+      { path: '/aiops/config', title: '智能体配置', icon: 'Tools', permission: 'aiops.config.view' },
+    ],
+  },
+  {
+    title: '可观测性',
+    icon: 'DataLine',
+    children: [
+      {
+        path: '/observability/overview',
+        title: '平台总览',
+        icon: 'DataLine',
+        anyPermissions: ['ops.observability.system_posture.view', 'ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'],
+      },
+      { path: '/observability/grafana', title: '监控看板', icon: 'Histogram', permission: 'ops.grafana.view' },
+      { path: '/logs', title: '日志中心', icon: 'Search', anyPermissions: ['ops.log.query', 'ops.log.datasource.view'] },
+      { path: '/observability/tracing', title: '链路追踪', icon: 'Connection', anyPermissions: ['ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view'] },
+      { path: '/alerts', title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
+    ],
+  },
+  {
+    title: '事件中心',
+    icon: 'Tickets',
+    children: [
+      { path: '/events/wall', title: '事件中心', icon: 'Aim', permission: 'eventwall.view' },
+      { path: '/events/sources', title: '事件源', icon: 'Share', permission: 'eventwall.source.view' },
+    ],
+  },
+  {
+    title: '任务中心',
+    icon: 'Monitor',
+    children: [
+      {
+        path: '/hosts/assets',
+        title: '主机资产',
+        icon: 'Monitor',
+        anyPermissions: ['ops.host.view', 'ops.host.manage', 'ops.host.terminal'],
+      },
+      {
+        path: '/hosts/tasks',
+        title: '任务中心',
+        icon: 'Operation',
+        permission: 'ops.host.execute',
+      },
+      {
+        path: '/hosts/schedules',
+        title: '定时任务',
+        icon: 'Timer',
+        anyPermissions: ['ops.host.schedule.view', 'ops.host.schedule.manage', 'ops.host.schedule.execute'],
+      },
+      {
+        path: '/hosts/requests',
+        title: '主机申请',
+        icon: 'Ticket',
+        anyPermissions: ['cmdb.request.submit', 'cmdb.request.approve'],
+      },
+    ],
+  },
+  {
+    title: '工单系统',
+    icon: 'Tickets',
+    children: [
+      {
+        path: '/workorders/releases',
+        title: '应用发布',
+        icon: 'Promotion',
+        anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'],
+      },
+      {
+        path: '/workorders/sql',
+        title: 'SQL 审计',
+        icon: 'DataAnalysis',
+        anyPermissions: [
+          'sqlaudit.datasource.view',
+          'sqlaudit.order.view',
+          'sqlaudit.order.submit',
+          'sqlaudit.order.review',
+          'sqlaudit.order.execute',
+          'sqlaudit.query.view',
+          'sqlaudit.query.execute',
+        ],
+      },
+      {
+        path: '/workorders/transactions',
+        title: '事务工单',
+        icon: 'Tickets',
+        anyPermissions: ['ops.ticket.view', 'ops.ticket.manage', 'ops.ticket.approve'],
+      },
+      {
+        path: '/workorders/approval-flows',
+        title: '审批流',
+        icon: 'Checked',
+        anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'],
+      },
+    ],
+  },
+  {
+    title: '容器环境',
+    icon: 'Box',
+    children: [
+      { path: '/containers/k8s', title: 'K8s 集群', icon: 'Connection', permission: 'ops.k8s.view' },
+      { path: '/containers/docker', title: 'Docker 环境', icon: 'Platform', permission: 'ops.docker.view' },
+    ],
+  },
+  {
+    title: '用户管理',
+    icon: 'User',
+    children: [
+      {
+        path: '/users',
+        title: '用户管理',
+        icon: 'User',
+        anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view'],
+      },
+      { path: '/users/audit', title: '操作审计', icon: 'DocumentChecked', permission: 'rbac.audit.view' },
+    ],
+  },
+  {
+    title: 'CMDB-将下线',
+    icon: 'Files',
+    children: [
+      {
+        path: '/cmdb',
+        menuKey: '/cmdb?tab=items',
+        route: { path: '/cmdb', query: { tab: 'items' } },
+        title: '配置项管理',
+        icon: 'Grid',
+        permission: 'cmdb.ci.view',
+      },
+      {
+        path: '/cmdb',
+        menuKey: '/cmdb?tab=topology',
+        route: { path: '/cmdb', query: { tab: 'topology' } },
+        title: '资源地图',
+        icon: 'Share',
+        permission: 'cmdb.topology.view',
+      },
+      {
+        path: '/cmdb',
+        menuKey: '/cmdb?tab=cost',
+        route: { path: '/cmdb', query: { tab: 'cost' } },
+        title: '成本分析',
+        icon: 'TrendCharts',
+        permission: 'cmdb.cost.view',
+      },
+      {
+        path: '/cmdb',
+        menuKey: '/cmdb?tab=optimize',
+        route: { path: '/cmdb', query: { tab: 'optimize' } },
+        title: '资源优化',
+        icon: 'Lightning',
+        permission: 'cmdb.cost.view',
+      },
+    ],
+  },
+  {
+    title: '多云管理-将下线',
+    icon: 'MostlyCloudy',
+    children: [
+      { path: '/multicloud', title: '多云环境', icon: 'MostlyCloudy', permission: 'ops.multicloud.view' },
+      { path: '/terraform', title: 'IaC 编排', icon: 'SetUp', permission: 'ops.iac.view' },
+    ],
+  },
+  {
+    title: '中间件-将下线',
+    icon: 'DataBoard',
+    children: [
+      { path: '/middleware/nginx', title: 'Nginx 管理', icon: 'Location', permission: 'ops.nginx.view' },
+      { path: '/middleware/redis', title: 'Redis 管理', icon: 'Coin', permission: 'ops.middleware.view' },
+      { path: '/middleware/rocketmq', title: 'RocketMQ 管理', icon: 'Promotion', permission: 'ops.middleware.view' },
+      { path: '/middleware/elasticsearch', title: 'ES 管理', icon: 'Search', permission: 'ops.middleware.view' },
+    ],
+  },
+  {
+    path: '/marketplace',
+    title: '工具市场',
+    icon: 'Shop',
+    anyPermissions: ['marketplace.template.view', 'marketplace.deployment.view', 'marketplace.deployment.manage'],
+  },
+]
+
 function canAccess(item) {
   if (item.permission) return authStore.hasPermission(item.permission)
   if (item.anyPermissions) return authStore.hasAnyPermission(item.anyPermissions)
@@ -436,7 +624,7 @@ const currentTitle = computed(() => {
     if ((item.menuKey || item.path) === currentPath) return item.title
     if (item.children) {
       const child = item.children.find((entry) => (entry.menuKey || entry.path) === currentPath)
-      if (child) return `${item.title} / ${child.title}`
+      if (child) return item.title === child.title ? child.title : `${item.title} / ${child.title}`
     }
   }
   return route.meta.title || ''

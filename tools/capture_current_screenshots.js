@@ -5,6 +5,7 @@ const puppeteer = require(path.resolve(__dirname, '../.runlogs/screenshot-tools/
 
 const root = path.resolve(__dirname, '..')
 const outDir = path.join(root, 'docs', 'screenshots')
+const promoOutDir = path.join(root, 'frontend', 'public', 'promo', 'screenshots')
 const edgePath = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
 const baseUrl = 'http://localhost:3000'
 const apiUrl = 'http://localhost:8000/api/auth/login/'
@@ -40,10 +41,13 @@ async function capture(page, route, expectedText, fileName) {
   const target = `${baseUrl}${route}`
   await page.goto(target, { waitUntil: 'domcontentloaded' })
   await waitForPage(page, expectedText)
+  const outputPath = path.join(outDir, fileName)
   await page.screenshot({
-    path: path.join(outDir, fileName),
+    path: outputPath,
     fullPage: false,
   })
+  fs.mkdirSync(promoOutDir, { recursive: true })
+  fs.copyFileSync(outputPath, path.join(promoOutDir, fileName))
   console.log(`${fileName} <- ${target}`)
 }
 
@@ -52,6 +56,7 @@ async function main() {
     throw new Error(`Microsoft Edge not found at ${edgePath}`)
   }
   fs.mkdirSync(outDir, { recursive: true })
+  fs.mkdirSync(promoOutDir, { recursive: true })
 
   const auth = await login()
   const browser = await puppeteer.launch({
@@ -69,8 +74,9 @@ async function main() {
       localStorage.setItem('sxdevops_user', JSON.stringify(user))
     }, auth)
 
+    await capture(page, '/dashboard', '系统SLA统计', 'dashboard.png')
     await capture(page, '/observability/overview', '平台总览', 'ai-agent-observability-overview.png')
-    await capture(page, '/events/wall', '事件墙', 'ai-agent-event-wall-current.png')
+    await capture(page, '/events/wall', '事件中心', 'ai-agent-event-center-current.png')
   } finally {
     await browser.close()
   }

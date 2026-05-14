@@ -11,17 +11,22 @@
               placeholder="选择集群"
               @change="onClusterChange"
               class="industrial-select toolbar-filter-select"
-              popper-class="industrial-popper"
+              popper-class="k8s-context-popper k8s-context-popper--cluster"
             >
               <el-option v-for="c in clusters" :key="c.id" :label="c.name" :value="c.id">
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
-                  <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
-                    <span class="state-pulse" :class="c.status==='connected'?'running':'exited'"></span>
-                    <span>{{ c.name }}</span>
+                <div class="context-option-row">
+                  <div class="context-option-main">
+                    <div class="context-option-head">
+                      <div class="context-option-main context-option-main--cluster">
+                        <span class="state-pulse" :class="c.status==='connected'?'running':'exited'"></span>
+                        <span class="context-option-title">{{ c.name }}</span>
+                      </div>
+                      <span class="context-status-pill" :class="c.status === 'connected' ? 'context-status-pill--success' : 'context-status-pill--info'">
+                        {{ c.status === 'connected' ? '在线' : '离线' }}
+                      </span>
+                    </div>
+                    <span class="context-option-subtitle">{{ clusterOptionMeta(c) }}</span>
                   </div>
-                  <el-tag size="small" :type="c.status === 'connected' ? 'success' : 'info'">
-                    {{ c.status === 'connected' ? '在线' : '离线' }}
-                  </el-tag>
                 </div>
               </el-option>
             </el-select>
@@ -34,10 +39,38 @@
               placeholder="命名空间"
               @change="fetchCurrentTab"
               class="industrial-select toolbar-filter-select"
-              popper-class="industrial-popper"
+              popper-class="k8s-context-popper k8s-context-popper--namespace"
             >
-              <el-option label="全部命名空间" value="_all" />
-              <el-option v-for="ns in namespaces" :key="ns.name" :label="ns.name" :value="ns.name" />
+              <template #empty>
+                <div class="context-dropdown-empty">当前集群未返回命名空间</div>
+              </template>
+              <el-option label="全部命名空间" value="_all">
+                <div class="context-option-row context-option-row--all">
+                  <div class="context-option-main">
+                    <div class="context-option-head">
+                      <span class="context-option-title">全部命名空间</span>
+                      <span class="context-status-pill context-status-pill--info">ALL</span>
+                    </div>
+                    <span class="context-option-subtitle">跨命名空间聚合视图</span>
+                  </div>
+                </div>
+              </el-option>
+              <el-option v-for="ns in namespaceOptions" :key="ns.name" :label="ns.name" :value="ns.name">
+                <div class="context-option-row">
+                  <div class="context-option-main">
+                    <div class="context-option-head">
+                      <span class="context-option-title">{{ ns.name }}</span>
+                      <span
+                        class="context-status-pill"
+                        :class="namespaceStatusTagClass(ns.status)"
+                      >
+                        {{ namespaceStatusText(ns.status) }}
+                      </span>
+                    </div>
+                    <span class="context-option-subtitle">{{ namespaceOptionMeta(ns) }}</span>
+                  </div>
+                </div>
+              </el-option>
             </el-select>
           </div>
         </div>
@@ -109,47 +142,6 @@
       </button>
     </div>
 
-    <div v-if="false" class="k8s-toolbar toolbar-shell">
-      <div class="toolbar-filter-bar">
-        <div class="toolbar-filter-pill toolbar-filter-pill--cluster">
-          <span class="toolbar-filter-label">集群</span>
-          <el-select
-            v-model="selectedClusterId"
-            placeholder="选择集群"
-            @change="onClusterChange"
-            class="industrial-select toolbar-filter-select"
-            popper-class="industrial-popper"
-          >
-            <el-option v-for="c in clusters" :key="c.id" :label="c.name" :value="c.id">
-              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
-                <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
-                  <span class="state-pulse" :class="c.status==='connected'?'running':'exited'"></span>
-                  <span>{{ c.name }}</span>
-                </div>
-                <el-tag size="small" :type="c.status === 'connected' ? 'success' : 'info'">
-                  {{ c.status === 'connected' ? '在线' : '离线' }}
-                </el-tag>
-              </div>
-            </el-option>
-          </el-select>
-        </div>
-
-        <div v-if="needsNamespace" class="toolbar-filter-pill toolbar-filter-pill--namespace">
-          <span class="toolbar-filter-label">命名空间</span>
-          <el-select
-            v-model="selectedNamespace"
-            placeholder="命名空间"
-            @change="fetchCurrentTab"
-            class="industrial-select toolbar-filter-select"
-            popper-class="industrial-popper"
-          >
-            <el-option label="全部命名空间" value="_all" />
-            <el-option v-for="ns in namespaces" :key="ns.name" :label="ns.name" :value="ns.name" />
-          </el-select>
-        </div>
-      </div>
-    </div>
-
     <div v-if="activeTab !== 'clusters' && selectedClusterId && !selectedClusterConnected" class="empty-state">
       <div class="empty-icon">⚙</div>
       <div class="empty-text">当前集群未连接，请先测试连接或切换到已连接集群。</div>
@@ -201,17 +193,22 @@
               placeholder="选择集群"
               @change="onClusterChange"
               class="industrial-select toolbar-filter-select filter-inline-select"
-              popper-class="industrial-popper"
+              popper-class="k8s-context-popper k8s-context-popper--cluster"
             >
               <el-option v-for="c in clusters" :key="c.id" :label="c.name" :value="c.id">
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
-                  <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
-                    <span class="state-pulse" :class="c.status==='connected'?'running':'exited'"></span>
-                    <span>{{ c.name }}</span>
+                <div class="context-option-row">
+                  <div class="context-option-main">
+                    <div class="context-option-head">
+                      <div class="context-option-main context-option-main--cluster">
+                        <span class="state-pulse" :class="c.status==='connected'?'running':'exited'"></span>
+                        <span class="context-option-title">{{ c.name }}</span>
+                      </div>
+                      <span class="context-status-pill" :class="c.status === 'connected' ? 'context-status-pill--success' : 'context-status-pill--info'">
+                        {{ c.status === 'connected' ? '在线' : '离线' }}
+                      </span>
+                    </div>
+                    <span class="context-option-subtitle">{{ clusterOptionMeta(c) }}</span>
                   </div>
-                  <el-tag size="small" :type="c.status === 'connected' ? 'success' : 'info'">
-                    {{ c.status === 'connected' ? '在线' : '离线' }}
-                  </el-tag>
                 </div>
               </el-option>
             </el-select>
@@ -223,10 +220,38 @@
               placeholder="选择命名空间"
               @change="fetchCurrentTab"
               class="industrial-select toolbar-filter-select filter-inline-select"
-              popper-class="industrial-popper"
+              popper-class="k8s-context-popper k8s-context-popper--namespace"
             >
-              <el-option label="全部命名空间" value="_all" />
-              <el-option v-for="ns in namespaces" :key="ns.name" :label="ns.name" :value="ns.name" />
+              <template #empty>
+                <div class="context-dropdown-empty">当前集群未返回命名空间</div>
+              </template>
+              <el-option label="全部命名空间" value="_all">
+                <div class="context-option-row context-option-row--all">
+                  <div class="context-option-main">
+                    <div class="context-option-head">
+                      <span class="context-option-title">全部命名空间</span>
+                      <span class="context-status-pill context-status-pill--info">ALL</span>
+                    </div>
+                    <span class="context-option-subtitle">跨命名空间聚合视图</span>
+                  </div>
+                </div>
+              </el-option>
+              <el-option v-for="ns in namespaceOptions" :key="ns.name" :label="ns.name" :value="ns.name">
+                <div class="context-option-row">
+                  <div class="context-option-main">
+                    <div class="context-option-head">
+                      <span class="context-option-title">{{ ns.name }}</span>
+                      <span
+                        class="context-status-pill"
+                        :class="namespaceStatusTagClass(ns.status)"
+                      >
+                        {{ namespaceStatusText(ns.status) }}
+                      </span>
+                    </div>
+                    <span class="context-option-subtitle">{{ namespaceOptionMeta(ns) }}</span>
+                  </div>
+                </div>
+              </el-option>
             </el-select>
           </div>
         </div>
@@ -1067,8 +1092,8 @@ const mainTabs = [
   { key: 'clusters',   label: '集群管理', icon: 'OfficeBuilding' },
   { key: 'nodes',      label: '节点管理', icon: 'Monitor' },
   { key: 'namespaces', label: '命名空间', icon: 'FolderOpened' },
-  { key: 'pods',       label: 'Pod 管理', icon: 'Box' },
   { key: 'workloads',  label: '工作负载', icon: 'Cpu' },
+  { key: 'pods',       label: 'Pod 管理', icon: 'Box' },
   { key: 'network',    label: '网络管理', icon: 'Connection' },
   { key: 'storage',    label: '存储管理', icon: 'Coin' },
   { key: 'config',     label: '配置管理', icon: 'Setting' },
@@ -1089,6 +1114,7 @@ const namespaces = ref([])
 const tableSearchKeyword = ref('')
 const selectedCluster = computed(() => clusters.value.find(item => item.id === selectedClusterId.value) || null)
 const selectedClusterConnected = computed(() => selectedCluster.value?.status === 'connected')
+const namespaceOptions = computed(() => normalizeNamespaceItems(namespaces.value))
 
 const needsNamespace = computed(() => ['pods', 'namespaces', 'workloads', 'network', 'config'].includes(activeTab.value) || (activeTab.value === 'storage' && storageSub.value === 'PVC'))
 
@@ -1221,6 +1247,97 @@ function compactAlertMessage(message) {
   return `${text.slice(0, 24)}...`
 }
 
+function normalizeNamespaceItem(item) {
+  if (typeof item === 'string') {
+    const name = item.trim()
+    return name ? { name, status: '', created: '', labels: {}, labelCount: 0 } : null
+  }
+  if (!item || typeof item !== 'object') return null
+  const name = String(item.name || item.namespace || item.metadata?.name || '').trim()
+  if (!name) return null
+  const labels = item.labels && typeof item.labels === 'object'
+    ? item.labels
+    : (item.metadata?.labels && typeof item.metadata.labels === 'object' ? item.metadata.labels : {})
+  return {
+    ...item,
+    name,
+    status: String(item.status || item.phase || item.status?.phase || '').trim(),
+    created: String(item.created || item.creation_timestamp || item.creationTimestamp || item.metadata?.creationTimestamp || '').trim(),
+    labels,
+    labelCount: Object.keys(labels).length,
+  }
+}
+
+function normalizeNamespaceItems(items) {
+  const uniqueMap = new Map()
+  for (const item of Array.isArray(items) ? items : []) {
+    const normalized = normalizeNamespaceItem(item)
+    if (normalized?.name) uniqueMap.set(normalized.name, normalized)
+  }
+  return Array.from(uniqueMap.values()).sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+}
+
+function namespaceStatusText(status) {
+  const value = String(status || '').trim()
+  if (!value) return '可用'
+  if (value === 'Active') return '活跃'
+  if (value === 'Terminating') return '终止中'
+  return value
+}
+
+function namespaceStatusTagType(status) {
+  const value = String(status || '').trim()
+  if (!value || value === 'Active') return 'success'
+  if (value === 'Terminating') return 'warning'
+  return 'info'
+}
+
+function namespaceStatusTagClass(status) {
+  const type = namespaceStatusTagType(status)
+  if (type === 'success') return 'context-status-pill--success'
+  if (type === 'warning') return 'context-status-pill--warning'
+  return 'context-status-pill--info'
+}
+
+function namespaceOptionMeta(namespace) {
+  const created = String(namespace?.created || '').trim()
+  const meta = []
+  if (created) meta.push(`创建于 ${created.replace('T', ' ').slice(0, 16)}`)
+  if (namespace?.labelCount) meta.push(`${namespace.labelCount} 个标签`)
+  if (meta.length) return meta.join(' · ')
+  return '命名空间资源视图'
+}
+
+function clusterOptionMeta(cluster) {
+  const endpoint = String(cluster?.api_server || '').trim()
+  const description = String(cluster?.description || '').trim()
+  const meta = []
+  if (endpoint) {
+    try {
+      meta.push(new URL(endpoint).host || endpoint)
+    } catch {
+      meta.push(endpoint)
+    }
+  }
+  if (description) meta.push(description)
+  return meta.join(' · ') || 'Kubernetes 集群连接'
+}
+
+function syncSelectedNamespace(preferred = selectedNamespace.value) {
+  if (!preferred || preferred === '_all') {
+    selectedNamespace.value = '_all'
+    return
+  }
+  selectedNamespace.value = namespaceOptions.value.some((item) => item.name === preferred) ? preferred : '_all'
+}
+
+function setClusterStatus(clusterId, status) {
+  const cluster = clusters.value.find((item) => item.id === clusterId)
+  if (cluster && status && cluster.status !== status) {
+    cluster.status = status
+  }
+}
+
 async function fetchClusters() {
   loading.value = true
   try {
@@ -1240,24 +1357,33 @@ async function fetchClusters() {
       summary.value = createEmptySummary()
     }
 
-    if (selectedClusterId.value && activeTab.value !== 'clusters' && selectedClusterConnected.value) {
+    if (selectedClusterId.value && activeTab.value !== 'clusters') {
       await onClusterChange()
-    } else if (!selectedClusterConnected.value) {
+    } else if (!selectedClusterId.value) {
       summary.value = createEmptySummary()
     }
   } catch (e) { /* */ }
   loading.value = false
 }
 
-async function fetchSummary() {
-  if (!selectedClusterId.value || !selectedClusterConnected.value) {
+async function fetchSummary(options = {}) {
+  const { probe = false } = options
+  if (!selectedClusterId.value) {
     summary.value = createEmptySummary()
-    return
+    return false
+  }
+  if (!probe && !selectedClusterConnected.value) {
+    summary.value = createEmptySummary()
+    return false
   }
   try {
     summary.value = await getK8sSummary(selectedClusterId.value)
+    setClusterStatus(selectedClusterId.value, summary.value.status || 'connected')
+    return true
   } catch (e) {
     summary.value = createEmptySummary()
+    setClusterStatus(selectedClusterId.value, 'error')
+    return false
   }
 }
 
@@ -1266,23 +1392,28 @@ function refreshView() {
     fetchClusters()
     return
   }
-  fetchSummary()
-  fetchCurrentTab()
+  onClusterChange()
 }
 
 async function onClusterChange() {
+  const previousNamespace = selectedNamespace.value
   namespaces.value = []
   if (!selectedClusterId.value) {
     summary.value = createEmptySummary()
     return
   }
-  if (!selectedClusterConnected.value) {
-    summary.value = createEmptySummary()
+  selectedNamespace.value = '_all'
+  const summaryReady = await fetchSummary({ probe: true })
+  if (!summaryReady) {
     return
   }
-  try { namespaces.value = await getK8sNamespaces(selectedClusterId.value) } catch (e) { /* */ }
-  await fetchSummary()
-  fetchCurrentTab()
+  try {
+    namespaces.value = normalizeNamespaceItems(await getK8sNamespaces(selectedClusterId.value))
+  } catch (e) {
+    namespaces.value = []
+  }
+  syncSelectedNamespace(previousNamespace)
+  await fetchCurrentTab()
 }
 
 async function fetchCurrentTab() {
@@ -1293,7 +1424,7 @@ async function fetchCurrentTab() {
   try {
     switch (activeTab.value) {
       case 'nodes': nodes.value = await getK8sNodes(id); break
-      case 'namespaces': nsData.value = await getK8sNamespaces(id); break
+      case 'namespaces': nsData.value = normalizeNamespaceItems(await getK8sNamespaces(id)); break
       case 'pods': pods.value = await getK8sPods(id, ns); break
       case 'workloads':
         if (workloadSub.value === 'Deployment') deployments.value = await getK8sDeployments(id, ns)
@@ -1985,8 +2116,7 @@ watch(activeTab, (tab, prev) => {
   if (tab === 'clusters') {
     fetchClusters()
   } else if (selectedClusterId.value) {
-    fetchSummary()
-    fetchCurrentTab()
+    onClusterChange()
   }
 })
 
@@ -2074,6 +2204,8 @@ onBeforeUnmount(() => { disposeExecTerminal() })
 
 :deep(.toolbar-filter-select .el-select__wrapper) {
   min-height: 34px;
+  padding-left: 12px;
+  padding-right: 12px;
   padding-top: 0;
   padding-bottom: 0;
   border-radius: 14px;
@@ -2083,9 +2215,17 @@ onBeforeUnmount(() => { disposeExecTerminal() })
 }
 
 :deep(.toolbar-filter-select .el-select__selected-item) {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: #0f172a;
+}
+
+:deep(.toolbar-filter-select .el-select__placeholder) {
+  color: #94a3b8;
+}
+
+:deep(.toolbar-filter-select .el-select__caret) {
+  color: #64748b;
 }
 
 :deep(.toolbar-filter-select.is-focus .el-select__wrapper) {
@@ -2182,6 +2322,171 @@ onBeforeUnmount(() => { disposeExecTerminal() })
 
 .filter-inline-select {
   width: 220px;
+}
+
+.context-option-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.context-option-row--all .context-option-title {
+  color: #1d4ed8;
+}
+
+.context-option-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+
+.context-option-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.context-option-main--cluster {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.context-option-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.context-option-subtitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #64748b;
+}
+
+:deep(.k8s-context-popper.el-select-dropdown),
+:deep(.k8s-context-popper.el-popper) {
+  background: #ffffff !important;
+  border-radius: 16px;
+  border: 1px solid rgba(203, 213, 225, 0.72) !important;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12) !important;
+  overflow: hidden;
+  backdrop-filter: blur(12px);
+}
+
+:deep(.k8s-context-popper--cluster.el-select-dropdown),
+:deep(.k8s-context-popper--cluster.el-popper) {
+  width: 264px !important;
+  min-width: 264px !important;
+}
+
+:deep(.k8s-context-popper--namespace.el-select-dropdown),
+:deep(.k8s-context-popper--namespace.el-popper) {
+  width: 248px !important;
+  min-width: 248px !important;
+}
+
+:deep(.k8s-context-popper .el-popper__arrow::before) {
+  border-color: rgba(203, 213, 225, 0.72) !important;
+  background: #fff !important;
+}
+
+:deep(.k8s-context-popper .el-select-dropdown__wrap),
+:deep(.k8s-context-popper .el-scrollbar),
+:deep(.k8s-context-popper .el-select-dropdown__list) {
+  background: #ffffff !important;
+}
+
+:deep(.k8s-context-popper .el-scrollbar__view) {
+  padding: 6px;
+  background: #ffffff;
+}
+
+:deep(.k8s-context-popper .el-select-dropdown__item) {
+  min-height: 52px;
+  height: auto;
+  padding: 8px 12px;
+  border-radius: 12px;
+  color: #0f172a !important;
+  font-family: inherit !important;
+  white-space: normal !important;
+  margin-bottom: 2px;
+  background: transparent !important;
+  transition: background-color .18s ease, box-shadow .18s ease, transform .18s ease;
+  box-sizing: border-box;
+}
+
+:deep(.k8s-context-popper .el-select-dropdown__item.hover),
+:deep(.k8s-context-popper .el-select-dropdown__item:hover) {
+  background: rgba(241, 245, 249, 0.92) !important;
+  transform: translateY(-1px);
+}
+
+:deep(.k8s-context-popper .el-select-dropdown__item.selected),
+:deep(.k8s-context-popper .el-select-dropdown__item.is-selected) {
+  background: rgba(219, 234, 254, 0.92) !important;
+  color: #1d4ed8 !important;
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.3);
+}
+
+:deep(.k8s-context-popper .el-select-dropdown__item.is-disabled) {
+  opacity: 0.55;
+}
+
+.context-dropdown-empty {
+  padding: 18px 14px;
+  text-align: center;
+  font-size: 12px;
+  color: #64748b;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(255, 255, 255, 0.98));
+}
+
+.context-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 40px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  box-sizing: border-box;
+}
+
+.context-status-pill--success {
+  color: #65a30d;
+  background: #f0fdf4;
+  border-color: #d9f99d;
+}
+
+.context-status-pill--warning {
+  color: #b45309;
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+.context-status-pill--info {
+  color: #64748b;
+  background: #f8fafc;
+  border-color: #cbd5e1;
 }
 
 .config-editor-note {

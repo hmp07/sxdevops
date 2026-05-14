@@ -7,6 +7,11 @@
             <img src="@/assets/brand-mark.svg" alt="SxDevOps" class="brand-mark-image" />
             <div class="brand-copy">
               <strong>SxDevOps · AI AGENT</strong>
+              <span class="brand-motto">
+                <span>思而后行</span>
+                <el-icon class="brand-motto-icon"><TrendCharts /></el-icon>
+                <span>行必有证</span>
+              </span>
             </div>
           </div>
           <router-link class="promo-link" to="/ai-agent-promo">
@@ -18,7 +23,7 @@
         <div class="overview-content">
           <h1>统一运维智能体平台，让协作闭环更高效</h1>
           <p class="overview-summary">
-            面向运维团队的统一入口，围绕可观测性、事件中心、任务中心和 AIOps 等，沉淀从发现异常到闭环复盘的完整链路。
+            面向产研团队的统一入口，围绕可观测性、事件中心、任务中心和 AIOps 等，沉淀从发现异常到闭环复盘的完整链路。
           </p>
 
           <div class="capability-list">
@@ -38,7 +43,7 @@
             </article>
           </div>
 
-          <div class="ops-flow" aria-label="运维闭环">
+          <div class="ops-flow" aria-label="协作链路">
             <span class="flow-label">协作链路</span>
             <div class="flow-steps">
               <span v-for="step in flowSteps" :key="step">
@@ -97,7 +102,7 @@
 
 <script setup>
 import { reactive, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   ArrowRight,
@@ -111,7 +116,6 @@ import {
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
-const route = useRoute()
 const authStore = useAuthStore()
 const loading = ref(false)
 const form = reactive({
@@ -158,13 +162,12 @@ async function handleLogin() {
   try {
     await authStore.login(form)
     ElMessage.success('登录成功')
-    router.replace(route.query.redirect || '/dashboard')
+    router.replace('/dashboard')
   } finally {
     loading.value = false
   }
 }
 </script>
-
 <style scoped>
 .auth-page {
   --auth-scale: 1;
@@ -248,6 +251,10 @@ async function handleLogin() {
 
 .brand-copy {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
 }
 
 .brand-copy strong {
@@ -260,6 +267,22 @@ async function handleLogin() {
   background-clip: text;
   color: transparent;
   white-space: nowrap;
+}
+
+.brand-motto {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #4f647f;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.brand-motto-icon {
+  font-size: 11px;
+  color: #2a79be;
+  opacity: 0.9;
 }
 
 .promo-link {

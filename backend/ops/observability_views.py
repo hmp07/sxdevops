@@ -2020,6 +2020,12 @@ def _ecommerce_availability_workloads(rule_config):
     return workloads or ['api-gateway', 'cart', 'order', 'inventory', 'catalog', 'postgres', 'redis', 'kafka']
 
 
+def _ecommerce_slo_target(rule_config, default=99):
+    north_star = rule_config.get('north_star') if isinstance(rule_config.get('north_star'), dict) else {}
+    target = _safe_float(north_star.get('target'))
+    return target if target is not None else default
+
+
 def _deployment_availability(snapshot, deployment):
     available = snapshot.get('deployment_available', {}).get(deployment)
     desired = snapshot.get('deployment_desired', {}).get(deployment)
@@ -2312,7 +2318,7 @@ def _build_ecommerce_overview_metrics(snapshot, rule_config):
     metrics = []
     runtime_availability = snapshot.get('runtime_availability')
     if runtime_availability is not None:
-        metrics.append(_metric('环境可用率', runtime_availability, 100, '%', 'higher'))
+        metrics.append(_metric('环境可用率', runtime_availability, _ecommerce_slo_target(rule_config), '%', 'higher'))
     for metric_key in metric_keys or ['checkout_conflict_rate', 'checkout_5xx_rate', 'checkout_p95_ms', 'checkout_rps']:
         metric_key = str(metric_key or '').strip()
         if not metric_key:
@@ -2402,6 +2408,7 @@ def _ecommerce_unavailable_live_template(template, rule_config, client=None, war
     warnings = [str(item) for item in (warnings or []) if item]
     source_text = 'Grafana 代理 Prometheus' if (client or {}).get('source') == 'grafana' else 'Prometheus'
     summary = reason or f'已配置 {source_text}，但未采集到电商 K8s 运行指标，按电商环境不可用处理。'
+    slo_target = _ecommerce_slo_target(rule_config)
     return {
         **template,
         'rule_config': rule_config,
@@ -2410,12 +2417,12 @@ def _ecommerce_unavailable_live_template(template, rule_config, client=None, war
         'north_star': {
             'label': '环境可用率',
             'value': 0,
-            'target': 100,
+            'target': slo_target,
             'unit': '%',
             'direction': 'higher',
         },
         'metrics': [
-            _metric('环境可用率', 0, 100, '%', 'higher'),
+            _metric('环境可用率', 0, slo_target, '%', 'higher'),
             _metric('运行指标采集', 0, 1, '', 'higher', digits=0),
         ],
         'summary': summary,
@@ -3800,6 +3807,17 @@ def observability_system_posture_history(request):
     backfill_enabled = str(request.query_params.get('backfill') or '').lower() in {'1', 'true', 'yes'}
 
     templates = _system_posture_templates()
+    current_sla_by_key = {}
+    for template in templates:
+        template_key = template.get('id') or template.get('name') or ''
+        if not template_key:
+            continue
+        sla = _system_posture_sla_from_system(template)
+        current_sla_by_key[template_key] = {
+            'target': float(sla['target']) if sla['target'] is not None else None,
+            'label': str(sla['label'] or 'SLA')[:64],
+            'unit': str(sla['unit'] or '%')[:16],
+        }
     environments = _system_posture_environments(templates)
     environment_lookup = {
         item['key']: item
@@ -3849,6 +3867,7 @@ def observability_system_posture_history(request):
     for record in records:
         if record.system_key not in system_map:
             environment = environment_lookup.get(record.environment) or {}
+            current_sla = current_sla_by_key.get(record.system_key) or {}
             system_map[record.system_key] = {
                 'id': record.system_key,
                 'name': record.system_name,
@@ -3856,12 +3875,16 @@ def observability_system_posture_history(request):
                 'environment_name': environment.get('name') or _system_posture_environment_label(record.environment),
                 'environment_sort_order': environment.get('sort_order', 1000),
                 'domain': record.domain,
-                'metric_label': record.metric_label,
-                'metric_unit': record.metric_unit,
-                'target': float(record.sla_target) if record.sla_target is not None else None,
+                'metric_label': current_sla.get('label') or record.metric_label,
+                'metric_unit': current_sla.get('unit') or record.metric_unit,
+                'target': current_sla.get('target') if current_sla.get('target') is not None else float(record.sla_target) if record.sla_target is not None else None,
                 'records': [],
             }
-        system_map[record.system_key]['records'].append(_system_posture_history_record(record))
+        item = _system_posture_history_record(record)
+        current_target = system_map[record.system_key].get('target')
+        if current_target is not None:
+            item['target'] = current_target
+        system_map[record.system_key]['records'].append(item)
 
     day_items = []
     for offset in range(days):

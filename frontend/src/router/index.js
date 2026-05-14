@@ -465,7 +465,7 @@ router.beforeEach(async (to) => {
 
   if (to.meta.public) {
     if (to.name === 'Login' && authStore.isAuthenticated) {
-      return to.query.redirect || '/dashboard'
+      return '/dashboard'
     }
     return true
   }

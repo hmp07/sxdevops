@@ -92,24 +92,38 @@ body {
 }
 
 .brand {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto auto;
     align-items: center;
-    gap: 0.6rem;
+    column-gap: 0.6rem;
+    row-gap: 0.12rem;
     font-weight: 900;
     color: var(--ink);
+}
+
+.brand::after {
+    content: "思而后行 行必有证";
+    grid-column: 2;
+    color: var(--muted);
+    font-size: clamp(0.58rem, 0.8vw, 0.72rem);
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: 0.02em;
 }
 
 .brand-mark {
     width: clamp(1.7rem, 2.8vw, 2.4rem);
     height: clamp(1.7rem, 2.8vw, 2.4rem);
+    grid-row: 1 / span 2;
     border-radius: 8px;
-    background: linear-gradient(135deg, var(--asset), var(--monitor) 56%, var(--ai));
-    color: #fff;
+    border: 1px solid rgba(32, 36, 42, 0.1);
+    background: rgba(255, 255, 255, 0.78) url("assets/favicon.svg") center / 84% no-repeat;
+    box-shadow: 0 6px 16px rgba(32, 36, 42, 0.08);
+    color: transparent;
     display: grid;
     place-items: center;
-    font-family: Arial, sans-serif;
-    font-weight: 900;
-    letter-spacing: -0.04em;
+    font-size: 0;
+    overflow: hidden;
 }
 
 .kicker {
@@ -484,6 +498,152 @@ h1, h2, h3, p { margin: 0; }
     background: #fff;
 }
 
+.dashboard-story {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.9rem;
+}
+
+.dashboard-slide .content {
+    gap: 1rem;
+}
+
+.dashboard-slide .screenshot-frame {
+    padding: 0.7rem;
+}
+
+.dashboard-slide .screenshot-frame img {
+    max-height: 45vh;
+}
+
+.dashboard-slide .dashboard-story .slide-title {
+    font-size: clamp(1.4rem, 2.2vw, 2.25rem);
+    line-height: 1.14;
+}
+
+.dashboard-slide .dashboard-story .subtitle {
+    max-width: none;
+    font-size: clamp(0.86rem, 1.02vw, 1rem);
+    line-height: 1.62;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+}
+
+.dashboard-slide .dashboard-story .route-card {
+    padding: 0.8rem 0.95rem;
+    min-height: auto;
+}
+
+.dashboard-slide .dashboard-story .route-card h3 {
+    font-size: clamp(0.94rem, 1.15vw, 1.08rem);
+    margin-bottom: 0.34rem;
+}
+
+.dashboard-slide .dashboard-story .route-card p {
+    font-size: clamp(0.78rem, 0.92vw, 0.9rem);
+    line-height: 1.52;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+}
+
+.dashboard-slide .dashboard-story .route {
+    margin-top: 0.45rem;
+    font-size: 0.68rem;
+}
+
+.dashboard-slide .dashboard-story .route-card:last-child .route {
+    white-space: normal;
+    word-break: break-word;
+}
+
+.dashboard-focus-list {
+    display: grid;
+    gap: 0.55rem;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.44);
+}
+
+.dashboard-focus-item {
+    display: grid;
+    grid-template-columns: 78px minmax(0, 1fr);
+    gap: 0.6rem;
+    align-items: start;
+    color: var(--muted);
+    font-size: 0.84rem;
+    line-height: 1.52;
+}
+
+.dashboard-focus-item strong {
+    color: var(--ink);
+    font-size: 0.82rem;
+    line-height: 1.35;
+}
+
+.event-center-slide .content {
+    gap: 1rem;
+}
+
+.event-center-slide .screenshot-frame {
+    padding: 0.7rem;
+}
+
+.event-center-slide .screenshot-frame img {
+    max-height: 44vh;
+}
+
+.event-center-story {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.9rem;
+}
+
+.event-center-slide .event-center-story .slide-title {
+    font-size: clamp(1.4rem, 2.2vw, 2.2rem);
+    line-height: 1.14;
+}
+
+.event-center-slide .event-center-story .subtitle {
+    max-width: none;
+    font-size: clamp(0.86rem, 1.02vw, 1rem);
+    line-height: 1.62;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+}
+
+.event-center-slide .event-center-story .route-card {
+    padding: 0.8rem 0.95rem;
+    min-height: auto;
+}
+
+.event-center-slide .event-center-story .route-card h3 {
+    font-size: clamp(0.94rem, 1.15vw, 1.08rem);
+    margin-bottom: 0.34rem;
+}
+
+.event-center-slide .event-center-story .route-card p {
+    font-size: clamp(0.78rem, 0.92vw, 0.9rem);
+    line-height: 1.52;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+}
+
+.event-center-slide .event-center-story .route {
+    margin-top: 0.45rem;
+    font-size: 0.68rem;
+}
+
 .vertical-flow {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -610,38 +770,6 @@ h1, h2, h3, p { margin: 0; }
     border-color: var(--asset);
 }
 
-.keyboard-hint, .edit-toggle {
-    position: fixed;
-    z-index: 20;
-    color: rgba(255, 255, 255, 0.72);
-    font-size: 0.75rem;
-}
-
-.keyboard-hint {
-    left: 1rem;
-    bottom: 0.85rem;
-}
-
-.edit-toggle {
-    right: 1rem;
-    bottom: 0.85rem;
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    background: rgba(255, 255, 255, 0.12);
-    border-radius: 999px;
-    padding: 0.42rem 0.62rem;
-    cursor: pointer;
-}
-
-.edit-toggle.active {
-    background: var(--asset);
-    color: #fff;
-}
-
-[contenteditable="true"] {
-    outline: 2px dashed rgba(47, 167, 160, 0.45);
-    outline-offset: 3px;
-}
-
 .reveal {
     opacity: 0;
     transform: translateY(18px);
@@ -673,13 +801,13 @@ h1, h2, h3, p { margin: 0; }
     }
     .dashboard-mock { min-height: 340px; }
     .flow-step { min-height: 150px; }
-    .nav-dots, .keyboard-hint { display: none; }
+    .nav-dots { display: none; }
 }
 
 @media print {
     html, body { background: white; scroll-snap-type: none; }
     .slide { height: 100vh; page-break-after: always; }
-    .progress-bar, .nav-dots, .keyboard-hint, .edit-toggle { display: none !important; }
+    .progress-bar, .nav-dots { display: none !important; }
     .paper { width: 100vw; height: 100vh; box-shadow: none; border-radius: 0; }
 }
 </style>
@@ -687,8 +815,6 @@ h1, h2, h3, p { margin: 0; }
 <body>
 <div class="progress-bar" id="progressBar"></div>
 <nav class="nav-dots" id="navDots" aria-label="Slide navigation"></nav>
-<button class="edit-toggle" id="editToggle" title="编辑模式">E</button>
-<div class="keyboard-hint">← → 翻页 · E 编辑 · Ctrl+S 导出 HTML · 打印可另存 PDF</div>
 
 <section class="slide" data-slide="1">
     <div class="paper">
@@ -697,17 +823,17 @@ h1, h2, h3, p { margin: 0; }
             <div>
                 <div class="tag-row reveal d1">
                     <span class="tag monitor"><i class="dot"></i>可观测性</span>
-                    <span class="tag danger"><i class="dot"></i>事件墙</span>
+                    <span class="tag danger"><i class="dot"></i>事件中心</span>
                     <span class="tag task"><i class="dot"></i>任务中心</span>
                     <span class="tag ai"><i class="dot"></i>AIOps</span>
                 </div>
                 <h1 class="title reveal d2" data-editable="true">SxDevOps<br><em>AI Agent</em></h1>
-                <p class="subtitle reveal d3" data-editable="true">把告警、日志、链路、事件、任务和平台资产变成 Agent 可调用的事实工具，让运维从“到处查系统”升级为“问系统、看证据、确认动作”。</p>
+                <p class="subtitle reveal d3" data-editable="true">把告警、日志、链路、事件、任务和平台资产变成 Agent 可调用的事实工具，让运维从“到处查系统”升级为“看态势、找证据、问系统、确认动作”。</p>
             </div>
             <div class="dashboard-mock reveal d4">
                 <div class="mock-top"><span>AI Agent Command Center</span><span class="mock-live">LIVE</span></div>
                 <div class="mock-tabs">
-                    <div class="mock-pill active">可观测</div><div class="mock-pill">事件墙</div><div class="mock-pill">任务中心</div><div class="mock-pill">AIOps</div>
+                    <div class="mock-pill active">可观测</div><div class="mock-pill">事件中心</div><div class="mock-pill">任务中心</div><div class="mock-pill">AIOps</div>
                 </div>
                 <div class="mock-kpis">
                     <div class="mock-kpi"><strong>12</strong><span>活跃告警</span></div>
@@ -724,7 +850,7 @@ h1, h2, h3, p { margin: 0; }
                     <div class="mock-terminal">
                         <div>&gt; 分析 order-center 生产异常</div>
                         <div>调用告警、日志、Trace...</div>
-                        <div>查询事件墙最近变更...</div>
+                        <div>查询事件中心最近变更...</div>
                         <div>生成巡检任务草稿...</div>
                     </div>
                     <div class="chat-card">
@@ -733,7 +859,7 @@ h1, h2, h3, p { margin: 0; }
                 </div>
             </div>
         </div>
-        <div class="footer"><span>可观测性 + 事件墙 + 任务中心 + AIOps</span><span>01 / 14</span></div>
+        <div class="footer"><span>可观测性 + 事件中心 + 任务中心 + AIOps</span><span>01 / 15</span></div>
     </div>
 </section>
 
@@ -750,7 +876,7 @@ h1, h2, h3, p { margin: 0; }
             </div>
             <div class="callout reveal d6" data-editable="true">SxDevOps AI Agent 的定位不是再做一个聊天框，而是把平台已有能力包装成可控、可审计、可确认的智能工作流。</div>
         </div>
-        <div class="footer"><span>从多系统切换，变成一次智能工作流</span><span>02 / 14</span></div>
+        <div class="footer"><span>从多系统切换，变成一次智能工作流</span><span>02 / 15</span></div>
     </div>
 </section>
 
@@ -758,20 +884,40 @@ h1, h2, h3, p { margin: 0; }
     <div class="paper">
         <div class="topline"><div class="brand"><div class="brand-mark">Sx</div>SxDevOps AI Agent</div><div class="kicker">Product Map</div></div>
         <div class="content">
-            <h2 class="slide-title reveal d1" data-editable="true">SxDevOps AI Agent = <em>可观测性 + 事件墙 + 任务中心 + AIOps</em></h2>
+            <h2 class="slide-title reveal d1" data-editable="true">SxDevOps AI Agent = <em>可观测性 + 事件中心 + 任务中心 + AIOps</em></h2>
             <div class="flow">
                 <div class="flow-step reveal d2"><b class="monitor">01 可观测性</b><span data-editable="true">聚合告警、日志、链路追踪、Grafana 大屏，形成一条连续排障路径。</span></div>
-                <div class="flow-step reveal d3"><b class="danger">02 事件墙</b><span data-editable="true">聚焦最终执行结果与关键写操作，按业务线、环境、应用快速收敛故障范围。</span></div>
+                <div class="flow-step reveal d3"><b class="danger">02 事件中心</b><span data-editable="true">聚焦最终执行结果与关键写操作，按业务线、环境、应用快速收敛故障范围。</span></div>
                 <div class="flow-step reveal d4"><b class="task">03 任务中心</b><span data-editable="true">查询最近任务，生成主机巡检、服务检查、批量命令任务草稿，确认后执行。</span></div>
                 <div class="flow-step reveal d5"><b class="ai">04 AIOps</b><span data-editable="true">LLM 负责理解与规划，MCP 提供事实，Skill 约束输出，后端负责安全与审计。</span></div>
             </div>
-            <p class="subtitle reveal d6" data-editable="true">四个能力不是并排功能，而是一条链路：可观测性取证，事件墙复盘，任务中心行动，AIOps 把它们组织成可解释的处理过程。</p>
+            <p class="subtitle reveal d6" data-editable="true">四个能力不是并排功能，而是一条链路：可观测性取证，事件中心复盘，任务中心行动，AIOps 把它们组织成可解释的处理过程。</p>
         </div>
-        <div class="footer"><span>围绕事实、事件和动作的智能运维入口</span><span>03 / 14</span></div>
+        <div class="footer"><span>围绕事实、事件和动作的智能运维入口</span><span>03 / 15</span></div>
     </div>
 </section>
 
-<section class="slide" data-slide="4">
+<section class="slide dashboard-slide" data-slide="4">
+    <div class="paper">
+        <div class="topline"><div class="brand"><div class="brand-mark">Sx</div>SxDevOps AI Agent</div><div class="kicker">Dashboard</div></div>
+        <div class="content grid-2">
+            <div class="screenshot-frame reveal d1">
+                <div class="mock-top"><span>Dashboard Home</span><span>System SLA History</span></div>
+                <img src="screenshots/dashboard.png" alt="首页仪表盘与系统态势历史截图" />
+            </div>
+            <div class="dashboard-story">
+                <h2 class="slide-title reveal d2" data-editable="true">系统态势 SLA：<em>先看全局，再收敛故障边界</em></h2>
+                <p class="subtitle reveal d3" data-editable="true">首页把系统态势历史直接放在主视图里，先从全局看哪些系统出现故障或可用率波动，再快速判断问题集中在哪个环境、哪个系统、哪个时间段。</p>
+                <div class="route-card monitor reveal d4"><h3>全局发现</h3><p data-editable="true">按系统汇总最近 SLA 历史和当前状态，第一时间识别故障系统、未知系统和整体健康趋势。</p></div>
+                <div class="route-card danger reveal d5"><h3>边界收敛</h3><p data-editable="true">从环境分组、系统条带和故障标记中快速确认影响范围，明确是单系统异常、同环境扩散，还是跨环境波动。</p></div>
+                <div class="route-card asset reveal d6"><h3>继续排障</h3><p data-editable="true">确定故障边界后，继续进入系统态势详情、可观测性证据和事件中心，补齐根因分析和后续动作。</p><code class="route">Dashboard -> System Posture -> Observability -> Event Center</code></div>
+            </div>
+        </div>
+        <div class="footer"><span>用系统态势 SLA 先圈定问题，再进入证据链</span><span>04 / 15</span></div>
+    </div>
+</section>
+
+<section class="slide" data-slide="5">
     <div class="paper">
         <div class="topline"><div class="brand"><div class="brand-mark">Sx</div>SxDevOps AI Agent</div><div class="kicker">Observability</div></div>
         <div class="content grid-2">
@@ -786,31 +932,31 @@ h1, h2, h3, p { margin: 0; }
                 <img src="screenshots/ai-agent-observability-overview.png" alt="可观测性平台总览截图" />
             </div>
         </div>
-        <div class="footer"><span>可观测性是 Agent 的事实取证层</span><span>04 / 14</span></div>
+        <div class="footer"><span>可观测性是 Agent 的事实取证层</span><span>05 / 15</span></div>
     </div>
 </section>
 
-<section class="slide" data-slide="5">
+<section class="slide event-center-slide" data-slide="6">
     <div class="paper">
-        <div class="topline"><div class="brand"><div class="brand-mark">Sx</div>SxDevOps AI Agent</div><div class="kicker">Event Wall</div></div>
+        <div class="topline"><div class="brand"><div class="brand-mark">Sx</div>SxDevOps AI Agent</div><div class="kicker">Event Center</div></div>
         <div class="content grid-2">
             <div class="screenshot-frame reveal d1">
-                <div class="mock-top"><span>Event Wall</span><span>Audit & Failure Scope</span></div>
-                <img src="screenshots/ai-agent-event-wall-current.png" alt="事件墙页面截图" />
+                <div class="mock-top"><span>Event Center</span><span>Audit & Failure Scope</span></div>
+                <img src="screenshots/ai-agent-event-center-current.png" alt="事件中心页面截图" />
             </div>
-            <div>
-                <h2 class="slide-title reveal d2" data-editable="true">事件墙：<em>把关键结果沉淀成可追溯现场</em></h2>
-                <p class="subtitle reveal d3" data-editable="true">事件墙不是流水账，而是围绕最终执行结果、关键写操作和失败定位的复盘面板。</p>
+            <div class="event-center-story">
+                <h2 class="slide-title reveal d2" data-editable="true">事件中心：<em>把关键结果沉淀成可追溯现场</em></h2>
+                <p class="subtitle reveal d3" data-editable="true">事件中心不是流水账，而是围绕最终执行结果、关键写操作和失败定位的复盘面板。</p>
                 <div class="route-card danger reveal d4"><h3>失败定位</h3><p data-editable="true">按业务线、环境、应用过滤，快速看失败事件集中在哪个范围。</p></div>
                 <div class="route-card task reveal d5"><h3>操作审计</h3><p data-editable="true">只保留最终执行结果和关键写操作，默认过滤未执行的驳回审批流。</p></div>
-                <div class="route-card ai reveal d6"><h3>Agent 复盘</h3><p data-editable="true">支持回答“最近生产失败了什么”“谁触发了关键变更”“哪个应用失败最多”。</p><code class="route">query_event_wall</code></div>
+                <div class="route-card ai reveal d6"><h3>Agent 复盘</h3><p data-editable="true">支持回答“最近生产失败了什么”“谁触发了关键变更”“哪个应用失败最多”。</p><code class="route">query_event_center</code></div>
             </div>
         </div>
-        <div class="footer"><span>事件墙让排障有现场、复盘有证据</span><span>05 / 14</span></div>
+        <div class="footer"><span>事件中心让排障有现场、复盘有证据</span><span>06 / 15</span></div>
     </div>
 </section>
 
-<section class="slide" data-slide="6">
+<section class="slide" data-slide="7">
     <div class="paper">
         <div class="topline"><div class="brand"><div class="brand-mark">Sx</div>SxDevOps AI Agent</div><div class="kicker">Task Center</div></div>
         <div class="content">
@@ -820,31 +966,31 @@ h1, h2, h3, p { margin: 0; }
                 <div class="flow-step reveal d3"><b class="monitor">查询任务</b><span data-editable="true">最近巡检、部署、命令执行、失败任务与耗时统计。</span></div>
                 <div class="flow-step reveal d4"><b class="ai">生成草稿</b><span data-editable="true">自动补齐目标主机、命令、超时、风险提示和执行策略。</span></div>
                 <div class="flow-step reveal d5"><b class="task">二次确认</b><span data-editable="true">高风险动作由用户确认，避免误创建、误执行。</span></div>
-                <div class="flow-step reveal d6"><b class="asset">落入中心</b><span data-editable="true">确认后写入任务中心，执行结果进入事件墙和审计。</span></div>
+                <div class="flow-step reveal d6"><b class="asset">落入中心</b><span data-editable="true">确认后写入任务中心，执行结果进入事件中心和审计。</span></div>
             </div>
             <div class="callout reveal d6" data-editable="true">核心边界：咨询类问题直接返回事实；生成类问题先出草稿；执行类动作必须确认后才落任务。</div>
         </div>
-        <div class="footer"><span>任务中心是智能体的受控行动层</span><span>06 / 14</span></div>
+        <div class="footer"><span>任务中心是智能体的受控行动层</span><span>07 / 15</span></div>
     </div>
 </section>
 
-<section class="slide" data-slide="7">
+<section class="slide" data-slide="8">
     <div class="paper">
         <div class="topline"><div class="brand"><div class="brand-mark">Sx</div>SxDevOps AI Agent</div><div class="kicker">AIOps Agent</div></div>
         <div class="content">
             <h2 class="slide-title reveal d1" data-editable="true">AIOps：<em>不是关键词查表，而是工具调用型智能体</em></h2>
             <div class="grid-3">
-                <div class="panel monitor reveal d2"><h3>MCP 工具层</h3><p data-editable="true">CMDB、可观测性、事件墙、任务中心、容器、中间件等平台能力统一暴露为工具 schema。</p><code class="route">query_observability · query_event_wall</code></div>
+                <div class="panel monitor reveal d2"><h3>MCP 工具层</h3><p data-editable="true">CMDB、可观测性、事件中心、任务中心、容器、中间件等平台能力统一暴露为工具 schema。</p><code class="route">query_observability · query_event_center</code></div>
                 <div class="panel ai reveal d3"><h3>Skill 整形层</h3><p data-editable="true">约束回答结构，让告警分析、工单汇总、任务生成有稳定输出模板。</p><code class="route">结论 / 依据 / 建议操作</code></div>
                 <div class="panel task reveal d4"><h3>安全执行层</h3><p data-editable="true">工具白名单、参数清洗、RBAC、超时、异常兜底、动作确认和审计记录。</p><code class="route">RBAC · Pending Action · Audit</code></div>
             </div>
             <div class="callout reveal d5" data-editable="true">当前实现本质：用 LLM 做理解和规划，用 MCP 提供事实能力，用 Skill 约束回答结构，用平台后端负责安全、审计、执行与兜底。</div>
         </div>
-        <div class="footer"><span>模型负责理解，平台负责边界</span><span>07 / 14</span></div>
+        <div class="footer"><span>模型负责理解，平台负责边界</span><span>08 / 15</span></div>
     </div>
 </section>
 
-<section class="slide" data-slide="8">
+<section class="slide" data-slide="9">
     <div class="paper">
         <div class="topline"><div class="brand"><div class="brand-mark">Sx</div>SxDevOps AI Agent</div><div class="kicker">Two-stage Answer</div></div>
         <div class="content grid-2">
@@ -854,17 +1000,17 @@ h1, h2, h3, p { margin: 0; }
             </div>
             <div class="vertical-flow">
                 <div class="v-step asset reveal d2"><div class="v-num">01</div><div><h3>用户提问</h3><p data-editable="true">例如：分析生产 order-center 最近异常。</p></div></div>
-                <div class="v-step ai reveal d3"><div class="v-num">02</div><div><h3>LLM 规划</h3><p data-editable="true">根据工具 schema 选择告警、日志、Trace、事件墙、任务工具。</p></div></div>
+                <div class="v-step ai reveal d3"><div class="v-num">02</div><div><h3>LLM 规划</h3><p data-editable="true">根据工具 schema 选择告警、日志、Trace、事件中心、任务工具。</p></div></div>
                 <div class="v-step monitor reveal d4"><div class="v-num">03</div><div><h3>平台执行</h3><p data-editable="true">后端按白名单执行工具，做权限、参数清洗、超时控制。</p></div></div>
                 <div class="v-step task reveal d5"><div class="v-num">04</div><div><h3>事实汇总</h3><p data-editable="true">结构化工具结果形成证据集和代码兜底草稿。</p></div></div>
                 <div class="v-step ai reveal d6"><div class="v-num">05</div><div><h3>Skill 整形</h3><p data-editable="true">按模板输出结论、依据、建议操作和可继续查看项。</p></div></div>
             </div>
         </div>
-        <div class="footer"><span>双阶段回答让 Agent 更稳定、更可信</span><span>08 / 14</span></div>
+        <div class="footer"><span>双阶段回答让 Agent 更稳定、更可信</span><span>09 / 15</span></div>
     </div>
 </section>
 
-<section class="slide" data-slide="9">
+<section class="slide" data-slide="10">
     <div class="paper">
         <div class="topline"><div class="brand"><div class="brand-mark">Sx</div>SxDevOps AI Agent</div><div class="kicker">Scenario</div></div>
         <div class="content">
@@ -884,20 +1030,20 @@ h1, h2, h3, p { margin: 0; }
                     <span class="label" style="background: var(--ai);">After</span>
                     <h3>AI Agent 处理路径</h3>
                     <ul class="list">
-                        <li><span class="check">✓</span><span data-editable="true">自然语言发起分析，自动调用告警、日志、Trace、事件墙。</span></li>
+                        <li><span class="check">✓</span><span data-editable="true">自然语言发起分析，自动调用告警、日志、Trace、事件中心。</span></li>
                         <li><span class="check">✓</span><span data-editable="true">输出结论、依据、风险和建议操作，证据可回看。</span></li>
                         <li><span class="check">✓</span><span data-editable="true">需要巡检时生成任务草稿，等待用户确认。</span></li>
-                        <li><span class="check">✓</span><span data-editable="true">确认后进入任务中心，执行结果继续回写事件墙。</span></li>
+                        <li><span class="check">✓</span><span data-editable="true">确认后进入任务中心，执行结果继续回写事件中心。</span></li>
                     </ul>
                 </div>
             </div>
             <div class="callout reveal d4" data-editable="true">排障链路从“找资料”压缩为“看证据、做判断、确认动作”。</div>
         </div>
-        <div class="footer"><span>一个问题，串起告警、日志、链路、事件和任务</span><span>09 / 14</span></div>
+        <div class="footer"><span>一个问题，串起告警、日志、链路、事件和任务</span><span>10 / 15</span></div>
     </div>
 </section>
 
-<section class="slide" data-slide="10">
+<section class="slide" data-slide="11">
     <div class="paper">
         <div class="topline"><div class="brand"><div class="brand-mark">Sx</div>SxDevOps AI Agent</div><div class="kicker">Safety</div></div>
         <div class="content">
@@ -910,52 +1056,45 @@ h1, h2, h3, p { margin: 0; }
             </div>
             <div class="callout reveal d6" data-editable="true">原则：回答基于事实，不凭空编造；动作经过确认，不越权执行；过程留下记录，不做黑盒运维。</div>
         </div>
-        <div class="footer"><span>企业运维场景里，Agent 的边界比能力更重要</span><span>10 / 14</span></div>
+        <div class="footer"><span>企业运维场景里，Agent 的边界比能力更重要</span><span>11 / 15</span></div>
     </div>
 </section>
 
-<section class="slide" data-slide="11">
+<section class="slide" data-slide="12">
     <div class="paper">
         <div class="topline"><div class="brand"><div class="brand-mark">Sx</div>SxDevOps AI Agent</div><div class="kicker">Architecture</div></div>
         <div class="content">
             <h2 class="slide-title reveal d1" data-editable="true">平台架构：<em>数据进来，Agent 编排，动作闭环</em></h2>
             <div class="flow">
-                <div class="flow-step monitor reveal d2"><b>数据与事实层</b><span data-editable="true">CMDB 资产、告警、日志、Trace、事件墙、任务中心、容器与中间件。</span></div>
+                <div class="flow-step monitor reveal d2"><b>数据与事实层</b><span data-editable="true">CMDB 资产、告警、日志、Trace、事件中心、任务中心、容器与中间件。</span></div>
                 <div class="flow-step ai reveal d3"><b>智能体编排层</b><span data-editable="true">Tool-calling、内置 MCP、外部 MCP、Skill 模板、兜底草稿。</span></div>
                 <div class="flow-step task reveal d4"><b>安全控制层</b><span data-editable="true">RBAC、参数清洗、工具白名单、动作确认、审计记录。</span></div>
                 <div class="flow-step asset reveal d5"><b>体验入口层</b><span data-editable="true">右下角浮窗、AIOps 配置、会话历史、思考过程、动作卡片。</span></div>
             </div>
-            <div class="dashboard-mock reveal d6" style="min-height: 210px;">
-                <div class="mock-top"><span>Architecture Trace</span><span>Observability -> Event Wall -> Task Center -> AIOps</span></div>
-                <div class="mock-kpis" style="margin-top: 1rem;">
-                    <div class="mock-kpi"><strong>Facts</strong><span>平台事实</span></div>
-                    <div class="mock-kpi"><strong>Tools</strong><span>MCP 调用</span></div>
-                    <div class="mock-kpi"><strong>Actions</strong><span>确认执行</span></div>
-                </div>
-            </div>
+            <div class="callout reveal d6" data-editable="true">架构重点不是堆功能，而是把平台事实、工具调用、动作确认和审计留痕组织成一条可解释、可追踪、可闭环的处理链路。</div>
         </div>
-        <div class="footer"><span>架构重点：不是堆功能，而是打通工作流</span><span>11 / 14</span></div>
+        <div class="footer"><span>架构重点：不是堆功能，而是打通工作流</span><span>12 / 15</span></div>
     </div>
 </section>
 
-<section class="slide" data-slide="12">
+<section class="slide" data-slide="13">
     <div class="paper">
         <div class="topline"><div class="brand"><div class="brand-mark">Sx</div>SxDevOps AI Agent</div><div class="kicker">Value</div></div>
         <div class="content">
             <h2 class="slide-title reveal d1" data-editable="true">SxDevOps AI Agent 带来的改变</h2>
             <div class="value-strip">
                 <div class="metric reveal d2"><strong class="monitor">可见</strong><span data-editable="true">告警、日志、Trace、Grafana、资产状态一眼可查。</span></div>
-                <div class="metric reveal d3"><strong class="danger">可追</strong><span data-editable="true">事件墙记录最终结果、关键写操作和失败定位线索。</span></div>
+                <div class="metric reveal d3"><strong class="danger">可追</strong><span data-editable="true">事件中心记录最终结果、关键写操作和失败定位线索。</span></div>
                 <div class="metric reveal d4"><strong class="task">可执行</strong><span data-editable="true">任务中心承接巡检、命令、Playbook 与批量操作。</span></div>
                 <div class="metric reveal d5"><strong class="ai">可审计</strong><span data-editable="true">会话、工具调用、待确认动作、执行结果全链路留痕。</span></div>
             </div>
             <p class="subtitle reveal d6" data-editable="true">最终效果：少切系统，少拼证据，少靠口头经验，多用事实驱动，多用确认动作闭环。</p>
         </div>
-        <div class="footer"><span>从工具集合升级为智能运维系统</span><span>12 / 14</span></div>
+        <div class="footer"><span>从工具集合升级为智能运维系统</span><span>13 / 15</span></div>
     </div>
 </section>
 
-<section class="slide" data-slide="13">
+<section class="slide" data-slide="14">
     <div class="paper">
         <div class="topline"><div class="brand"><div class="brand-mark">Sx</div>SxDevOps AI Agent</div><div class="kicker">Roadmap</div></div>
         <div class="content">
@@ -971,24 +1110,24 @@ h1, h2, h3, p { margin: 0; }
                 <li><span class="num">3</span><span data-editable="true">最后把高频、低风险动作纳入自动化闭环。</span></li>
             </ul>
         </div>
-        <div class="footer"><span>AI 运维的关键路径：先可信，再自动</span><span>13 / 14</span></div>
+        <div class="footer"><span>AI 运维的关键路径：先可信，再自动</span><span>14 / 15</span></div>
     </div>
 </section>
 
-<section class="slide" data-slide="14">
+<section class="slide" data-slide="15">
     <div class="paper">
         <div class="topline"><div class="brand"><div class="brand-mark">Sx</div>SxDevOps AI Agent</div><div class="kicker">Close</div></div>
         <div class="content">
-            <p class="quote reveal d1" data-editable="true">SxDevOps AI Agent<br>让运维从<em>“查系统”</em><br>升级为<em>“问系统、看证据、确认动作”</em></p>
+            <p class="quote reveal d1" data-editable="true">SxDevOps AI Agent<br>让运维从<em>“查系统”</em><br>升级为<em>“看态势、找证据、问系统、确认动作”</em></p>
             <div class="tag-row reveal d2" style="justify-content: center;">
                 <span class="tag monitor"><i class="dot"></i>可观测性</span>
-                <span class="tag danger"><i class="dot"></i>事件墙</span>
+                <span class="tag danger"><i class="dot"></i>事件中心</span>
                 <span class="tag task"><i class="dot"></i>任务中心</span>
                 <span class="tag ai"><i class="dot"></i>AIOps</span>
             </div>
             <p class="subtitle reveal d3" style="text-align: center; margin: 0 auto;" data-editable="true">一个面向真实运维现场的智能运维 Agent 项目。</p>
         </div>
-        <div class="footer"><span>SxDevOps AI Agent · 智能运维中枢</span><span>14 / 14</span></div>
+        <div class="footer"><span>SxDevOps AI Agent · 智能运维中枢</span><span>15 / 15</span></div>
     </div>
 </section>
 
@@ -999,13 +1138,10 @@ class SxDevOpsDeck {
         this.current = 0;
         this.progress = document.getElementById("progressBar");
         this.navDots = document.getElementById("navDots");
-        this.editToggle = document.getElementById("editToggle");
-        this.editing = false;
         this.setupDots();
         this.setupObserver();
         this.setupKeyboard();
         this.setupTouch();
-        this.setupEdit();
         this.update(0);
     }
 
@@ -1033,16 +1169,6 @@ class SxDevOpsDeck {
 
     setupKeyboard() {
         document.addEventListener("keydown", event => {
-            if (event.ctrlKey && event.key.toLowerCase() === "s") {
-                event.preventDefault();
-                this.exportHtml();
-                return;
-            }
-            if (event.key.toLowerCase() === "e") {
-                this.toggleEdit();
-                return;
-            }
-            if (this.editing && document.activeElement?.isContentEditable) return;
             if (event.key === "ArrowDown" || event.key === "ArrowRight" || event.key === "PageDown") {
                 event.preventDefault();
                 this.go(Math.min(this.current + 1, this.slides.length - 1));
@@ -1066,32 +1192,6 @@ class SxDevOpsDeck {
             if (Math.abs(dy) < 48) return;
             this.go(dy < 0 ? Math.min(this.current + 1, this.slides.length - 1) : Math.max(this.current - 1, 0));
         }, { passive: true });
-    }
-
-    setupEdit() {
-        this.editToggle.addEventListener("click", () => this.toggleEdit());
-    }
-
-    toggleEdit() {
-        this.editing = !this.editing;
-        this.editToggle.classList.toggle("active", this.editing);
-        document.querySelectorAll("[data-editable='true']").forEach(node => {
-            node.contentEditable = this.editing ? "true" : "false";
-        });
-    }
-
-    exportHtml() {
-        const clone = document.documentElement.cloneNode(true);
-        clone.querySelectorAll("[contenteditable]").forEach(node => node.removeAttribute("contenteditable"));
-        clone.querySelector(".edit-toggle")?.classList.remove("active");
-        const html = "<!DOCTYPE html>\n" + clone.outerHTML;
-        const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "sxdevops-ai-agent-promo.html";
-        a.click();
-        URL.revokeObjectURL(url);
     }
 
     go(index) {
