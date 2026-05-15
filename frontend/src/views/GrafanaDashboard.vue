@@ -401,6 +401,7 @@ const authStore = useAuthStore()
 
 const loading = ref(false)
 const configSaving = ref(false)
+const overviewLoaded = ref(false)
 const fullscreenVisible = ref(false)
 const embedHelpVisible = ref(false)
 const overview = ref({ modules: {}, summary: {}, tips: [] })
@@ -774,7 +775,7 @@ function findDashboardByIdentity(value = '') {
 function buildDashboardFullUrl(item = {}, baseUrl = '') {
   const fullUrl = String(item.full_url || item.url || '').trim()
   if (fullUrl) {
-    return fullUrl
+    return normalizeGrafanaUrl(fullUrl)
   }
   const path = String(item.path || '').trim()
   const normalizedBase = String(baseUrl || '').trim().replace(/\/+$/, '')
@@ -782,7 +783,7 @@ function buildDashboardFullUrl(item = {}, baseUrl = '') {
     return ''
   }
   const normalizedPath = path.startsWith('/') ? path : `/${path}`
-  return `${normalizedBase}${normalizedPath}`
+  return normalizeGrafanaUrl(`${normalizedBase}${normalizedPath}`)
 }
 
 function getDashboardUrlError(url = '') {
@@ -801,8 +802,32 @@ function getDashboardUrlError(url = '') {
   }
 }
 
-function appendGrafanaDisplayParams(url = '') {
+function normalizeGrafanaUrl(url = '') {
   const value = String(url || '').trim()
+  if (!value) return ''
+  try {
+    const parsed = new URL(value, window.location.origin)
+    const current = new URL(window.location.origin)
+    const path = parsed.pathname || '/'
+    const looksLikeGrafanaPath = path === '/' || ['/d/', '/dashboard/', '/explore', '/public/', '/api/'].some((prefix) => path.startsWith(prefix))
+    const alreadyProxied = parsed.origin === current.origin && path.startsWith('/grafana/')
+    const shouldProxy = current.protocol === 'https:' && looksLikeGrafanaPath && !alreadyProxied
+      && (parsed.protocol === 'http:' || parsed.origin !== current.origin || value.startsWith('/'))
+    if (!shouldProxy) {
+      return parsed.toString()
+    }
+    const proxiedPath = path.startsWith('/grafana/') ? path : `/grafana${path.startsWith('/') ? path : `/${path}`}`
+    const proxied = new URL(proxiedPath, current.origin)
+    proxied.search = parsed.search
+    proxied.hash = parsed.hash
+    return proxied.toString()
+  } catch {
+    return value
+  }
+}
+
+function appendGrafanaDisplayParams(url = '') {
+  const value = normalizeGrafanaUrl(url)
   if (!value) return ''
   try {
     const parsed = new URL(value)
@@ -850,6 +875,7 @@ async function loadOverview() {
     }
   } finally {
     loading.value = false
+    overviewLoaded.value = true
   }
 }
 
@@ -1339,8 +1365,9 @@ function syncRouteQuery() {
 }
 
 function openExternal(url) {
-  if (url) {
-    window.open(url, '_blank', 'noopener,noreferrer')
+  const normalizedUrl = normalizeGrafanaUrl(url)
+  if (normalizedUrl) {
+    window.open(normalizedUrl, '_blank', 'noopener,noreferrer')
   }
 }
 
@@ -1382,6 +1409,7 @@ function groupSearchParams(params) {
 }
 
 function appendGrafanaContext(url) {
+  const normalizedUrl = normalizeGrafanaUrl(url)
   const params = new URLSearchParams()
   params.set('kiosk', 'true')
   params.set('theme', 'light')
@@ -1395,7 +1423,7 @@ function appendGrafanaContext(url) {
       }
     })
   })
-  return appendGrafanaParams(url, groupSearchParams(params))
+  return appendGrafanaParams(normalizedUrl, groupSearchParams(params))
 }
 
 function applyDashboardContextValue(context, key, value) {
@@ -1571,6 +1599,9 @@ watch(
   () => filteredDashboards.value,
   (items) => {
     if (!items.length) {
+      if (!overviewLoaded.value || loading.value) {
+        return
+      }
       selectedKey.value = ''
       fullscreenVisible.value = false
       return
