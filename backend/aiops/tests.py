@@ -3697,6 +3697,26 @@ class AIOpsApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.assertIsNotNone(response.data['pending_action'])
+
+    def test_confirm_pending_action_returns_editable_task_draft(self):
+        self.ensure_prod_knowledge_environment()
+        Host.objects.create(hostname='legacy-data-sync', ip_address='10.20.30.20', environment='prod', status='offline')
+        session = AIOpsChatSession.objects.create(user=self.user, title='task-draft-confirm')
+        assistant_message = AIOpsChatMessage.objects.create(session=session, role='assistant', content='task draft')
+        draft = build_task_draft(
+            self.user,
+            '为 legacy-data-sync 生成巡检任务',
+            {'request_summary': '为 legacy-data-sync 生成巡检任务', 'environment': 'prod'},
+        )
+        action = create_pending_task_action_from_draft(session, assistant_message, draft)
+
+        response = self.client.post(f'/api/aiops/actions/{action.id}/confirm/', {}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['task_draft']['name'], draft['name'])
+        self.assertEqual(response.data['task_draft']['trigger_source'], HostTask.TRIGGER_SOURCE_AIOPS)
+        self.assertFalse(HostTask.objects.filter(trigger_source=HostTask.TRIGGER_SOURCE_AIOPS).exists())
+
     @mock.patch('aiops.services._request_model_completion')
     def test_send_message_returns_error_when_model_does_not_call_tools(self, mocked_completion):
         provider = AIOpsModelProvider.objects.create(
@@ -4222,17 +4242,20 @@ class AIOpsApiTests(TestCase):
         )
 
         action = create_pending_task_action_from_draft(session, assistant_message, draft)
-        task = confirm_action(action, self.user)
+        task_draft = confirm_action(action, self.user)
 
-        self.assertEqual(task.target_count, 1)
-        self.assertEqual(task.status, HostTask.STATUS_PENDING)
-        self.assertEqual(task.target_snapshot[0]['hostname'], 'order-api-ecs-02')
-        self.assertEqual(task.target_snapshot[0]['ip_address'], '10.10.1.11')
-        self.assertEqual(task.selection_filters['request_summary'], draft['request_summary'])
-        self.assertEqual(task.payload.get('service_name'), 'Redis')
-        self.assertEqual(task.created_by, self.user.username)
-        self.assertEqual(task.id, action.result_payload['task_id'])
-        self.assertEqual(target_host.id, task.target_snapshot[0]['id'])
+        self.assertEqual(task_draft['host_count'], 1)
+        self.assertEqual(task_draft['target_hosts'][0]['hostname'], 'order-api-ecs-02')
+        self.assertEqual(task_draft['target_hosts'][0]['ip_address'], '10.10.1.11')
+        self.assertEqual(task_draft['request_summary'], draft['request_summary'])
+        self.assertEqual(task_draft['payload'].get('service_name'), 'Redis')
+        self.assertEqual(task_draft['trigger_source'], HostTask.TRIGGER_SOURCE_AIOPS)
+        self.assertEqual(task_draft['source_context']['source'], 'aiops')
+        self.assertEqual(task_draft['source_context']['request_summary'], draft['request_summary'])
+        self.assertEqual(task_draft['target_hosts'][0]['id'], target_host.id)
+        self.assertFalse(HostTask.objects.filter(created_by=self.user.username, trigger_source=HostTask.TRIGGER_SOURCE_AIOPS).exists())
+        action.refresh_from_db()
+        self.assertTrue(action.result_payload['draft_ready'])
 
     def test_generate_task_never_materializes_before_confirmation(self):
         decision = _should_materialize_host_task(
@@ -4266,15 +4289,15 @@ class AIOpsApiTests(TestCase):
             },
         )
         action = create_pending_task_action_from_draft(session, assistant_message, draft)
-        task = confirm_action(action, self.user)
+        task_draft = confirm_action(action, self.user)
 
         self.assertEqual(draft['resource_ids'], [resource.id])
         self.assertEqual(draft['target_refs'], [{'source': 'task_resource', 'id': resource.id}])
-        self.assertEqual(task.target_count, 1)
-        self.assertEqual(task.target_snapshot[0]['source'], 'task_resource')
-        self.assertEqual(task.target_snapshot[0]['resource_id'], resource.id)
-        self.assertEqual(task.target_snapshot[0]['hostname'], 'tf-k3s-single-node')
-        self.assertEqual(task.selection_filters['target_refs'], [{'source': 'task_resource', 'id': resource.id}])
+        self.assertEqual(task_draft['host_count'], 1)
+        self.assertEqual(task_draft['target_refs'], [{'source': 'task_resource', 'id': resource.id}])
+        self.assertEqual(task_draft['target_hosts'][0]['source'], 'task_resource')
+        self.assertEqual(task_draft['target_hosts'][0]['resource_id'], resource.id)
+        self.assertEqual(task_draft['target_hosts'][0]['hostname'], 'tf-k3s-single-node')
 
     def test_build_task_draft_dedupes_task_resource_targets_from_multiple_fields(self):
         env = TaskResourceGroup.objects.create(name='ecommerce-test', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
@@ -4302,13 +4325,13 @@ class AIOpsApiTests(TestCase):
             },
         )
         action = create_pending_task_action_from_draft(session, assistant_message, draft)
-        task = confirm_action(action, self.user)
+        task_draft = confirm_action(action, self.user)
 
         self.assertEqual(draft['resource_ids'], [resource.id])
         self.assertEqual(draft['target_refs'], [{'source': 'task_resource', 'id': resource.id}])
         self.assertEqual(draft['host_count'], 1)
-        self.assertEqual(task.target_count, 1)
-        self.assertEqual(task.selection_filters['target_refs'], [{'source': 'task_resource', 'id': resource.id}])
+        self.assertEqual(task_draft['host_count'], 1)
+        self.assertEqual(task_draft['target_refs'], [{'source': 'task_resource', 'id': resource.id}])
 
     def test_build_task_draft_uses_configured_resource_base_for_server_inspection(self):
         env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)

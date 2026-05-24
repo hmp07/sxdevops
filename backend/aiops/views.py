@@ -703,8 +703,8 @@ def confirm_pending_action(request, pk):
     if not action:
         return Response({'detail': '动作不存在'}, status=status.HTTP_404_NOT_FOUND)
     try:
-        task = confirm_action(action, request.user, request=request)
-        return Response({'success': True, 'task_id': task.id, 'task_name': task.name})
+        task_draft = confirm_action(action, request.user, request=request)
+        return Response({'success': True, 'task_name': task_draft['name'], 'task_draft': task_draft})
     except ValueError as exc:
         action.status = AIOpsPendingAction.STATUS_FAILED
         action.result_payload = {'error': str(exc)}

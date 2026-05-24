@@ -463,6 +463,8 @@ class HostTaskSubmitSerializer(serializers.Serializer):
     execution_mode = serializers.ChoiceField(choices=HostTask.EXECUTION_MODE_CHOICES, default=HostTask.EXECUTION_MODE_SSH)
     execution_strategy = serializers.ChoiceField(choices=HostTask.STRATEGY_CHOICES, default=HostTask.STRATEGY_CONTINUE)
     timeout_seconds = serializers.IntegerField(min_value=5, max_value=120, default=15)
+    trigger_source = serializers.ChoiceField(choices=HostTask.TRIGGER_SOURCE_CHOICES, default=HostTask.TRIGGER_SOURCE_MANUAL, required=False)
+    source_context = serializers.JSONField(required=False, default=dict)
 
     def validate_host_ids(self, value):
         deduplicated = list(dict.fromkeys(value))
@@ -473,6 +475,9 @@ class HostTaskSubmitSerializer(serializers.Serializer):
         return deduplicated
 
     def validate_payload(self, value):
+        return normalize_json_object(value)
+
+    def validate_source_context(self, value):
         return normalize_json_object(value)
 
     def validate(self, attrs):

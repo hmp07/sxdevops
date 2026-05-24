@@ -123,6 +123,41 @@ class HostTaskApiTests(TestCase):
         self.assertEqual(payload['executions'][0]['command'], 'ansible-playbook smoke-check.yml')
         self.assertIn('PLAY [targets]', payload['executions'][0]['output'])
 
+    @patch('ops.host_tasks.execute_ansible_playbook')
+    def test_run_playbook_formats_debug_summary_output(self, mock_execute_ansible_playbook):
+        mock_execute_ansible_playbook.return_value = (
+            'TASK [Summarize]\n'
+            'ok: [app-01] => {\n'
+            '    "msg": [\n'
+            '        "Uptime: 10:00 up 6 days",\n'
+            '        "CPU/MEM:\\nCPU(s): 4\\nMem: 14Gi",\n'
+            '        "DF:\\nFilesystem Size Used Avail Use% Mounted on\\ntmpfs 15G 12K 15G 1% /var/lib/kubelet/pods/abc\\n/dev/vda3 79G 17G 59G 22% /"\n'
+            '    ]\n'
+            '}',
+            '',
+        )
+
+        response = self.client.post(
+            '/api/host-tasks/',
+            {
+                'name': 'playbook-summary-format',
+                'task_type': HostTask.TASK_RUN_PLAYBOOK,
+                'host_ids': [self.host.id],
+                'payload': {
+                    'playbook_name': 'summary.yml',
+                    'playbook_content': '- hosts: targets\\n  gather_facts: false\\n  tasks: []',
+                },
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        output = response.json()['executions'][0]['output']
+        self.assertIn('Uptime: 10:00 up 6 days', output)
+        self.assertIn('/dev/vda3 79G 17G 59G 22% /', output)
+        self.assertNotIn('/var/lib/kubelet/pods/abc', output)
+        self.assertNotIn('"msg": [', output)
+
     @patch('ops.host_tasks.allow_ansible_fallback_to_ssh', return_value=True)
     @patch('ops.host_tasks.execute_ansible_playbook')
     @patch('ops.host_tasks.open_ssh_client')
@@ -348,6 +383,36 @@ class HostTaskApiTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn('execution_mode', response.json())
+
+    @patch('ops.host_tasks.open_ssh_client')
+    def test_create_task_preserves_aiops_trigger_source(self, mock_open_ssh_client):
+        mock_open_ssh_client.return_value = self._mock_client({
+            'uptime': {'exit_status': 0, 'stdout': 'from-aiops'},
+        })
+
+        response = self.client.post(
+            '/api/host-tasks/',
+            {
+                'name': 'aiops-draft-task',
+                'task_type': 'run_command',
+                'host_ids': [self.host.id],
+                'payload': {'command': 'uptime'},
+                'trigger_source': HostTask.TRIGGER_SOURCE_AIOPS,
+                'source_context': {
+                    'source': 'aiops',
+                    'session_id': 88,
+                    'pending_action_id': 99,
+                    'request_summary': 'aiops generated uptime check',
+                },
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload['trigger_source'], HostTask.TRIGGER_SOURCE_AIOPS)
+        self.assertEqual(payload['source_context']['source'], 'aiops')
+        self.assertEqual(payload['source_context']['session_id'], 88)
 
     @patch('ops.host_tasks.open_ssh_client')
     def test_rerun_reuses_original_targets_and_mode(self, mock_open_ssh_client):

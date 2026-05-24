@@ -547,6 +547,10 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data
         target_type = validated.get('target_type') or HostTask.TARGET_HOST
+        trigger_source = validated.get('trigger_source') or HostTask.TRIGGER_SOURCE_MANUAL
+        source_context = dict(validated.get('source_context') or {})
+        if not source_context.get('source'):
+            source_context['source'] = trigger_source
         hosts = []
         k8s_targets = []
         target_label = ''
@@ -585,12 +589,12 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             execution_mode=validated.get('execution_mode', HostTask.EXECUTION_MODE_SSH),
             execution_strategy=validated.get('execution_strategy', HostTask.STRATEGY_CONTINUE),
             timeout_seconds=validated.get('timeout_seconds', 15),
-            trigger_source=HostTask.TRIGGER_SOURCE_MANUAL,
+            trigger_source=trigger_source,
             lifecycle_status=HostTask.LIFECYCLE_PENDING_EXECUTION,
             risk_level=risk_level,
-            source_context={'source': 'manual'},
+            source_context=source_context,
             created_by=request.user.username,
-            summary='\u4efb\u52a1\u5df2\u521b\u5efa\uff0c\u7b49\u5f85\u8c03\u5ea6\u6267\u884c',
+            summary='AIOps 任务草稿已创建，等待调度执行' if trigger_source == HostTask.TRIGGER_SOURCE_AIOPS else '\u4efb\u52a1\u5df2\u521b\u5efa\uff0c\u7b49\u5f85\u8c03\u5ea6\u6267\u884c',
         )
         task.correlation_id = f'task-center:{task.id}'
         task.save(update_fields=['correlation_id'])

@@ -267,7 +267,7 @@
                         </div>
                         <div class="pending-meta">状态：{{ message.pending_action.status_display }}</div>
                         <div v-if="message.pending_action.status === 'pending'" class="pending-hint">
-                          确认后将在任务中心创建 1 条待执行任务
+                          确认后将载入任务中心草稿，可编辑后再执行
                         </div>
                         <div v-if="message.pending_action.action_payload" class="pending-detail-grid">
                           <div class="pending-detail-item">
@@ -294,8 +294,12 @@
                           {{ message.pending_action.action_payload.payload.command }}
                         </div>
                         <div v-if="message.pending_action.status === 'pending'" class="pending-actions">
-                          <el-button size="small" type="primary" @click="handleConfirmAction(message.pending_action)">确认创建</el-button>
+                          <el-button size="small" type="primary" @click="handleConfirmAction(message.pending_action)">确认载入</el-button>
                           <el-button size="small" @click="handleCancelAction(message.pending_action)">取消</el-button>
+                        </div>
+                        <div v-else-if="message.pending_action.result_payload?.draft_ready" class="pending-result">
+                          <span>任务草稿已准备就绪</span>
+                          <el-button size="small" text @click="openTaskCenter">前往任务中心</el-button>
                         </div>
                         <div v-else-if="message.pending_action.result_payload?.task_id" class="pending-result">
                           <span>已创建任务 #{{ message.pending_action.result_payload.task_id }}</span>
@@ -1193,6 +1197,13 @@ async function handleSend() {
 async function handleConfirmAction(action) {
   try {
     const result = await confirmAIOpsAction(action.id)
+    if (result?.task_draft) {
+      sessionStorage.setItem('agdevops.task-center.prefill-draft', JSON.stringify(result.task_draft))
+      ElMessage.success(`已载入任务草稿 ${result.task_name}`)
+      router.push({ path: '/tasks/workbench', query: { aiopsDraft: String(Date.now()) } })
+      closePanel()
+      return
+    }
     ElMessage.success(`已创建任务 ${result.task_name}`)
     await selectSession(currentSessionId.value)
   } catch (error) {

@@ -173,11 +173,12 @@
                 <el-button size="small" @click="clearSelection">{{ ui.clearSelection }}</el-button>
               </div>
             </div>
-            <div v-if="selectedHostIds.length" class="selection-strip">
-              <span class="selection-pill">{{ ui.selectedHosts }} {{ selectedHostIds.length }} {{ ui.unitHost }}</span>
-              <span class="selection-pill success">{{ ui.onlineHosts }} {{ selectedStats.online }}</span>
-              <span class="selection-pill warning">{{ ui.warningHosts }} {{ selectedStats.warning }}</span>
-              <span class="selection-pill danger">{{ ui.offlineHosts }} {{ selectedStats.offline }}</span>
+            <div v-if="effectiveHostTargetRefs.length" class="selection-strip">
+              <span class="selection-pill">{{ ui.selectedHosts }} {{ effectiveHostTargetRefs.length }} {{ ui.unitHost }}</span>
+              <span v-if="hasPrefillDraft && !selectedRows.length" class="selection-pill info">{{ prefillSourceLabel }}预填目标</span>
+              <span v-if="selectedRows.length" class="selection-pill success">{{ ui.onlineHosts }} {{ selectedStats.online }}</span>
+              <span v-if="selectedRows.length" class="selection-pill warning">{{ ui.warningHosts }} {{ selectedStats.warning }}</span>
+              <span v-if="selectedRows.length" class="selection-pill danger">{{ ui.offlineHosts }} {{ selectedStats.offline }}</span>
             </div>
             <el-table ref="hostTableRef" :data="availableHosts" v-loading="targetLoading" row-key="id" max-height="320" :empty-text="ui.emptyHosts" @selection-change="handleSelectionChange">
               <el-table-column type="selection" width="44" reserve-selection />
@@ -333,10 +334,12 @@
         </div>
         <el-table size="small" :data="tasks" v-loading="taskLoading" row-key="id" :empty-text="ui.emptyTasks" @selection-change="handleTaskHistorySelectionChange">
           <el-table-column type="selection" width="44" reserve-selection />
-          <el-table-column :label="ui.taskName" min-width="260">
+          <el-table-column :label="ui.taskName" min-width="240">
             <template #default="{ row }">
               <div class="history-name-cell">
-                <strong>{{ row.name }}</strong>
+                <button type="button" class="history-name-button" @click="openDetail(row)">
+                  <strong>{{ row.name }}</strong>
+                </button>
                 <div class="history-name-meta">
                   <span>{{ row.target_type_display || ui.hostResource }}</span>
                   <span>{{ row.trigger_source_display || '-' }}</span>
@@ -356,12 +359,23 @@
           <el-table-column :label="ui.finishedAt" width="170">
             <template #default="{ row }">{{ formatDateTime(row.finished_at || row.created_at) }}</template>
           </el-table-column>
-          <el-table-column :label="ui.actions" width="220" fixed="right">
+          <el-table-column :label="ui.actions" width="196" fixed="right">
             <template #default="{ row }">
-              <el-button link type="primary" size="small" @click="openDetail(row)">{{ ui.detail }}</el-button>
-              <el-button v-if="canExecuteTask(row)" link type="primary" size="small" @click="handleExecuteTask(row)">{{ ui.startTask }}</el-button>
-              <el-button link type="success" size="small" :disabled="row.status === 'running'" @click="handleRerun(row)">{{ ui.rerun }}</el-button>
-              <el-button v-if="canCancelTask(row)" link type="danger" size="small" @click="handleCancelTask(row)">{{ ui.cancelTask }}</el-button>
+              <div class="history-row-actions">
+                <el-button link type="primary" size="small" @click="openDetail(row)">{{ ui.detail }}</el-button>
+                <el-button v-if="canExecuteTask(row)" link type="success" size="small" @click="handleExecuteTask(row)">{{ ui.startTask }}</el-button>
+                <el-button v-else link type="warning" size="small" :disabled="row.status === 'running'" @click="handleRerun(row)">{{ ui.rerun }}</el-button>
+                <el-dropdown trigger="click" @command="command => handleHistoryAction(command, row)">
+                  <el-button text size="small" class="history-more-btn">更多</el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="copy">{{ ui.copyToDraft }}</el-dropdown-item>
+                      <el-dropdown-item command="template">{{ ui.saveAsTemplate }}</el-dropdown-item>
+                      <el-dropdown-item v-if="canCancelTask(row)" command="cancel">{{ ui.cancelTask }}</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+              </div>
             </template>
           </el-table-column>
         </el-table>
@@ -651,22 +665,30 @@
               <el-table-column :label="ui.status" width="88">
                 <template #default="{ row }"><el-tag size="small" :type="executionStatusType(row.status)">{{ row.status_display }}</el-tag></template>
               </el-table-column>
-              <el-table-column :label="ui.duration" width="76">
-                <template #default="{ row }">{{ row.duration_ms }}ms</template>
+              <el-table-column :label="ui.duration" width="92">
+                <template #default="{ row }">{{ formatDuration(row.duration_ms) }}</template>
               </el-table-column>
               <el-table-column :label="ui.output" min-width="560">
-                <template #default="{ row }"><div class="output-block">{{ row.error_message || row.output || '-' }}</div></template>
+                <template #default="{ row }">
+                  <div class="output-preview-card" @click="openExecutionOutput(row)">
+                    <div class="output-preview-text">{{ previewExecutionOutput(row) }}</div>
+                    <el-button link type="primary" size="small" class="output-preview-action">{{ ui.viewOutput }}</el-button>
+                  </div>
+                </template>
               </el-table-column>
             </el-table>
           </div>
         </template>
       </div>
     </el-drawer>
+    <el-dialog v-model="outputDialogVisible" :title="outputDialogTitle" width="860px" append-to-body destroy-on-close align-center>
+      <pre class="output-dialog-block">{{ outputDialogContent || '-' }}</pre>
+    </el-dialog>
   </div>
 </template>
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Clock, Collection, Promotion, Search, VideoPlay } from '@element-plus/icons-vue'
 import {
@@ -685,6 +707,8 @@ import {
   rerunHostTask,
 } from '@/api/modules/ops'
 const route = useRoute()
+const router = useRouter()
+const TASK_DRAFT_STORAGE_KEY = 'agdevops.task-center.prefill-draft'
 const ui = {
 
   tip: '\u4efb\u52a1\u4e2d\u5fc3\u9002\u5408\u6279\u91cf\u5de1\u68c0\u3001\u7edf\u4e00\u5237\u65b0\u4e0e\u547d\u4ee4\u5206\u53d1\uff1b\u5f53\u524d\u4e3a\u4e32\u884c\u6267\u884c\uff0c\u5efa\u8bae\u5355\u6b21\u63a7\u5236\u5728 20 \u53f0\u4ee5\u5185\u3002',
@@ -804,6 +828,7 @@ const ui = {
   finishedAt: '\u5b8c\u6210\u65f6\u95f4',
   actions: '\u64cd\u4f5c',
   detail: '\u8be6\u60c5',
+  copyToDraft: '继续编辑',
   rerun: '\u91cd\u8dd1',
   cancelTask: '\u7ec8\u6b62',
   batchCancel: '\u6279\u91cf\u7ec8\u6b62',
@@ -829,6 +854,7 @@ const ui = {
   taskPayload: '\u4efb\u52a1\u53c2\u6570',
   cancelRequestedBy: '\u7ec8\u6b62\u53d1\u8d77\u4eba',
   cancelRequestedAt: '\u7ec8\u6b62\u7533\u8bf7\u65f6\u95f4',
+  viewOutput: '查看输出',
   emptyHosts: '暂无匹配执行资源',
   emptyK8sTargets: '暂无匹配 K8s 集群',
   emptyTasks: '\u6682\u65e0\u4efb\u52a1\u8bb0\u5f55',
@@ -936,12 +962,18 @@ const templateDetailVisible = ref(false)
 const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detailTask = ref(null)
+const outputDialogVisible = ref(false)
+const outputDialogTitle = ref('')
+const outputDialogContent = ref('')
 const currentTemplate = ref(null)
 const availableHosts = ref([])
 const availableK8sTargets = ref([])
 const selectedRows = ref([])
 const selectedK8sRows = ref([])
 const selectedTaskRows = ref([])
+const prefillDraftTargetRefs = ref([])
+const prefillDraftTargets = ref([])
+const prefillSourceContext = ref(null)
 const tasks = ref([])
 const templates = ref([])
 const taskTotal = ref(0)
@@ -982,7 +1014,15 @@ const templateDraftTypeLabel = computed(() => executionKindLabel(templateExecuti
 const selectedResourceIds = computed(() => selectedRows.value.map(item => item.id))
 const selectedHostIds = selectedResourceIds
 const selectedK8sClusterIds = computed(() => selectedK8sRows.value.map(item => item.cluster || item.cluster_id || item.id).filter(Boolean))
-const selectedTargetCount = computed(() => taskForm.value.target_type === 'k8s' ? selectedK8sClusterIds.value.length : selectedHostIds.value.length)
+const effectiveHostTargetRefs = computed(() => {
+  if (selectedRows.value.length) {
+    return selectedRows.value.map(item => ({ source: 'task_resource', id: item.id }))
+  }
+  return prefillDraftTargetRefs.value.filter(item => ['host', 'task_resource'].includes(item.source))
+})
+const selectedTargetCount = computed(() => taskForm.value.target_type === 'k8s' ? selectedK8sClusterIds.value.length : effectiveHostTargetRefs.value.length)
+const hasPrefillDraft = computed(() => !!prefillSourceContext.value)
+const prefillSourceLabel = computed(() => prefillSourceContext.value?.source === 'aiops' ? 'AIOps ' : '历史任务 ')
 const currentExecutionKindLabel = computed(() => executionKindLabel(executionKind.value))
 const selectedCancelableTaskIds = computed(() => selectedTaskRows.value.filter(canCancelTask).map(item => item.id))
 const selectedStats = computed(() => selectedRows.value.reduce((summary, item) => {
@@ -1025,7 +1065,18 @@ function buildPayloadByExecutionKind(kind) {
   if (kind === 'k8s_command') return buildPresetPayload('k8s_pod_exec')
   return { ...defaultPayload(), script_kind: 'shell', command: 'uptime && df -h' }
 }
-function handleSelectionChange(rows) { selectedRows.value = rows }
+function clearPrefillDraft() {
+  prefillDraftTargetRefs.value = []
+  prefillDraftTargets.value = []
+  prefillSourceContext.value = null
+}
+function handleSelectionChange(rows) {
+  selectedRows.value = rows
+  if (rows.length) {
+    prefillDraftTargetRefs.value = []
+    prefillDraftTargets.value = []
+  }
+}
 function handleK8sSelectionChange(rows) { selectedK8sRows.value = rows }
 function handleTaskHistorySelectionChange(rows) { selectedTaskRows.value = rows }
 function executionStrategyLabel(strategy) { return strategy === 'stop_on_error' ? ui.stopOnError : ui.continueOnError }
@@ -1080,7 +1131,8 @@ function executionTargetName(row) {
   return row?.target_name || row?.host_name || row?.host_ip || row?.target_id || '-'
 }
 function executionTargetMeta(row) {
-  const parts = [row?.host_ip, row?.target_namespace, row?.target_kind].filter(Boolean)
+  const normalizedKind = row?.target_kind === 'task_resource_host' ? '' : row?.target_kind
+  const parts = [row?.host_ip, row?.target_namespace, normalizedKind].filter(Boolean)
   return parts.join(' / ')
 }
 function buildTemplateDraft(source = {}) {
@@ -1202,6 +1254,28 @@ function resetTemplateFilters() { templateFilters.value = { search: '', executio
 function taskStatusType(status) { if (status === 'success') return 'success'; if (status === 'partial') return 'warning'; if (status === 'failed' || status === 'canceled') return 'danger'; return 'info' }
 function executionStatusType(status) { if (status === 'success') return 'success'; if (status === 'failed' || status === 'canceled') return 'danger'; if (status === 'running' || status === 'partial') return 'warning'; return 'info' }
 function formatDateTime(value) { return value ? value.replace('T', ' ').slice(0, 19) : '-' }
+function formatDuration(value) {
+  const duration = Number(value || 0)
+  if (!Number.isFinite(duration) || duration <= 0) return '0ms'
+  if (duration < 1000) return `${duration}ms`
+  if (duration < 60000) return `${(duration / 1000).toFixed(duration >= 10000 ? 0 : 1)}s`
+  const minutes = Math.floor(duration / 60000)
+  const seconds = Math.round((duration % 60000) / 1000)
+  return seconds ? `${minutes}min ${seconds}s` : `${minutes}min`
+}
+function executionOutputContent(row) {
+  return row?.error_message || row?.output || '-'
+}
+function previewExecutionOutput(row) {
+  const normalized = executionOutputContent(row).replace(/\s+/g, ' ').trim()
+  if (!normalized) return '-'
+  return normalized.length > 150 ? `${normalized.slice(0, 150)}...` : normalized
+}
+function openExecutionOutput(row) {
+  outputDialogTitle.value = `${ui.output} · ${executionTargetName(row)}`
+  outputDialogContent.value = executionOutputContent(row)
+  outputDialogVisible.value = true
+}
 async function fetchHostTargets() {
   targetLoading.value = true
   try {
@@ -1290,9 +1364,99 @@ function clearSelection() {
   k8sTargetTableRef.value?.clearSelection()
   selectedRows.value = []
   selectedK8sRows.value = []
+  clearPrefillDraft()
 }
 function resetTargetFilters() { targetFilters.value = { search: '', environment: '', system: '', status: '' }; clearSelection(); fetchTargets() }
 function resetTaskFilters() { taskFilters.value = { search: '', target_type: '', execution_kind: '', status: '', trigger_source: '', risk_level: '' }; taskPage.value = 1; selectedTaskRows.value = []; fetchTasks() }
+function buildPrefillDraftFromTask(task = {}) {
+  const taskType = task.task_type || 'run_command'
+  const targetType = task.target_type || (taskType.startsWith('k8s_') ? 'k8s' : 'host')
+  const targetSnapshot = Array.isArray(task.target_snapshot) ? task.target_snapshot : []
+  const targetRefs = targetSnapshot
+    .filter(item => item?.source === 'task_resource' || item?.id)
+    .map(item => item?.source === 'task_resource'
+      ? { source: 'task_resource', id: item.resource_id || item.id }
+      : { source: 'host', id: item.id })
+  const k8sTargets = targetType === 'k8s'
+    ? targetSnapshot.map(item => ({
+      cluster_id: item.cluster_id || item.id,
+      kind: item.target_kind || item.kind || 'cluster',
+      namespace: item.namespace || '',
+      name: item.name || item.target_name || '',
+      cluster_name: item.cluster_name || item.hostname || item.name || '',
+    })).filter(item => item.cluster_id)
+    : []
+  return {
+    name: task.name || '',
+    description: task.description || '',
+    target_type: targetType,
+    task_type: taskType,
+    execution_mode: task.execution_mode || (targetType === 'k8s' ? 'k8s_api' : 'ansible'),
+    execution_strategy: task.execution_strategy || 'continue',
+    timeout_seconds: task.timeout_seconds || 30,
+    payload: { ...(task.payload || {}) },
+    target_refs: targetRefs,
+    target_hosts: targetSnapshot,
+    k8s_targets: k8sTargets,
+    trigger_source: task.trigger_source || 'manual',
+    source_context: {
+      ...(task.source_context || {}),
+      source: 'task_history',
+      source_task_id: task.id,
+      source_task_name: task.name || '',
+      request_summary: task.description || task.summary || '',
+    },
+  }
+}
+async function applyTaskDraft(taskDraft, sourceLabel = '任务草稿') {
+  if (!taskDraft?.task_type) return
+  hostTableRef.value?.clearSelection()
+  k8sTargetTableRef.value?.clearSelection()
+  selectedRows.value = []
+  selectedK8sRows.value = []
+  executionKind.value = detectExecutionKind(taskDraft)
+  taskForm.value = {
+    name: taskDraft.name || '',
+    target_type: taskDraft.target_type || (taskDraft.task_type?.startsWith('k8s_') ? 'k8s' : 'host'),
+    task_type: taskDraft.task_type,
+    description: taskDraft.description || '',
+    execution_mode: taskDraft.execution_mode || (taskDraft.task_type?.startsWith('k8s_') ? 'k8s_api' : (['run_command', 'run_playbook'].includes(taskDraft.task_type) ? 'ansible' : 'ssh')),
+    execution_strategy: taskDraft.execution_strategy || 'continue',
+    timeout_seconds: taskDraft.timeout_seconds || 30,
+    payload: {
+      ...defaultPayload(),
+      ...(taskDraft.payload || {}),
+      script_kind: taskDraft.payload?.script_kind || (detectExecutionKind(taskDraft) === 'python' ? 'python' : 'shell'),
+    },
+  }
+  prefillDraftTargetRefs.value = Array.isArray(taskDraft.target_refs) ? taskDraft.target_refs : []
+  prefillDraftTargets.value = Array.isArray(taskDraft.target_hosts) ? taskDraft.target_hosts : []
+  prefillSourceContext.value = taskDraft.source_context || null
+  activeTab.value = 'dispatch'
+  await fetchTargets()
+  if (taskDraft.target_type === 'k8s' && Array.isArray(taskDraft.k8s_targets) && taskDraft.k8s_targets.length) {
+    const clusterIds = new Set(taskDraft.k8s_targets.map(item => item.cluster_id))
+    selectedK8sRows.value = availableK8sTargets.value.filter(item => clusterIds.has(item.cluster || item.cluster_id || item.id))
+  }
+  ElMessage.success(`已载入${sourceLabel}，可继续编辑、执行或保存到模板库`)
+}
+async function hydratePrefillTaskDraft() {
+  if (!route.query.aiopsDraft && !route.query.taskDraft) return
+  const raw = sessionStorage.getItem(TASK_DRAFT_STORAGE_KEY)
+  sessionStorage.removeItem(TASK_DRAFT_STORAGE_KEY)
+  const nextQuery = { ...route.query }
+  delete nextQuery.aiopsDraft
+  delete nextQuery.taskDraft
+  await router.replace({ path: route.path, query: nextQuery })
+  if (!raw) return
+  let draft = null
+  try {
+    draft = JSON.parse(raw)
+  } catch (error) {
+    return
+  }
+  await applyTaskDraft(draft, draft?.source_context?.source === 'aiops' ? 'AIOps 任务草稿' : '任务草稿')
+}
 async function submitTemplateDraft() {
   const payload = normalizePayloadByType(templateDraft.value.task_type, templateDraft.value.payload || {})
   if (!templateDraft.value.name) return ElMessage.warning(ui.taskNameRequired)
@@ -1334,6 +1498,48 @@ async function openDetail(task) {
     detailLoading.value = false
   }
 }
+async function copyTaskToDraft(task) {
+  const sourceTask = task?.executions ? task : await getHostTask(task.id)
+  await applyTaskDraft(buildPrefillDraftFromTask(sourceTask), '历史任务草稿')
+  detailVisible.value = false
+}
+async function saveTaskAsTemplate(task) {
+  const sourceTask = task?.executions ? task : await getHostTask(task.id)
+  const payload = normalizePayloadByType(sourceTask.task_type, sourceTask.payload || {})
+  let templateName = sourceTask.name || ''
+  try {
+    const { value } = await ElMessageBox.prompt(ui.saveTemplatePrompt, ui.saveTemplateTitle, {
+      confirmButtonText: ui.saveAsTemplate,
+      cancelButtonText: ui.cancel,
+      inputValue: templateName,
+      inputValidator: value => !!String(value || '').trim(),
+    })
+    templateName = String(value || '').trim()
+  } catch (error) {
+    return
+  }
+  savingTemplate.value = true
+  try {
+    const created = await createHostTaskTemplate({
+      name: templateName,
+      target_type: sourceTask.target_type || (sourceTask.task_type?.startsWith('k8s_') ? 'k8s' : 'host'),
+      task_type: sourceTask.task_type,
+      description: sourceTask.description || '',
+      payload,
+      execution_mode: sourceTask.execution_mode,
+      execution_strategy: sourceTask.execution_strategy,
+      timeout_seconds: sourceTask.timeout_seconds,
+    })
+    ElMessage.success(ui.saveTemplateSuccess)
+    await fetchTemplates()
+    currentTemplate.value = created
+    templateDetailVisible.value = true
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || ui.saveTemplateFailed)
+  } finally {
+    savingTemplate.value = false
+  }
+}
 async function saveCurrentAsTemplate() {
   const payload = normalizePayload()
   if (!validateTaskPayload(payload)) return
@@ -1354,6 +1560,11 @@ async function saveCurrentAsTemplate() {
     ElMessage.error(error?.response?.data?.detail || ui.saveTemplateFailed)
   } finally { savingTemplate.value = false }
 }
+function handleHistoryAction(command, row) {
+  if (command === 'copy') return copyTaskToDraft(row)
+  if (command === 'template') return saveTaskAsTemplate(row)
+  if (command === 'cancel') return handleCancelTask(row)
+}
 async function removeTemplate(template) {
   try {
     await ElMessageBox.confirm(ui.deleteTemplateConfirm, ui.deleteTemplate, { type: 'warning', confirmButtonText: ui.deleteTemplate, cancelButtonText: ui.cancel })
@@ -1370,22 +1581,24 @@ async function removeTemplate(template) {
 }
 async function submitTask() {
   if (!taskForm.value.name) return ElMessage.warning(ui.taskNameRequired)
-  if (taskForm.value.target_type === 'host' && !selectedHostIds.value.length) return ElMessage.warning(ui.hostRequired)
+  if (taskForm.value.target_type === 'host' && !effectiveHostTargetRefs.value.length) return ElMessage.warning(ui.hostRequired)
   if (taskForm.value.target_type === 'k8s' && !selectedK8sClusterIds.value.length) return ElMessage.warning(ui.k8sRequired)
   const payload = normalizePayload()
   if (!validateTaskPayload(payload)) return
   const k8sTargetNames = selectedK8sRows.value.map(item => item.name).filter(Boolean)
   const targetSummary = taskForm.value.target_type === 'k8s'
     ? `K8s 集群：${k8sTargetNames.length ? `${k8sTargetNames.slice(0, 3).join('、')}${k8sTargetNames.length > 3 ? ` 等 ${k8sTargetNames.length} 个` : ''}` : `${selectedK8sClusterIds.value.length} 个`}`
-    : `目标资源：${selectedHostIds.value.length} 个`
+    : `目标资源：${effectiveHostTargetRefs.value.length} 个`
   const confirmLines = [`\u4efb\u52a1\u540d\u79f0\uff1a${taskForm.value.name}`, targetSummary, `\u6267\u884c\u7c7b\u578b\uff1a${currentExecutionKindLabel.value}`, `\u6267\u884c\u65b9\u5f0f\uff1a${executionModeLabel(taskForm.value.execution_mode)}`]
   if (taskForm.value.task_type === 'run_command') confirmLines.push(ui.runCommandConfirm)
-  if (selectedHostIds.value.length > 20) confirmLines.push(ui.overLimitConfirm)
+  if (effectiveHostTargetRefs.value.length > 20) confirmLines.push(ui.overLimitConfirm)
   try {
     await ElMessageBox.confirm(confirmLines.join('<br>'), ui.confirmExecuteTitle, { type: 'warning', dangerouslyUseHTMLString: true, confirmButtonText: ui.confirmExecute, cancelButtonText: ui.cancel })
   } catch (error) { return }
   submitting.value = true
   try {
+    const draftHostIds = effectiveHostTargetRefs.value.filter(item => item.source === 'host').map(item => item.id)
+    const draftResourceIds = effectiveHostTargetRefs.value.filter(item => item.source === 'task_resource').map(item => item.id)
     const submitPayload = {
       name: taskForm.value.name,
       target_type: taskForm.value.target_type,
@@ -1394,8 +1607,18 @@ async function submitTask() {
       execution_mode: taskForm.value.execution_mode,
       execution_strategy: taskForm.value.execution_strategy,
       timeout_seconds: taskForm.value.timeout_seconds,
-      selection_filters: { ...targetFilters.value },
+      selection_filters: {
+        ...targetFilters.value,
+        ...(hasPrefillDraft.value ? {
+          source: prefillSourceContext.value?.source || 'manual',
+          request_summary: prefillSourceContext.value?.request_summary || '',
+          target_refs: effectiveHostTargetRefs.value,
+          source_task_id: prefillSourceContext.value?.source_task_id || undefined,
+        } : {}),
+      },
       payload,
+      trigger_source: prefillSourceContext.value?.source === 'aiops' ? 'aiops' : 'manual',
+      source_context: hasPrefillDraft.value ? { ...prefillSourceContext.value } : { source: 'manual' },
     }
     if (taskForm.value.target_type === 'k8s') {
       submitPayload.k8s_targets = selectedK8sClusterIds.value.map(clusterId => ({
@@ -1403,7 +1626,8 @@ async function submitTask() {
         kind: 'cluster',
       }))
     } else {
-      submitPayload.resource_ids = selectedHostIds.value
+      submitPayload.resource_ids = selectedRows.value.length ? selectedHostIds.value : draftResourceIds
+      submitPayload.host_ids = selectedRows.value.length ? [] : draftHostIds
     }
     const task = await createHostTask(submitPayload)
     ElMessage.success(ui.taskExecuted)
@@ -1471,6 +1695,15 @@ onMounted(async () => {
     await applyExecutionKind('shell')
   }
   await reloadAll()
+  await hydratePrefillTaskDraft()
+})
+watch(() => route.query.aiopsDraft, async (value, previousValue) => {
+  if (!value || value === previousValue) return
+  await hydratePrefillTaskDraft()
+})
+watch(() => route.query.taskDraft, async (value, previousValue) => {
+  if (!value || value === previousValue) return
+  await hydratePrefillTaskDraft()
 })
 </script>
 <style scoped>
@@ -1928,6 +2161,12 @@ onMounted(async () => {
   color: #b91c1c;
 }
 
+.selection-pill.info {
+  background: rgba(14, 116, 144, 0.1);
+  border-color: rgba(14, 116, 144, 0.14);
+  color: #0f766e;
+}
+
 .submit-row {
   margin-top: 8px;
   display: flex;
@@ -2080,6 +2319,14 @@ onMounted(async () => {
   margin-top: 8px;
 }
 
+.history-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+
 .history-name-cell {
   display: flex;
   flex-direction: column;
@@ -2087,10 +2334,32 @@ onMounted(async () => {
   min-width: 0;
 }
 
+.history-name-button {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.history-name-button:hover strong {
+  color: #2563eb;
+}
+
+.history-name-button:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.22);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
 .history-name-cell strong {
   color: #0f172a;
   font-size: 12px;
   line-height: 1.35;
+  transition: color 0.2s ease;
 }
 
 .history-name-meta {
@@ -2103,6 +2372,17 @@ onMounted(async () => {
   line-height: 1.4;
 }
 
+.history-more-btn {
+  color: #64748b;
+  padding: 4px 8px;
+  border-radius: 999px;
+}
+
+.task-center-page :deep(.history-more-btn.el-button:hover) {
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.08);
+}
+
 .task-detail-shell {
   display: flex;
   flex-direction: column;
@@ -2113,7 +2393,7 @@ onMounted(async () => {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
@@ -2121,7 +2401,7 @@ onMounted(async () => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
 
 .detail-title-row {
@@ -2133,14 +2413,14 @@ onMounted(async () => {
 
 .detail-main-title {
   color: #0f172a;
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1.3;
 }
 
 .detail-subline {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
   color: #64748b;
   font-size: 11px;
@@ -2154,12 +2434,12 @@ onMounted(async () => {
 }
 
 .detail-summary.compact {
-  gap: 6px;
+  gap: 4px;
   justify-content: flex-end;
 }
 
 .detail-chip {
-  padding: 5px 9px;
+  padding: 4px 8px;
   border-radius: 999px;
   background: rgba(59, 130, 246, 0.08);
   border: 1px solid rgba(59, 130, 246, 0.12);
@@ -2181,7 +2461,7 @@ onMounted(async () => {
 }
 
 .task-metric-grid.compact {
-  gap: 6px;
+  gap: 5px;
 }
 
 .task-metric-card {
@@ -2213,20 +2493,20 @@ onMounted(async () => {
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+  gap: 5px;
 }
 
 .detail-grid.compact {
-  gap: 6px;
+  gap: 5px;
 }
 
 .detail-section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   margin-bottom: 0;
-  padding: 10px;
-  border-radius: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
   background: rgba(248, 250, 252, 0.88);
   border: 1px solid rgba(148, 163, 184, 0.14);
 }
@@ -2234,20 +2514,20 @@ onMounted(async () => {
 .detail-section-title {
   margin-bottom: 0;
   color: #0f172a;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
 }
 
 .detail-kv {
   color: #475569;
-  font-size: 12px;
-  line-height: 1.55;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .compact-stack {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px 8px;
+  gap: 3px 8px;
 }
 
 .compact-kv {
@@ -2257,12 +2537,12 @@ onMounted(async () => {
 
 .detail-code-block {
   margin: 0;
-  padding: 10px;
-  border-radius: 12px;
+  padding: 9px 10px;
+  border-radius: 10px;
   background: #0f172a;
   color: #e2e8f0;
   font-size: 11px;
-  line-height: 1.55;
+  line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -2277,9 +2557,9 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
-  margin-top: 6px;
+  margin-top: 4px;
 }
 
 .danger-text {
@@ -2297,7 +2577,7 @@ onMounted(async () => {
   grid-template-columns: minmax(0, 1.2fr) minmax(120px, 0.9fr) minmax(80px, 0.7fr);
   gap: 10px;
   align-items: center;
-  padding: 8px 0;
+  padding: 6px 0;
   border-bottom: 1px dashed rgba(148, 163, 184, 0.18);
 }
 
@@ -2312,24 +2592,24 @@ onMounted(async () => {
 
 .target-list-item strong {
   color: #0f172a;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .target-list-item span {
   color: #64748b;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .execution-target-cell {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
 }
 
 .execution-target-cell strong {
   color: #0f172a;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2341,13 +2621,45 @@ onMounted(async () => {
   font-size: 11px;
 }
 
-.output-block {
-  max-height: 120px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  padding: 10px 12px;
+.output-preview-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
   border-radius: 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.12);
+  cursor: pointer;
+}
+
+.output-preview-card:hover {
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.32);
+}
+
+.output-preview-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.output-preview-action {
+  flex: none;
+}
+
+.output-dialog-block {
+  margin: 0;
+  max-height: 62vh;
+  overflow: auto;
+  white-space: pre;
+  word-break: normal;
+  padding: 14px 16px;
+  border-radius: 14px;
   background: #0f172a;
   color: #e2e8f0;
   font-family: Consolas, Monaco, monospace;

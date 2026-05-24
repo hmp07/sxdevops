@@ -5790,6 +5790,45 @@ def _resolve_task_targets_from_draft(question='', environment='', target_status=
     )
 
 
+def _build_task_center_draft_from_aiops_draft(draft, action=None):
+    payload = dict(draft or {})
+    task_type = payload.get('task_type') or HostTask.TASK_REFRESH_METRICS
+    target_type = HostTask.TARGET_K8S if str(task_type).startswith('k8s_') else HostTask.TARGET_HOST
+    target_refs = _dedupe_target_refs(payload.get('target_refs') or [])
+    if not target_refs:
+        target_refs = [{'source': 'host', 'id': item} for item in (payload.get('host_ids') or [])]
+        target_refs.extend({'source': 'task_resource', 'id': item} for item in (payload.get('resource_ids') or []))
+        target_refs = _dedupe_target_refs(target_refs)
+    request_summary = payload.get('request_summary', '')
+    session_id = action.session_id if action else None
+    pending_action_id = action.id if action else None
+    return {
+        'name': payload.get('name') or 'AIOps 智能任务',
+        'description': payload.get('description', ''),
+        'target_type': target_type,
+        'task_type': task_type,
+        'execution_mode': payload.get('execution_mode') or HostTask.EXECUTION_MODE_SSH,
+        'execution_strategy': payload.get('execution_strategy') or HostTask.STRATEGY_CONTINUE,
+        'timeout_seconds': payload.get('timeout_seconds') or 30,
+        'payload': payload.get('payload') or {},
+        'host_ids': payload.get('host_ids') or [],
+        'resource_ids': payload.get('resource_ids') or [],
+        'target_refs': target_refs,
+        'target_hosts': payload.get('target_hosts') or [],
+        'host_count': payload.get('host_count') or len(target_refs),
+        'risk_level': payload.get('risk_level') or HostTask.RISK_LOW,
+        'request_summary': request_summary,
+        'trigger_source': HostTask.TRIGGER_SOURCE_AIOPS,
+        'source_context': {
+            'source': 'aiops',
+            'session_id': session_id,
+            'pending_action_id': pending_action_id,
+            'request_summary': request_summary,
+            'reason': payload.get('reason', ''),
+        },
+    }
+
+
 def _create_host_task_record_from_draft(draft, user, session=None, request=None):
     payload = dict(draft or {})
     target_refs = payload.get('target_refs') or []
@@ -5875,15 +5914,38 @@ def confirm_action(action, user, request=None):
     action.confirmed_at = timezone.now()
     action.save(update_fields=['status', 'confirmed_by', 'confirmed_at', 'updated_at'])
 
-    task = _create_host_task_record_from_draft(action.action_payload or {}, user, session=action.session, request=request)
+    task_draft = _build_task_center_draft_from_aiops_draft(action.action_payload or {}, action=action)
+    record_event(
+        request=request,
+        module='aiops',
+        category='execution',
+        action='prepare_host_task_draft',
+        title='AIOps 载入任务中心草稿',
+        summary=f'已将任务草稿 {task_draft["name"]} 载入任务中心，等待人工编辑后执行',
+        result=EventRecord.RESULT_PENDING,
+        resource_type='aiops_action',
+        resource_id=action.id,
+        resource_name=action.title,
+        correlation_id=f'aiops-action:{action.id}',
+        metadata={
+            'trigger_source': HostTask.TRIGGER_SOURCE_AIOPS,
+            'session_id': action.session_id,
+            'pending_action_id': action.id,
+            'task_name': task_draft['name'],
+            'task_type': task_draft['task_type'],
+            'target_type': task_draft['target_type'],
+            'host_count': task_draft['host_count'],
+            'confirmed_by': user.username,
+        },
+    )
     action.status = AIOpsPendingAction.STATUS_EXECUTED
     action.result_payload = {
-        'task_id': task.id,
-        'task_name': task.name,
-        'materialized_in_task_center': True,
+        'draft_ready': True,
+        'task_name': task_draft['name'],
+        'materialized_in_task_center': False,
     }
     action.save(update_fields=['status', 'result_payload', 'updated_at'])
-    return task
+    return task_draft
 
 
 def cancel_action(action, user):
@@ -8354,9 +8416,9 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
             merged_metadata['pending_action_id'] = pending_action.id
             if not config.require_confirmation and user_has_permissions(user, ['aiops.task.execute', 'ops.host.execute']):
                 try:
-                    task = confirm_action(pending_action, user)
+                    task_draft = confirm_action(pending_action, user)
                     pending_action.refresh_from_db()
-                    final_content = f"{final_content}\n\n\u5df2\u6839\u636e\u5f53\u524d\u914d\u7f6e\u81ea\u52a8\u6267\u884c\u4efb\u52a1\uff1a{task.name}\uff08#{task.id}\uff09\u3002"
+                    final_content = f"{final_content}\n\n已自动生成可编辑任务草稿：{task_draft['name']}。请到任务中心检查并执行。"
                 except ValueError:
                     pending_action.refresh_from_db()
 

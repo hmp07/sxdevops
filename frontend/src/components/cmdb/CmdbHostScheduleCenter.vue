@@ -204,6 +204,11 @@
           <el-table-column prop="total_run_count" label="累计执行" width="92" />
           <el-table-column prop="description" label="说明" min-width="220" show-overflow-tooltip />
           <el-table-column label="操作" width="280" fixed="right"><template #default="{ row }"><el-button link type="primary" size="small" @click="editSchedule(row)">编辑</el-button><el-button link size="small" @click="toggleSchedule(row)">{{ row.enabled ? '停用' : '启用' }}</el-button><el-button link type="success" size="small" @click="runNow(row)">立即执行</el-button><el-button link type="danger" size="small" @click="removeSchedule(row)">删除</el-button></template></el-table-column>
+          <el-table-column label="继续编辑" width="100" fixed="right">
+            <template #default="{ row }">
+              <el-button link type="warning" size="small" @click="copyScheduleToTaskDraft(row)">继续编辑</el-button>
+            </template>
+          </el-table-column>
         </el-table>
         <div class="pagination-row"><el-pagination v-model:current-page="schedulePage" :page-size="20" :total="scheduleTotal" layout="total, prev, pager, next" @current-change="fetchSchedules" /></div>
       </div>
@@ -273,6 +278,10 @@
           </div>
           <div v-if="detailTask" class="detail-section">
             <div class="detail-section-title">关联任务详情</div>
+            <div class="detail-actions">
+              <el-button size="small" @click="copyExecutionToTaskDraft(detailExecution, detailTask)">继续编辑</el-button>
+              <el-button size="small" @click="saveScheduleTaskAsTemplate(detailTask)">保存为模板</el-button>
+            </div>
             <div class="detail-summary">
               <div class="detail-chip"><strong>{{ detailTask.name }}</strong></div>
               <div class="detail-chip">{{ detailTask.task_type_display }}</div>
@@ -292,6 +301,9 @@
           </div>
           <div v-else class="detail-section">
             <div class="detail-section-title">关联任务详情</div>
+            <div class="detail-actions">
+              <el-button size="small" @click="copyScheduleExecutionBySchedule(detailExecution)">继续编辑</el-button>
+            </div>
             <div class="detail-kv">当前执行记录尚未关联真实主机任务。</div>
           </div>
         </template>
@@ -302,12 +314,15 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Calendar, Clock, List, Search } from '@element-plus/icons-vue'
 import {
+  createHostTaskTemplate,
   createHostTaskSchedule,
   deleteHostTaskSchedule,
   getHostTask,
+  getHostTaskSchedule,
   getHostTaskScheduleExecution,
   getHostTaskScheduleExecutions,
   getHostTaskSchedules,
@@ -319,6 +334,8 @@ import {
 } from '@/api/modules/ops'
 
 const props = defineProps({ resourceTree: { type: Array, default: () => [] } })
+const router = useRouter()
+const TASK_DRAFT_STORAGE_KEY = 'agdevops.task-center.prefill-draft'
 const innerTabs = [
   { key: 'planner', label: '任务编排', desc: '配置时间规则、执行方式与目标主机' },
   { key: 'list', label: '编排列表', desc: '查看启停状态与即时操作' },
@@ -379,6 +396,52 @@ const targetFilters = ref({ search: '', business_line: '', environment: '', stat
 const scheduleFilters = ref({ search: '', schedule_type: '', enabled: '' })
 const executionFilters = ref({ search: '', status: '', trigger_source: '' })
 const previewState = ref({ next_run_at: '', next_runs: [], target_count: 0 })
+function buildTaskDraftFromSchedule(schedule = {}) {
+  const snapshot = Array.isArray(schedule.target_snapshot) ? schedule.target_snapshot : []
+  return {
+    name: schedule.name || '',
+    description: schedule.description || '',
+    target_type: 'host',
+    task_type: schedule.task_type || 'run_command',
+    execution_mode: schedule.execution_mode || (schedule.task_type === 'run_playbook' ? 'ansible' : 'ssh'),
+    execution_strategy: schedule.execution_strategy || 'continue',
+    timeout_seconds: schedule.timeout_seconds || 30,
+    payload: { ...(schedule.payload || {}) },
+    target_refs: snapshot.filter(item => item?.id).map(item => ({ source: 'host', id: item.id })),
+    target_hosts: snapshot,
+    trigger_source: 'manual',
+    source_context: {
+      source: 'task_schedule',
+      source_schedule_id: schedule.id,
+      source_schedule_name: schedule.name || '',
+      request_summary: schedule.description || '',
+    },
+  }
+}
+function buildTaskDraftFromTask(task = {}, source = {}) {
+  const snapshot = Array.isArray(task.target_snapshot) ? task.target_snapshot : []
+  return {
+    name: task.name || '',
+    description: task.description || '',
+    target_type: task.target_type || 'host',
+    task_type: task.task_type || 'run_command',
+    execution_mode: task.execution_mode || 'ssh',
+    execution_strategy: task.execution_strategy || 'continue',
+    timeout_seconds: task.timeout_seconds || 30,
+    payload: { ...(task.payload || {}) },
+    target_refs: snapshot.filter(item => item?.id).map(item => item.source === 'task_resource' ? { source: 'task_resource', id: item.resource_id || item.id } : { source: 'host', id: item.id }),
+    target_hosts: snapshot,
+    trigger_source: 'manual',
+    source_context: {
+      ...(task.source_context || {}),
+      ...source,
+    },
+  }
+}
+function openTaskWorkbenchWithDraft(taskDraft) {
+  sessionStorage.setItem(TASK_DRAFT_STORAGE_KEY, JSON.stringify(taskDraft))
+  router.push({ path: '/tasks/workbench', query: { taskDraft: String(Date.now()) } })
+}
 function defaultPayload() { return { command: '', service_name: '', playbook_name: '', playbook_content: '' } }
 function defaultScheduleForm() { return { preset_key: 'nightly-audit', name: '夜间健康巡检', description: '适合夜间批量巡检并归档结果。', task_type: 'run_command', payload: { ...defaultPayload(), command: 'hostname && uptime && df -h && free -m' }, execution_mode: 'ansible', execution_strategy: 'continue', timeout_seconds: 30, schedule_type: 'cron', cron_expression: '0 2 * * *', interval_seconds: 1800, run_at: '', timezone: 'Asia/Shanghai', overlap_policy: 'skip', enabled: true } }
 const scheduleForm = ref(defaultScheduleForm())
@@ -402,6 +465,70 @@ function applyPreset(preset) { scheduleForm.value = { ...defaultScheduleForm(), 
 function resetEditor() { applyPreset(presets[0]); clearSelection(); activeTab.value = 'planner' }
 function fillSelectionBySnapshot(snapshot = []) { const ids = new Set(snapshot.map(item => item.id)); selectedRows.value = availableHosts.value.filter(item => ids.has(item.id)); hostTableRef.value?.clearSelection(); availableHosts.value.forEach((row) => { if (ids.has(row.id)) hostTableRef.value?.toggleRowSelection(row, true) }) }
 function editSchedule(row) { editingId.value = row.id; scheduleForm.value = { preset_key: row.id, name: row.name, description: row.description || '', task_type: row.task_type, payload: { ...defaultPayload(), ...(row.payload || {}) }, execution_mode: row.execution_mode || (row.task_type === 'run_playbook' ? 'ansible' : 'ssh'), execution_strategy: row.execution_strategy || 'continue', timeout_seconds: row.timeout_seconds || 15, schedule_type: row.schedule_type, cron_expression: row.cron_expression || '', interval_seconds: row.interval_seconds || 1800, run_at: row.run_at || '', timezone: row.timezone || 'Asia/Shanghai', overlap_policy: row.overlap_policy || 'skip', enabled: row.enabled }; previewState.value = { next_run_at: row.next_run_at, next_runs: row.next_runs_preview || [], target_count: row.target_count || 0 }; activeTab.value = 'planner'; fetchTargets().then(() => fillSelectionBySnapshot(row.target_snapshot || [])) }
+async function copyScheduleToTaskDraft(row) {
+  try {
+    const schedule = row?.payload && Array.isArray(row?.target_snapshot) ? row : await getHostTaskSchedule(row.id)
+    openTaskWorkbenchWithDraft(buildTaskDraftFromSchedule(schedule))
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '加载编排草稿失败')
+  }
+}
+async function copyExecutionToTaskDraft(execution, task) {
+  try {
+    const sourceTask = task?.payload ? task : await getHostTask(task.id)
+    openTaskWorkbenchWithDraft(buildTaskDraftFromTask(sourceTask, {
+      source: 'task_schedule_execution',
+      source_execution_id: execution?.id,
+      source_task_id: sourceTask.id,
+      request_summary: sourceTask.description || sourceTask.summary || '',
+    }))
+    detailVisible.value = false
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '载入任务草稿失败')
+  }
+}
+async function copyScheduleExecutionBySchedule(execution) {
+  const scheduleId = execution?.schedule
+  if (!scheduleId) return ElMessage.warning('当前记录未关联编排')
+  try {
+    const schedule = await getHostTaskSchedule(scheduleId)
+    openTaskWorkbenchWithDraft(buildTaskDraftFromSchedule(schedule))
+    detailVisible.value = false
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '加载编排草稿失败')
+  }
+}
+async function saveScheduleTaskAsTemplate(task) {
+  const sourceTask = task?.payload ? task : await getHostTask(task.id)
+  const payload = normalizePayloadByType(sourceTask.task_type, sourceTask.payload || {})
+  let templateName = sourceTask.name || ''
+  try {
+    const { value } = await ElMessageBox.prompt('请输入模板名称', '保存为模板', {
+      confirmButtonText: '保存为模板',
+      cancelButtonText: '取消',
+      inputValue: templateName,
+      inputValidator: value => !!String(value || '').trim(),
+    })
+    templateName = String(value || '').trim()
+  } catch (error) {
+    return
+  }
+  try {
+    await createHostTaskTemplate({
+      name: templateName,
+      target_type: sourceTask.target_type || 'host',
+      task_type: sourceTask.task_type,
+      description: sourceTask.description || '',
+      payload,
+      execution_mode: sourceTask.execution_mode,
+      execution_strategy: sourceTask.execution_strategy || 'continue',
+      timeout_seconds: sourceTask.timeout_seconds || 30,
+    })
+    ElMessage.success('模板已保存')
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '保存模板失败')
+  }
+}
 async function fetchTargets() { targetLoading.value = true; try { const res = await getHostTaskTargets({ ...targetFilters.value }); availableHosts.value = Array.isArray(res) ? res : (res.results || []) } catch (error) { ElMessage.error('加载目标主机失败') } finally { targetLoading.value = false } }
 async function fetchSchedules() { scheduleLoading.value = true; try { const res = await getHostTaskSchedules({ page: schedulePage.value, search: scheduleFilters.value.search || undefined, schedule_type: scheduleFilters.value.schedule_type || undefined, enabled: scheduleFilters.value.enabled || undefined }); schedules.value = res.results || res || []; scheduleTotal.value = res.count || schedules.value.length } catch (error) { ElMessage.error('加载编排列表失败') } finally { scheduleLoading.value = false } }
 async function fetchExecutions() { executionLoading.value = true; try { const res = await getHostTaskScheduleExecutions({ page: executionPage.value, search: executionFilters.value.search || undefined, status: executionFilters.value.status || undefined, trigger_source: executionFilters.value.trigger_source || undefined }); executions.value = res.results || res || []; executionTotal.value = res.count || executions.value.length } catch (error) { ElMessage.error('加载执行记录失败') } finally { executionLoading.value = false } }
@@ -856,6 +983,12 @@ onMounted(async () => { applyPreset(presets[0]); await Promise.all([fetchTargets
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .detail-section-title {

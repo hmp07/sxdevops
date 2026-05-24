@@ -84,6 +84,43 @@ def _host_source_ref(host):
     return {'source': 'host', 'id': host.id}
 
 
+def _trim_noisy_disk_summary(text):
+    cleaned_lines = []
+    for line in str(text or '').splitlines():
+        normalized = line.strip()
+        if (
+            '/var/lib/kubelet/pods/' in normalized
+            or '/run/k3s/containerd/' in normalized
+            or '/run/containerd/' in normalized
+        ):
+            continue
+        cleaned_lines.append(line)
+    return '\n'.join(cleaned_lines).strip()
+
+
+def _format_ansible_playbook_output(output):
+    text = str(output or '').strip()
+    if not text or '"msg": [' not in text:
+        return text
+    match = re.search(r'"msg":\s*(\[[\s\S]*?\])', text)
+    if not match:
+        return text
+    try:
+        items = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return text
+    if not isinstance(items, list) or not items or not all(isinstance(item, str) for item in items):
+        return text
+    formatted_parts = []
+    for item in items:
+        cleaned = _trim_noisy_disk_summary(item).strip()
+        if cleaned:
+            formatted_parts.append(cleaned)
+    if not formatted_parts:
+        return text
+    return '\n\n'.join(formatted_parts)
+
+
 def resolve_host_source_refs(refs):
     if refs and isinstance(refs[0], int):
         refs = [{'source': 'host', 'id': item} for item in refs]
@@ -530,6 +567,7 @@ def _run_single_task_with_ansible(task, host):
                 (task.payload or {}).get('playbook_name', ''),
                 (task.payload or {}).get('extra_vars') or {},
             )
+            raw_output = _format_ansible_playbook_output(raw_output)
         else:
             raw_output, raw_error = execute_ansible_command(host, _build_remote_command(task), task.timeout_seconds)
         if task.task_type == HostTask.TASK_REFRESH_METRICS:
