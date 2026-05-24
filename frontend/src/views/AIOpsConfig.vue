@@ -204,6 +204,11 @@
           <el-table-column label="启用工具" min-width="220" show-overflow-tooltip>
             <template #default="{ row }">{{ formatEnabledTools(row.tool_whitelist) }}</template>
           </el-table-column>
+          <el-table-column label="运行保护" width="110">
+            <template #default="{ row }">
+              <el-tag size="small" :type="mcpRuntimeMode(row).type">{{ mcpRuntimeMode(row).label }}</el-tag>
+            </template>
+          </el-table-column>
           <el-table-column label="启用" width="100">
             <template #default="{ row }">
               <el-tag size="small" :type="row.is_enabled ? 'success' : 'info'">{{ row.is_enabled ? '是' : '否' }}</el-tag>
@@ -381,6 +386,18 @@
         <el-form-item label="地址或命令"><el-input v-model="mcpForm.endpoint_or_command" /></el-form-item>
         <el-form-item label="描述"><el-input v-model="mcpForm.description" type="textarea" :rows="3" /></el-form-item>
         <el-form-item label="鉴权配置"><el-input v-model="mcpForm.auth_config_text" type="textarea" :rows="5" placeholder='例如：{"headers":{"Authorization":"Bearer xxx"},"env":{"TOKEN":"xxx"}}' /></el-form-item>
+        <div v-if="mcpForm.server_type !== 'platform_builtin'" class="mcp-guard-card">
+          <strong>外部 MCP 运行保护</strong>
+          <span>默认只读过滤 create/update/delete/run 等写入工具；STDIO 只继承安全系统环境变量，业务凭据请显式放入 auth_config.env。</span>
+        </div>
+        <div v-if="mcpForm.server_type !== 'platform_builtin'" class="dialog-grid">
+          <el-form-item label="写操作">
+            <el-switch v-model="mcpAllowWrite" active-text="允许写工具" inactive-text="只读过滤" />
+          </el-form-item>
+          <el-form-item label="超时秒数">
+            <el-input-number v-model="mcpTimeoutSeconds" :min="5" :max="300" />
+          </el-form-item>
+        </div>
         <el-form-item label="启用工具"><el-select v-model="mcpForm.tool_whitelist" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="mcpForm.is_enabled" /></el-form-item>
       </el-form>
@@ -419,9 +436,24 @@
 
     <el-dialog v-model="mcpToolsDialogVisible" title="MCP 工具列表" width="760px" destroy-on-close>
       <div class="section-title" style="margin-bottom:12px;">{{ currentMcpToolsTitle || '工具列表' }}</div>
+      <div v-if="mcpToolDiagnostics.length" class="mcp-diagnostic-list">
+        <div v-for="item in mcpToolDiagnostics" :key="`${item.name}-${item.status}`" class="mcp-diagnostic-item">
+          <el-tag size="small" :type="mcpDiagnosticType(item.status)">{{ mcpDiagnosticLabel(item.status) }}</el-tag>
+          <span>{{ item.name }}：{{ item.message || `发现 ${item.tool_count || 0} 个工具` }}</span>
+        </div>
+      </div>
       <el-table :data="mcpToolsList" stripe max-height="420">
         <el-table-column prop="name" label="工具名" min-width="180" />
         <el-table-column prop="description" label="描述" min-width="220" show-overflow-tooltip />
+        <el-table-column label="参数" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">{{ formatMcpToolSchema(row) }}</template>
+        </el-table-column>
+        <el-table-column label="安全提示" width="120">
+          <template #default="{ row }">
+            <el-tag v-if="row._meta?.description_warnings?.length" size="small" type="warning">需复核</el-tag>
+            <span v-else class="muted-text">--</span>
+          </template>
+        </el-table-column>
       </el-table>
       <div v-if="!mcpToolsList.length" class="session-empty">暂无工具</div>
       <template #footer>
@@ -508,16 +540,63 @@ const providerModelRecommendation = ref(null)
 const mcpForm = reactive({})
 const skillForm = reactive({})
 const mcpToolsList = ref([])
+const mcpToolDiagnostics = ref([])
 const currentMcpToolsTitle = ref('')
 
 const enabledMcpCount = computed(() => mcpServers.value.filter(item => item.is_enabled).length)
 const enabledSkillCount = computed(() => skills.value.filter(item => item.is_enabled).length)
 const canManageAudit = computed(() => authStore.hasPermission('aiops.audit.manage'))
+const mcpAuthConfig = computed(() => {
+  try {
+    const raw = mcpForm.auth_config_text?.trim()
+    return raw ? JSON.parse(raw) : {}
+  } catch (error) {
+    return mcpForm.auth_config && typeof mcpForm.auth_config === 'object' ? mcpForm.auth_config : {}
+  }
+})
+const mcpAllowWrite = computed({
+  get: () => Boolean(mcpAuthConfig.value.allow_write),
+  set: (value) => updateMcpAuthConfig({ allow_write: Boolean(value) }),
+})
+const mcpTimeoutSeconds = computed({
+  get: () => Number(mcpAuthConfig.value.timeout_seconds || 20),
+  set: (value) => updateMcpAuthConfig({ timeout_seconds: Number(value || 20) }),
+})
 
 function formatMcpType(serverType) {
   if (serverType === 'platform_builtin') return '平台内置'
   if (serverType === 'stdio') return 'STDIO'
   return 'HTTP'
+}
+
+function updateMcpAuthConfig(patch) {
+  const nextConfig = { ...mcpAuthConfig.value, ...patch }
+  mcpForm.auth_config = nextConfig
+  mcpForm.auth_config_text = JSON.stringify(nextConfig, null, 2)
+}
+
+function mcpRuntimeMode(row = {}) {
+  if (row.server_type === 'platform_builtin') return { label: '平台内置', type: 'success' }
+  return row.auth_config?.allow_write ? { label: '可写', type: 'warning' } : { label: '只读', type: 'info' }
+}
+
+function mcpDiagnosticType(status) {
+  if (status === 'connected') return 'success'
+  if (status === 'failed') return 'danger'
+  return 'info'
+}
+
+function mcpDiagnosticLabel(status) {
+  if (status === 'connected') return '已连接'
+  if (status === 'failed') return '失败'
+  return '未知'
+}
+
+function formatMcpToolSchema(row = {}) {
+  const properties = row.inputSchema?.properties || {}
+  const names = Object.keys(properties)
+  if (!names.length) return '无参数'
+  return names.slice(0, 6).join('、') + (names.length > 6 ? '…' : '')
 }
 
 function formatSkillSource(row = {}) {
@@ -591,6 +670,7 @@ function resetMcpForm() {
     tool_whitelist: [],
     is_enabled: true,
   })
+  mcpToolDiagnostics.value = []
 }
 
 function resetSkillForm() {
@@ -771,6 +851,7 @@ async function handleListMcpTools(row) {
   const result = await listAIOpsMcpTools(row.id)
   currentMcpToolsTitle.value = `${row.name} / ${result.count || 0} 个工具`
   mcpToolsList.value = result.tools || []
+  mcpToolDiagnostics.value = result.diagnostics || []
   mcpToolsDialogVisible.value = true
 }
 
@@ -887,6 +968,11 @@ onMounted(async () => {
 .section-toolbar{justify-content:flex-end;margin-bottom:8px}.dialog-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 10px}.audit-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.audit-card{padding:16px;border-radius:14px;background:#f8fafc;border:1px solid #e2e8f0;display:flex;flex-direction:column;gap:8px}.audit-card strong{font-size:28px;color:#0f172a}
 .model-discovery-strip{display:flex;align-items:center;gap:8px;margin:-2px 0 12px 102px;padding:8px 10px;border-radius:12px;background:#f8fafc;border:1px solid #e2e8f0}
 .model-discovery-hint{display:inline-flex;align-items:center;gap:6px;color:#64748b;font-size:12px;line-height:1.4}
+.mcp-guard-card{display:flex;flex-direction:column;gap:4px;margin:-2px 0 12px 102px;padding:10px 12px;border-radius:12px;background:linear-gradient(135deg,#f8fafc,#fff7ed);border:1px solid #e2e8f0;color:#64748b;font-size:12px;line-height:1.5}
+.mcp-guard-card strong{color:#0f172a;font-size:13px}
+.mcp-diagnostic-list{display:flex;flex-direction:column;gap:6px;margin-bottom:10px;padding:10px;border-radius:12px;background:#f8fafc;border:1px solid #e2e8f0}
+.mcp-diagnostic-item{display:flex;align-items:center;gap:8px;color:#475569;font-size:12px;line-height:1.5}
+.muted-text{color:#94a3b8}
 .audit-section{margin-top:8px}
 .audit-toolbar{justify-content:space-between;align-items:center}
 .audit-toolbar-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
