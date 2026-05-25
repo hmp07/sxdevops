@@ -340,8 +340,21 @@
       <el-form :model="providerForm" label-width="102px">
         <el-form-item label="名称"><el-input v-model="providerForm.name" /></el-form-item>
         <el-form-item label="类型"><el-select v-model="providerForm.provider_type" style="width:100%"><el-option label="OpenAI Compatible" value="openai_compatible" /></el-select></el-form-item>
+        <el-form-item label="供应商预设">
+          <el-select v-model="selectedProviderPreset" filterable clearable placeholder="选择 DeepSeek / 智谱 GLM / MiniMax 等预设" style="width:100%" @change="applyProviderPreset">
+            <el-option v-for="item in providerPresets" :key="item.key" :label="item.name" :value="item.key">
+              <span>{{ item.name }}</span>
+              <span class="provider-preset-option">{{ item.default_model || '自定义模型' }}</span>
+            </el-option>
+          </el-select>
+        </el-form-item>
+        <div v-if="selectedProviderPresetDetail" class="provider-preset-card">
+          <strong>{{ selectedProviderPresetDetail.name }}</strong>
+          <span>{{ selectedProviderPresetDetail.notes }}</span>
+          <a v-if="selectedProviderPresetDetail.docs_url" :href="selectedProviderPresetDetail.docs_url" target="_blank" rel="noreferrer">查看官方文档</a>
+        </div>
         <el-form-item label="Base URL"><el-input v-model="providerForm.base_url" /></el-form-item>
-        <el-form-item label="API Key"><el-input v-model="providerForm.api_key" type="password" show-password placeholder="留空则保留原值" /></el-form-item>
+        <el-form-item label="API Key"><el-input v-model="providerForm.api_key" type="password" show-password :placeholder="providerApiKeyPlaceholder" /></el-form-item>
         <div class="model-discovery-strip">
           <el-button size="small" :loading="saving.models" :disabled="!providerForm.id" @click="handleListProviderModels">
             拉取模型列表
@@ -482,6 +495,7 @@ import {
   getAIOpsAuditSessions,
   getAIOpsAuditToolInvocations,
   getAIOpsConfig,
+  getAIOpsProviderPresets,
   getAIOpsMcpServers,
   getAIOpsProviders,
   getAIOpsSkills,
@@ -501,6 +515,7 @@ const loading = reactive({ page: false })
 const saving = reactive({ config: false, provider: false, models: false, mcp: false, skill: false })
 
 const providers = ref([])
+const providerPresets = ref([])
 const mcpServers = ref([])
 const skills = ref([])
 const auditOverview = ref({})
@@ -537,6 +552,7 @@ const mcpToolsDialogVisible = ref(false)
 const providerForm = reactive({})
 const providerModels = ref([])
 const providerModelRecommendation = ref(null)
+const selectedProviderPreset = ref('')
 const mcpForm = reactive({})
 const skillForm = reactive({})
 const mcpToolsList = ref([])
@@ -546,6 +562,12 @@ const currentMcpToolsTitle = ref('')
 const enabledMcpCount = computed(() => mcpServers.value.filter(item => item.is_enabled).length)
 const enabledSkillCount = computed(() => skills.value.filter(item => item.is_enabled).length)
 const canManageAudit = computed(() => authStore.hasPermission('aiops.audit.manage'))
+const selectedProviderPresetDetail = computed(() => providerPresets.value.find(item => item.key === selectedProviderPreset.value) || null)
+const providerApiKeyPlaceholder = computed(() => {
+  const preset = selectedProviderPresetDetail.value
+  if (preset?.api_key_placeholder) return providerForm.id ? `留空则保留原值；${preset.api_key_placeholder}` : preset.api_key_placeholder
+  return providerForm.id ? '留空则保留原值' : 'API Key'
+})
 const mcpAuthConfig = computed(() => {
   try {
     const raw = mcpForm.auth_config_text?.trim()
@@ -642,6 +664,31 @@ function providerRuntimeHint(row = {}) {
   return row.setup_hint || (row.is_enabled ? '请补全模型配置后使用' : '当前已停用，启用后可作为运行模型')
 }
 
+function detectProviderPreset(provider = {}) {
+  const baseUrl = (provider.base_url || '').toLowerCase()
+  if (baseUrl.includes('deepseek')) return 'deepseek'
+  if (baseUrl.includes('bigmodel') || /^glm-/i.test(provider.default_model || '')) return 'zhipu_glm'
+  if (baseUrl.includes('minimax') || /^minimax/i.test(provider.default_model || '')) return 'minimax'
+  return ''
+}
+
+function applyProviderPreset(key) {
+  const preset = providerPresets.value.find(item => item.key === key)
+  if (!preset) return
+  Object.assign(providerForm, {
+    name: providerForm.name || preset.name,
+    provider_type: preset.provider_type || 'openai_compatible',
+    base_url: preset.base_url || providerForm.base_url,
+    default_model: preset.default_model || providerForm.default_model,
+    backup_model: preset.backup_model || providerForm.backup_model,
+    temperature: preset.temperature ?? providerForm.temperature,
+    max_tokens: preset.max_tokens || providerForm.max_tokens,
+    timeout_seconds: preset.timeout_seconds || providerForm.timeout_seconds,
+  })
+  providerModels.value = []
+  providerModelRecommendation.value = null
+}
+
 function resetProviderForm() {
   Object.assign(providerForm, {
     id: null,
@@ -656,6 +703,7 @@ function resetProviderForm() {
     timeout_seconds: 30,
     is_enabled: true,
   })
+  selectedProviderPreset.value = ''
 }
 
 function resetMcpForm() {
@@ -706,9 +754,10 @@ function applyConfig(payload = {}) {
 async function loadAll() {
   loading.page = true
   try {
-    const [config, providerData, mcpData, skillData, auditData, toolData, actionData] = await Promise.all([
+    const [config, providerData, presetData, mcpData, skillData, auditData, toolData, actionData] = await Promise.all([
       getAIOpsConfig(),
       getAIOpsProviders(),
+      getAIOpsProviderPresets(),
       getAIOpsMcpServers(),
       getAIOpsSkills(),
       getAIOpsAuditOverview(),
@@ -717,6 +766,7 @@ async function loadAll() {
     ])
     applyConfig(config)
     providers.value = providerData || []
+    providerPresets.value = presetData?.presets || []
     mcpServers.value = mcpData || []
     skills.value = skillData || []
     auditOverview.value = auditData || {}
@@ -759,7 +809,10 @@ function openProviderDialog(row) {
   resetProviderForm()
   providerModels.value = []
   providerModelRecommendation.value = null
-  if (row) Object.assign(providerForm, row, { api_key: '' })
+  if (row) {
+    Object.assign(providerForm, row, { api_key: '' })
+    selectedProviderPreset.value = detectProviderPreset(row)
+  }
   providerDialogVisible.value = true
 }
 
@@ -968,6 +1021,9 @@ onMounted(async () => {
 .section-toolbar{justify-content:flex-end;margin-bottom:8px}.dialog-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 10px}.audit-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.audit-card{padding:16px;border-radius:14px;background:#f8fafc;border:1px solid #e2e8f0;display:flex;flex-direction:column;gap:8px}.audit-card strong{font-size:28px;color:#0f172a}
 .model-discovery-strip{display:flex;align-items:center;gap:8px;margin:-2px 0 12px 102px;padding:8px 10px;border-radius:12px;background:#f8fafc;border:1px solid #e2e8f0}
 .model-discovery-hint{display:inline-flex;align-items:center;gap:6px;color:#64748b;font-size:12px;line-height:1.4}
+.provider-preset-option{float:right;margin-left:18px;color:#94a3b8;font-size:12px}
+.provider-preset-card{display:flex;align-items:center;gap:10px;margin:-4px 0 12px 102px;padding:9px 11px;border-radius:12px;background:linear-gradient(135deg,#f8fafc,#eff6ff);border:1px solid #dbeafe;color:#475569;font-size:12px;line-height:1.5}
+.provider-preset-card strong{color:#0f172a;font-size:13px}.provider-preset-card a{color:#2563eb;text-decoration:none}
 .mcp-guard-card{display:flex;flex-direction:column;gap:4px;margin:-2px 0 12px 102px;padding:10px 12px;border-radius:12px;background:linear-gradient(135deg,#f8fafc,#fff7ed);border:1px solid #e2e8f0;color:#64748b;font-size:12px;line-height:1.5}
 .mcp-guard-card strong{color:#0f172a;font-size:13px}
 .mcp-diagnostic-list{display:flex;flex-direction:column;gap:6px;margin-bottom:10px;padding:10px;border-radius:12px;background:#f8fafc;border:1px solid #e2e8f0}

@@ -18,6 +18,7 @@ urlpatterns = [
     path('bootstrap/', views.bootstrap, name='aiops-bootstrap'),
     path('knowledge-graph/', views.knowledge_graph, name='aiops-knowledge-graph'),
     path('admin/config/', views.agent_config_view, name='aiops-agent-config'),
+    path('admin/providers/presets/', views.model_provider_presets, name='aiops-provider-presets-explicit'),
     path('admin/audit/overview/', views.audit_overview, name='aiops-audit-overview'),
     path('actions/<int:pk>/confirm/', views.confirm_pending_action, name='aiops-confirm-action'),
     path('actions/<int:pk>/cancel/', views.cancel_pending_action, name='aiops-cancel-action'),

@@ -523,6 +523,65 @@ BUILTIN_MODEL_PROVIDER = {
     'last_test_message': '预置体验配置，需替换为真实 API Key 后使用',
 }
 
+MODEL_PROVIDER_PRESETS = [
+    {
+        'key': 'deepseek',
+        'name': 'DeepSeek',
+        'provider_type': AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+        'base_url': 'https://api.deepseek.com',
+        'default_model': 'deepseek-v4-flash',
+        'backup_model': 'deepseek-v4-pro',
+        'temperature': 0.2,
+        'max_tokens': 1600,
+        'timeout_seconds': 60,
+        'api_key_placeholder': 'DeepSeek API Key',
+        'docs_url': 'https://api-docs.deepseek.com/',
+        'notes': 'OpenAI-compatible；适合直接接入 Chat Completions 与 Tool Calling。',
+    },
+    {
+        'key': 'zhipu_glm',
+        'name': '智谱 GLM',
+        'provider_type': AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+        'base_url': 'https://open.bigmodel.cn/api/paas/v4',
+        'default_model': 'glm-5.1',
+        'backup_model': 'glm-4.7',
+        'temperature': 0.2,
+        'max_tokens': 1600,
+        'timeout_seconds': 60,
+        'api_key_placeholder': '智谱 API Key',
+        'docs_url': 'https://docs.bigmodel.cn/cn/guide/develop/openai/introduction',
+        'notes': '智谱 OpenAI API 兼容入口；Base URL 不需要追加 /chat/completions。',
+    },
+    {
+        'key': 'minimax',
+        'name': 'MiniMax',
+        'provider_type': AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+        'base_url': 'https://api.minimax.io/v1',
+        'default_model': 'MiniMax-M2.7',
+        'backup_model': 'MiniMax-M2.7-highspeed',
+        'temperature': 1.0,
+        'max_tokens': 1600,
+        'timeout_seconds': 60,
+        'api_key_placeholder': 'MiniMax API Key',
+        'docs_url': 'https://platform.minimax.io/docs/api-reference/text-openai-api',
+        'notes': 'MiniMax OpenAI-compatible 入口；temperature 必须大于 0，预设使用官方推荐 1.0。',
+    },
+    {
+        'key': 'custom_openai_compatible',
+        'name': '自定义 OpenAI Compatible',
+        'provider_type': AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+        'base_url': '',
+        'default_model': '',
+        'backup_model': '',
+        'temperature': 0.2,
+        'max_tokens': 1600,
+        'timeout_seconds': 60,
+        'api_key_placeholder': 'API Key',
+        'docs_url': '',
+        'notes': '适用于兼容 Bearer 鉴权与 /chat/completions 的网关、OneAPI/NewAPI、私有模型服务。',
+    },
+]
+
 
 def _is_builtin_experience_provider(provider):
     return bool(provider and provider.name == BUILTIN_MODEL_PROVIDER['name'])
@@ -558,6 +617,10 @@ def get_model_provider_setup_hint(provider):
     if missing_items:
         return f"请先补全：{'、'.join(missing_items)}"
     return ''
+
+
+def list_model_provider_presets():
+    return MODEL_PROVIDER_PRESETS
 
 
 def _normalize_json_id_list(values):
@@ -6778,6 +6841,17 @@ def _model_payload_resilience_variants(request_payload):
     return variants
 
 
+def _normalize_provider_temperature(provider, value):
+    try:
+        temperature = float(value)
+    except (TypeError, ValueError):
+        temperature = 0.2
+    base_url = (getattr(provider, 'base_url', '') or '').lower()
+    if 'minimax' in base_url and temperature <= 0:
+        return 1.0
+    return temperature
+
+
 def _append_model_error(errors, *, model_name, request_payload, detail):
     errors.append({
         'model': model_name,
@@ -7185,6 +7259,10 @@ def _request_model_completion_legacy(provider, payload):
 
 
 def _request_model_completion(provider, payload):
+    payload = {
+        **payload,
+        'temperature': _normalize_provider_temperature(provider, payload.get('temperature', getattr(provider, 'temperature', 0.2))),
+    }
     endpoint = provider.base_url.rstrip('/')
     if not endpoint.endswith('/chat/completions'):
         endpoint = f'{endpoint}/chat/completions'

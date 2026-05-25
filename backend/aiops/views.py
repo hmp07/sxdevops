@@ -44,6 +44,7 @@ from .services import (
     dispatch_chat,
     get_agent_config,
     list_model_provider_models,
+    list_model_provider_presets,
     list_mcp_server_tools,
     recover_masked_suggested_question,
     start_async_chat_processing,
@@ -75,7 +76,12 @@ class AIOpsModelProviderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'destroy': ['aiops.config.manage'],
         'test_connection': ['aiops.config.manage'],
         'list_models': ['aiops.config.manage'],
+        'presets': ['aiops.config.view'],
     }
+
+    @action(detail=False, methods=['get'])
+    def presets(self, request):
+        return Response({'presets': list_model_provider_presets()})
 
     @action(detail=True, methods=['post'])
     def test_connection(self, request, pk=None):
@@ -106,6 +112,12 @@ class AIOpsModelProviderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             return Response(list_model_provider_models(provider, probe=probe))
         except Exception as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('aiops.config.view')])
+def model_provider_presets(request):
+    return Response({'presets': list_model_provider_presets()})
 
 
 class AIOpsMCPServerViewSet(RBACPermissionMixin, viewsets.ModelViewSet):

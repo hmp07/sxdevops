@@ -39,6 +39,7 @@ from .services import (
     get_active_provider,
     get_agent_config,
     list_model_provider_models,
+    list_model_provider_presets,
     build_markdown_answer,
     query_alerts,
     query_cost_report,
@@ -1510,6 +1511,21 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(provider.base_url, 'https://custom-openai.example.com/v1')
         self.assertEqual(provider.default_model, 'custom-model')
 
+    def test_model_provider_presets_include_common_openai_compatible_vendors(self):
+        presets = {item['key']: item for item in list_model_provider_presets()}
+
+        self.assertEqual(presets['deepseek']['base_url'], 'https://api.deepseek.com')
+        self.assertEqual(presets['zhipu_glm']['base_url'], 'https://open.bigmodel.cn/api/paas/v4')
+        self.assertEqual(presets['minimax']['base_url'], 'https://api.minimax.io/v1')
+        self.assertGreater(presets['minimax']['temperature'], 0)
+
+    def test_provider_presets_endpoint_returns_common_vendors(self):
+        response = self.client.get('/api/aiops/admin/providers/presets/')
+
+        self.assertEqual(response.status_code, 200)
+        keys = {item['key'] for item in response.data['presets']}
+        self.assertTrue({'deepseek', 'zhipu_glm', 'minimax'}.issubset(keys))
+
     def test_mcp_and_skill_list_endpoints_bootstrap_builtin_assets(self):
         mcp_response = self.client.get('/api/aiops/admin/mcp-servers/')
         skill_response = self.client.get('/api/aiops/admin/skills/')
@@ -1633,6 +1649,35 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(mocked_post.call_count, 2)
         self.assertEqual(result['choices'][0]['message']['content'], 'pong')
         self.assertEqual(result['_meta']['attempts'], 2)
+
+    @mock.patch('aiops.services.requests.post')
+    def test_request_model_completion_uses_minimax_safe_temperature(self, mocked_post):
+        provider = AIOpsModelProvider.objects.create(
+            name='mock-provider-minimax-temperature',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            base_url='https://api.minimax.io/v1',
+            default_model='MiniMax-M2.7',
+            is_enabled=True,
+        )
+        provider.set_api_key('test-key')
+        provider.save(update_fields=['api_key_encrypted'])
+
+        response = mock.Mock()
+        response.status_code = 200
+        response.json.return_value = {
+            'choices': [{'message': {'role': 'assistant', 'content': 'pong'}}],
+        }
+        mocked_post.return_value = response
+
+        result = _request_model_completion(provider, {
+            'model': 'MiniMax-M2.7',
+            'messages': [{'role': 'user', 'content': 'ping'}],
+            'temperature': 0,
+            'max_tokens': 16,
+        })
+
+        self.assertEqual(result['choices'][0]['message']['content'], 'pong')
+        self.assertEqual(mocked_post.call_args.kwargs['json']['temperature'], 1.0)
 
     @mock.patch('aiops.services.requests.post')
     def test_request_model_completion_uses_generated_variant_not_only_backup(self, mocked_post):

@@ -30,6 +30,7 @@ export const getAIOpsAuditToolInvocations = (params) => request.get('/aiops/admi
 export const getAIOpsAuditActions = (params) => request.get('/aiops/admin/audit/actions/', { params })
 
 export const getAIOpsProviders = () => request.get('/aiops/admin/providers/')
+export const getAIOpsProviderPresets = () => request.get('/aiops/admin/providers/presets/')
 export const createAIOpsProvider = (data) => request.post('/aiops/admin/providers/', data)
 export const updateAIOpsProvider = (id, data) => request.patch(`/aiops/admin/providers/${id}/`, data)
 export const deleteAIOpsProvider = (id) => request.delete(`/aiops/admin/providers/${id}/`)
