@@ -55,7 +55,11 @@
             <span>{{ ui.createTask }}</span>
             <div class="task-form-head-actions">
               <el-tag size="small" type="info">{{ ui.selectedTargets }} {{ selectedTargetCount }} {{ ui.unitTarget }}</el-tag>
-              <el-button size="small" @click="saveCurrentAsTemplate">{{ ui.saveAsTemplate }}</el-button>
+              <el-button size="small" :loading="savingTemplate" @click="saveCurrentAsTemplate">{{ ui.saveAsTemplate }}</el-button>
+              <el-button type="primary" size="small" :loading="submitting" :disabled="!selectedTargetCount" @click="submitTask">
+                <el-icon><VideoPlay /></el-icon>
+                {{ ui.executeNow }}
+              </el-button>
             </div>
           </div>
           <div class="task-inline-tip">{{ taskForm.target_type === 'k8s' ? ui.k8sTip : ui.tip }}</div>
@@ -176,9 +180,6 @@
             <div v-if="effectiveHostTargetRefs.length" class="selection-strip">
               <span class="selection-pill">{{ ui.selectedHosts }} {{ effectiveHostTargetRefs.length }} {{ ui.unitHost }}</span>
               <span v-if="hasPrefillDraft && !selectedRows.length" class="selection-pill info">{{ prefillSourceLabel }}预填目标</span>
-              <span v-if="selectedRows.length" class="selection-pill success">{{ ui.onlineHosts }} {{ selectedStats.online }}</span>
-              <span v-if="selectedRows.length" class="selection-pill warning">{{ ui.warningHosts }} {{ selectedStats.warning }}</span>
-              <span v-if="selectedRows.length" class="selection-pill danger">{{ ui.offlineHosts }} {{ selectedStats.offline }}</span>
             </div>
             <el-table ref="hostTableRef" :data="availableHosts" v-loading="targetLoading" row-key="id" max-height="320" :empty-text="ui.emptyHosts" @selection-change="handleSelectionChange">
               <el-table-column type="selection" width="44" reserve-selection />
@@ -216,9 +217,6 @@
             </div>
             <div v-if="selectedK8sRows.length" class="selection-strip">
               <span class="selection-pill">{{ ui.selectedClusters }} {{ selectedK8sRows.length }} {{ ui.unitCluster }}</span>
-              <span class="selection-pill success">{{ ui.activeClusters }} {{ selectedK8sStats.active }}</span>
-              <span class="selection-pill warning">{{ ui.warningHosts }} {{ selectedK8sStats.warning }}</span>
-              <span class="selection-pill danger">{{ ui.inactiveClusters }} {{ selectedK8sStats.inactive }}</span>
             </div>
             <el-table ref="k8sTargetTableRef" :data="availableK8sTargets" v-loading="targetLoading" row-key="id" max-height="320" :empty-text="ui.emptyK8sTargets" @selection-change="handleK8sSelectionChange">
               <el-table-column type="selection" width="44" reserve-selection />
@@ -231,13 +229,6 @@
             </template>
             <div class="submit-row">
               <div class="submit-tip">{{ ui.submitTip }}</div>
-              <div class="submit-actions">
-                <el-button :loading="savingTemplate" @click="saveCurrentAsTemplate">{{ ui.saveAsTemplate }}</el-button>
-                <el-button type="primary" :loading="submitting" :disabled="!selectedTargetCount" @click="submitTask">
-                  <el-icon><VideoPlay /></el-icon>
-                  {{ ui.executeNow }}
-                </el-button>
-              </div>
             </div>
           </el-form>
         </div>
@@ -289,12 +280,21 @@
               <el-tag size="small" :type="row.is_builtin ? 'success' : 'info'">{{ row.is_builtin ? ui.builtinTemplate : ui.personalTemplate }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column :label="ui.actions" width="220" fixed="right">
+          <el-table-column :label="ui.actions" width="190" fixed="right">
             <template #default="{ row }">
-              <el-button link size="small" @click="openTemplateDetail(row)">{{ ui.viewTemplate }}</el-button>
-              <el-button v-if="!row.is_builtin" link size="small" @click="openTemplateEditDialog(row)">{{ ui.editTemplate }}</el-button>
-              <el-button link type="primary" size="small" @click="applyTemplate(row)">{{ ui.applyTemplate }}</el-button>
-              <el-button v-if="!row.is_builtin" link type="danger" size="small" @click="removeTemplate(row)">{{ ui.deleteTemplate }}</el-button>
+              <div class="history-row-actions">
+                <el-button link size="small" @click="openTemplateDetail(row)">{{ ui.viewTemplate }}</el-button>
+                <el-button link type="primary" size="small" @click="applyTemplate(row)">{{ ui.applyTemplate }}</el-button>
+                <el-dropdown v-if="!row.is_builtin" trigger="click" @command="command => handleTemplateAction(command, row)">
+                  <el-button text size="small" class="history-more-btn">更多</el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="edit">{{ ui.editTemplate }}</el-dropdown-item>
+                      <el-dropdown-item command="delete">{{ ui.deleteTemplate }}</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+              </div>
             </template>
           </el-table-column>
         </el-table>
@@ -691,6 +691,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Clock, Collection, Promotion, Search, VideoPlay } from '@element-plus/icons-vue'
+import { useRouteTabState } from '@/composables/useRouteTabState'
 import {
   batchCancelHostTasks,
   cancelHostTask,
@@ -892,9 +893,9 @@ const ui = {
   cancel: '\u53d6\u6d88',
 }
 const innerTabs = [
+  { key: 'history', label: '\u4efb\u52a1\u5386\u53f2', icon: Clock, desc: '\u67e5\u770b\u7ed3\u679c\u3001\u91cd\u8dd1\u4e0e\u7ec8\u6b62\u4efb\u52a1' },
   { key: 'dispatch', label: '\u4efb\u52a1\u4e0b\u53d1', icon: Promotion, desc: '\u9009\u62e9\u76ee\u6807\u4e3b\u673a\u5e76\u7acb\u5373\u6267\u884c' },
   { key: 'library', label: '\u6a21\u677f\u5e93', icon: Collection, desc: '维护可复用执行模板' },
-  { key: 'history', label: '\u4efb\u52a1\u5386\u53f2', icon: Clock, desc: '\u67e5\u770b\u7ed3\u679c\u3001\u91cd\u8dd1\u4e0e\u7ec8\u6b62\u4efb\u52a1' },
 ]
 const executionTypeOptions = [
   { label: 'Shell 脚本', value: 'shell', targetType: 'host', taskType: 'run_command', executionMode: 'ansible', desc: '在主机资源上执行 Shell 命令或脚本片段。' },
@@ -945,7 +946,12 @@ const riskLevelOptions = [
 const templateEditorAdvice = ['\u6a21\u677f\u540d\u79f0\u5efa\u8bae\u5e26\u4e0a\u573a\u666f\u3001\u670d\u52a1\u6216\u7a97\u53e3\u4fe1\u606f\uff0c\u65b9\u4fbf\u641c\u7d22\u590d\u7528\u3002', '\u547d\u4ee4\u6a21\u677f\u9002\u5408\u505a\u5feb\u901f\u5de1\u68c0\uff1bPlaybook \u6a21\u677f\u66f4\u9002\u5408\u56fa\u5316\u68c0\u67e5\u6b65\u9aa4\u3002', 'Playbook \u5185\u5bb9\u5efa\u8bae\u4f18\u5148\u4fdd\u6301 gather_facts: false \u548c changed_when: false\uff0c\u51cf\u5c11\u5bf9\u76ee\u6807\u4e3b\u673a\u7684\u6253\u6270\u3002']
 const playbookExample = '- hosts: targets\n  gather_facts: false\n  tasks:\n    - name: check app process\n      shell: ps -ef | grep myapp | grep -v grep\n      changed_when: false\n    - name: tail recent log\n      shell: journalctl -u myapp -n 50 --no-pager\n      changed_when: false'
 const props = defineProps({ resourceTree: { type: Array, default: () => [] } })
-const activeTab = ref('dispatch')
+const tabState = useRouteTabState({
+  tabs: () => innerTabs.map(item => item.key),
+  defaultTab: 'dispatch',
+  queryKey: 'taskTab',
+})
+const activeTab = tabState.activeTab
 const hostTableRef = ref(null)
 const k8sTargetTableRef = ref(null)
 const targetLoading = ref(false)
@@ -1565,6 +1571,10 @@ function handleHistoryAction(command, row) {
   if (command === 'template') return saveTaskAsTemplate(row)
   if (command === 'cancel') return handleCancelTask(row)
 }
+function handleTemplateAction(command, row) {
+  if (command === 'edit') return openTemplateEditDialog(row)
+  if (command === 'delete') return removeTemplate(row)
+}
 async function removeTemplate(template) {
   try {
     await ElMessageBox.confirm(ui.deleteTemplateConfirm, ui.deleteTemplate, { type: 'warning', confirmButtonText: ui.deleteTemplate, cancelButtonText: ui.cancel })
@@ -1819,7 +1829,7 @@ watch(() => route.query.taskDraft, async (value, previousValue) => {
 .glass-card {
   background: var(--tc-bg-panel);
   border: 1px solid var(--tc-border);
-  border-radius: 20px;
+  border-radius: 14px;
   box-shadow: var(--tc-shadow);
   padding: 14px;
 }
@@ -1840,7 +1850,7 @@ watch(() => route.query.taskDraft, async (value, previousValue) => {
 
 .composer-grid {
   display: grid;
-  grid-template-columns: 272px minmax(0, 1fr);
+  grid-template-columns: 248px minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -1874,7 +1884,7 @@ watch(() => route.query.taskDraft, async (value, previousValue) => {
 .template-card {
   padding: 12px;
   border: 1px solid var(--tc-border);
-  border-radius: 16px;
+  border-radius: 12px;
   background: linear-gradient(180deg, #ffffff 0%, #fafcff 100%);
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.03);
   text-align: left;
@@ -2696,7 +2706,7 @@ watch(() => route.query.taskDraft, async (value, previousValue) => {
   --el-table-header-bg-color: #f8fafc;
   --el-table-row-hover-bg-color: #f8fbff;
   border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 16px;
+  border-radius: 12px;
   overflow: hidden;
 }
 

@@ -8,18 +8,19 @@
           <p class="page-inline-desc">集中处理任务下发、AIOps 建议联动、模板复用与执行回溯，提供更直接的控制台操作入口。</p>
         </div>
       </div>
-      <div class="hero-actions">
-        <el-button size="small" :icon="Refresh" :loading="loading" @click="reloadResourceTree">刷新资源</el-button>
-      </div>
     </section>
 
-    <CmdbHostTaskCenter :resource-tree="resourceTree" />
+    <CmdbHostTaskCenter
+      :resource-tree="resourceTree"
+      :resource-loading="loading"
+      :on-reload-resources="reloadResourceTree"
+    />
   </div>
 </template>
 
 <script setup>
 import { onMounted, ref } from 'vue'
-import { Operation, Refresh } from '@element-plus/icons-vue'
+import { Operation } from '@element-plus/icons-vue'
 import CmdbHostTaskCenter from '@/components/cmdb/CmdbHostTaskCenter.vue'
 import { getTaskResourceTree } from '@/api/modules/ops'
 
@@ -69,13 +70,9 @@ onMounted(reloadResourceTree)
   padding: 10px 14px;
 }
 
-.hero-copy,
-.hero-actions {
+.hero-copy {
   display: flex;
   gap: 4px;
-}
-
-.hero-copy {
   flex-wrap: wrap;
 }
 
@@ -113,13 +110,6 @@ onMounted(reloadResourceTree)
 
 .hero-icon-operation {
   background: linear-gradient(135deg, #5b7cf7, #8b5cf6);
-}
-
-.hero-actions .el-button {
-  border-radius: 10px;
-  font-weight: 500;
-  min-height: 30px;
-  padding: 0 12px;
 }
 
 .panel {

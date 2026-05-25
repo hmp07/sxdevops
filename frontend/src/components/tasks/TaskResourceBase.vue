@@ -73,9 +73,9 @@
       />
     </div>
 
-    <div class="cmdb-items-main">
-      <div class="resource-toolbar">
-        <div class="resource-toolbar-left">
+    <div class="cmdb-items-main resource-list-card">
+      <div class="toolbar section-gap resource-toolbar">
+        <div class="toolbar-left resource-toolbar-left">
           <el-select v-model="filters.resource_type" placeholder="资源类型" clearable style="width:120px" size="small" @change="fetchResources">
             <el-option label="主机" value="host" />
             <el-option label="K8s" value="k8s" />
@@ -103,14 +103,14 @@
             <template #prefix><el-icon><Search /></el-icon></template>
           </el-input>
         </div>
-        <div class="resource-toolbar-right">
+        <div class="toolbar-right resource-toolbar-right">
           <el-button size="small" @click="resetFilters">重置</el-button>
           <el-button size="small" :loading="loading.resources" @click="reloadAll">刷新</el-button>
           <el-button v-if="canManage" type="primary" size="small" @click="openResourceDialog()">新增资源</el-button>
         </div>
       </div>
 
-      <div class="cmdb-stats-row">
+      <div class="cmdb-stats-row section-gap">
         <div
           v-for="card in statCards"
           :key="card.key"
@@ -130,7 +130,6 @@
         <el-table
           size="small"
           :data="resources"
-          stripe
           v-loading="loading.resources"
           row-key="id"
           class="resource-table"
@@ -140,7 +139,7 @@
           <el-table-column prop="name" label="名称" min-width="170" show-overflow-tooltip />
           <el-table-column label="类型" width="90">
             <template #default="{ row }">
-              <el-tag size="small" :type="row.resource_type === 'host' ? 'success' : 'info'">
+              <el-tag size="small" effect="plain" :type="row.resource_type === 'host' ? 'success' : 'info'">
                 {{ row.resource_type_display || resourceTypeLabel(row.resource_type) }}
               </el-tag>
             </template>
@@ -154,7 +153,7 @@
           </el-table-column>
           <el-table-column label="状态" width="90">
             <template #default="{ row }">
-              <el-tag size="small" :type="statusType(row.status)">
+              <el-tag size="small" effect="plain" :type="statusType(row.status)">
                 {{ row.status_display || statusLabel(row.status) }}
               </el-tag>
             </template>
@@ -717,8 +716,8 @@ onMounted(reloadAll)
 }
 
 .cmdb-resource-tree-panel {
-  width: 228px;
-  flex: 0 0 228px;
+  width: 212px;
+  flex: 0 0 212px;
   border-right: 1px solid rgba(148, 163, 184, 0.14);
   padding-right: 12px;
   display: flex;
@@ -732,6 +731,14 @@ onMounted(reloadAll)
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+.resource-list-card {
+  gap: 0;
+}
+
+.section-gap {
+  margin-bottom: 10px;
 }
 
 .resource-tree {
@@ -749,11 +756,11 @@ onMounted(reloadAll)
   padding: 16px 0;
 }
 
+.toolbar,
 .resource-toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
   flex-wrap: wrap;
   gap: 8px;
   padding: 6px 8px;
@@ -763,6 +770,8 @@ onMounted(reloadAll)
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
+.toolbar-left,
+.toolbar-right,
 .resource-toolbar-left,
 .resource-toolbar-right {
   display: flex;
@@ -771,6 +780,8 @@ onMounted(reloadAll)
   flex-wrap: wrap;
 }
 
+.toolbar :deep(.el-input__wrapper),
+.toolbar :deep(.el-select__wrapper),
 .resource-toolbar :deep(.el-input__wrapper),
 .resource-toolbar :deep(.el-select__wrapper) {
   min-height: 28px;
@@ -779,11 +790,14 @@ onMounted(reloadAll)
   background: rgba(255, 255, 255, 0.94);
 }
 
+.toolbar :deep(.el-input__wrapper:hover),
+.toolbar :deep(.el-select__wrapper:hover),
 .resource-toolbar :deep(.el-input__wrapper:hover),
 .resource-toolbar :deep(.el-select__wrapper:hover) {
   box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.16) inset;
 }
 
+.toolbar-right :deep(.el-button),
 .resource-toolbar-right :deep(.el-button) {
   min-height: 26px;
   padding: 0 9px;
@@ -791,6 +805,7 @@ onMounted(reloadAll)
   font-weight: 500;
 }
 
+.toolbar-right :deep(.el-button:not(.el-button--primary)),
 .resource-toolbar-right :deep(.el-button:not(.el-button--primary)) {
   border-color: rgba(148, 163, 184, 0.12);
   background: rgba(255, 255, 255, 0.9);
@@ -798,6 +813,7 @@ onMounted(reloadAll)
   box-shadow: none;
 }
 
+.toolbar-right :deep(.el-button:not(.is-link):hover),
 .resource-toolbar-right :deep(.el-button:not(.is-link):hover) {
   border-color: rgba(59, 130, 246, 0.18);
   color: #1d4ed8;
@@ -807,7 +823,6 @@ onMounted(reloadAll)
 .cmdb-stats-row {
   display: flex;
   gap: 8px;
-  margin-bottom: 8px;
   flex-wrap: nowrap;
   overflow-x: auto;
   padding-bottom: 2px;
@@ -823,7 +838,7 @@ onMounted(reloadAll)
   width: 100%;
 }
 
-.resource-table :deep(.el-table) {
+.resource-list-card :deep(.el-table) {
   --el-table-border-color: rgba(148, 163, 184, 0.16);
   --el-table-header-bg-color: #f8fafc;
   --el-table-row-hover-bg-color: #f8fbff;
@@ -832,7 +847,7 @@ onMounted(reloadAll)
   overflow: hidden;
 }
 
-.resource-table :deep(.el-table th.el-table__cell) {
+.resource-list-card :deep(.el-table th.el-table__cell) {
   color: #475569;
   font-weight: 600;
   background: #f8fafc;
@@ -943,8 +958,8 @@ onMounted(reloadAll)
 
 @media (max-width: 1200px) {
   .cmdb-resource-tree-panel {
-    width: 208px;
-    flex-basis: 208px;
+    width: 196px;
+    flex-basis: 196px;
   }
 }
 
