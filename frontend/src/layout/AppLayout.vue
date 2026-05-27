@@ -181,7 +181,6 @@ import { useAuthStore } from '@/stores/auth'
 import AIOpsChatWidget from '@/components/aiops/AIOpsChatWidget.vue'
 import { getDashboardStats, getDeployments, getTransactionTickets } from '@/api/modules/ops'
 import { getEventWallAnalysis } from '@/api/modules/eventwall'
-import { getResourceRequests } from '@/api/modules/cmdb'
 
 const route = useRoute()
 const router = useRouter()
@@ -191,196 +190,6 @@ const notificationsLoading = ref(false)
 const notificationItems = ref([])
 const notificationCount = ref(0)
 let notificationTimer = null
-
-const legacyMenuItems = [
-  { path: '/dashboard', title: '仪表盘', icon: 'Odometer', permission: 'ops.dashboard.view' },
-  {
-    title: 'CMDB',
-    icon: 'Files',
-    children: [
-      {
-        path: '/cmdb',
-        menuKey: '/cmdb?tab=items',
-        route: { path: '/cmdb', query: { tab: 'items' } },
-        title: '配置项管理',
-        icon: 'Grid',
-        permission: 'cmdb.ci.view',
-      },
-      {
-        path: '/cmdb',
-        menuKey: '/cmdb?tab=topology',
-        route: { path: '/cmdb', query: { tab: 'topology' } },
-        title: '资源地图',
-        icon: 'Share',
-        permission: 'cmdb.topology.view',
-      },
-      {
-        path: '/cmdb',
-        menuKey: '/cmdb?tab=cost',
-        route: { path: '/cmdb', query: { tab: 'cost' } },
-        title: '成本分析',
-        icon: 'TrendCharts',
-        permission: 'cmdb.cost.view',
-      },
-      {
-        path: '/cmdb',
-        menuKey: '/cmdb?tab=optimize',
-        route: { path: '/cmdb', query: { tab: 'optimize' } },
-        title: '资源优化',
-        icon: 'Lightning',
-        permission: 'cmdb.cost.view',
-      },
-      {
-        path: '/cmdb',
-        menuKey: '/cmdb?tab=requests',
-        route: { path: '/cmdb', query: { tab: 'requests' } },
-        title: '主机申请',
-        icon: 'Ticket',
-        anyPermissions: ['cmdb.request.submit', 'cmdb.request.approve'],
-      },
-    ],
-  },
-  {
-    title: '任务中心',
-    icon: 'Operation',
-    children: [
-      {
-        path: '/tasks/resources',
-        title: '资源底座',
-        icon: 'Monitor',
-        anyPermissions: ['ops.task.resource.view', 'ops.task.resource.manage'],
-      },
-      {
-        path: '/tasks/workbench',
-        title: '任务工作台',
-        icon: 'Operation',
-        anyPermissions: ['ops.task.execute', 'ops.host.execute'],
-      },
-      {
-        path: '/tasks/schedules',
-        title: '计划任务',
-        icon: 'Timer',
-        anyPermissions: ['ops.host.schedule.view', 'ops.host.schedule.manage', 'ops.host.schedule.execute'],
-      },
-    ],
-  },
-  {
-    title: '多云管理',
-    icon: 'MostlyCloudy',
-    children: [
-      { path: '/multicloud', title: '多云环境', icon: 'MostlyCloudy', permission: 'ops.multicloud.view' },
-      { path: '/terraform', title: 'IaC 编排', icon: 'SetUp', permission: 'ops.iac.view' },
-    ],
-  },
-  {
-    title: '工单系统',
-    icon: 'Tickets',
-    children: [
-      {
-        path: '/workorders/releases',
-        title: '应用发布',
-        icon: 'Promotion',
-        anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'],
-      },
-      {
-        path: '/workorders/sql',
-        title: 'SQL 审计',
-        icon: 'DataAnalysis',
-        anyPermissions: [
-          'sqlaudit.datasource.view',
-          'sqlaudit.order.view',
-          'sqlaudit.order.submit',
-          'sqlaudit.order.review',
-          'sqlaudit.order.execute',
-          'sqlaudit.query.view',
-          'sqlaudit.query.execute',
-        ],
-      },
-      {
-        path: '/workorders/transactions',
-        title: '事务工单',
-        icon: 'Tickets',
-        anyPermissions: ['ops.ticket.view', 'ops.ticket.manage', 'ops.ticket.approve'],
-      },
-      {
-        path: '/workorders/approval-flows',
-        title: '审批流',
-        icon: 'Checked',
-        anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'],
-      },
-    ],
-  },
-  {
-    title: '容器管理',
-    icon: 'Box',
-    children: [
-      { path: '/containers/k8s', title: 'K8s 集群', icon: 'Connection', permission: 'ops.k8s.view' },
-      { path: '/containers/docker', title: 'Docker 环境', icon: 'Platform', permission: 'ops.docker.view' },
-    ],
-  },
-  {
-    title: '中间件',
-    icon: 'DataBoard',
-    children: [
-      { path: '/middleware/nginx', title: 'Nginx 管理', icon: 'Location', permission: 'ops.nginx.view' },
-      { path: '/middleware/redis', title: 'Redis 管理', icon: 'Coin', permission: 'ops.middleware.view' },
-      { path: '/middleware/rocketmq', title: 'RocketMQ 管理', icon: 'Promotion', permission: 'ops.middleware.view' },
-      { path: '/middleware/elasticsearch', title: 'ES 管理', icon: 'Search', permission: 'ops.middleware.view' },
-    ],
-  },
-  {
-    title: '可观测性',
-    icon: 'DataLine',
-    children: [
-      {
-        path: '/observability/overview',
-        title: '平台总览',
-        icon: 'DataLine',
-        anyPermissions: ['ops.observability.system_posture.view', 'ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'],
-      },
-      { path: '/observability/grafana', title: '监控看板', icon: 'Histogram', permission: 'ops.grafana.view' },
-      { path: '/logs', title: '日志中心', icon: 'Search', anyPermissions: ['ops.log.query', 'ops.log.datasource.view'] },
-      { path: '/observability/tracing', title: '链路追踪', icon: 'Connection', anyPermissions: ['ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view'] },
-      { path: '/alerts', title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
-    ],
-  },
-  {
-    title: '事件中心',
-    icon: 'Tickets',
-    children: [
-      { path: '/events/wall', title: '事件中心', icon: 'Aim', permission: 'eventwall.view' },
-      { path: '/events/sources', title: '事件源', icon: 'Share', permission: 'eventwall.source.view' },
-    ],
-  },
-  {
-    path: '/marketplace',
-    title: '工具市场',
-    icon: 'Shop',
-    anyPermissions: ['marketplace.template.view', 'marketplace.deployment.view', 'marketplace.deployment.manage'],
-  },
-  {
-    title: 'AIOps',
-    icon: 'ChatDotSquare',
-    children: [
-      { path: '/aiops/chat', title: '智能助手', icon: 'Service', permission: 'aiops.chat.view' },
-      { path: '/aiops/knowledge', title: '知识图谱', icon: 'Share', permission: 'aiops.knowledge.view' },
-      { path: '/aiops/config', title: '智能体配置', icon: 'Tools', permission: 'aiops.config.view' },
-    ],
-  },
-  {
-    title: '用户管理',
-    icon: 'User',
-    children: [
-      {
-        path: '/users',
-        title: '用户管理',
-        icon: 'User',
-        anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view'],
-      },
-      { path: '/users/audit', title: '操作审计', icon: 'DocumentChecked', permission: 'rbac.audit.view' },
-    ],
-  },
-]
 
 const menuItems = [
   { path: '/dashboard', title: '仪表盘', icon: 'Odometer', permission: 'ops.dashboard.view' },
@@ -397,12 +206,7 @@ const menuItems = [
     title: '可观测性',
     icon: 'DataLine',
     children: [
-      {
-        path: '/observability/overview',
-        title: '平台总览',
-        icon: 'DataLine',
-        anyPermissions: ['ops.observability.system_posture.view', 'ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'],
-      },
+      { path: '/observability/overview', title: '平台总览', icon: 'DataLine', anyPermissions: ['ops.observability.system_posture.view', 'ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'] },
       { path: '/observability/grafana', title: '监控看板', icon: 'Histogram', permission: 'ops.grafana.view' },
       { path: '/logs', title: '日志中心', icon: 'Search', anyPermissions: ['ops.log.query', 'ops.log.datasource.view'] },
       { path: '/observability/tracing', title: '链路追踪', icon: 'Connection', anyPermissions: ['ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view'] },
@@ -421,66 +225,23 @@ const menuItems = [
     title: '任务中心',
     icon: 'Operation',
     children: [
-      {
-        path: '/tasks/resources',
-        title: '资源底座',
-        icon: 'Monitor',
-        anyPermissions: ['ops.task.resource.view', 'ops.task.resource.manage'],
-      },
-      {
-        path: '/tasks/workbench',
-        title: '任务工作台',
-        icon: 'Operation',
-        anyPermissions: ['ops.task.execute', 'ops.host.execute'],
-      },
-      {
-        path: '/tasks/schedules',
-        title: '计划任务',
-        icon: 'Timer',
-        anyPermissions: ['ops.host.schedule.view', 'ops.host.schedule.manage', 'ops.host.schedule.execute'],
-      },
+      { path: '/tasks/resources', title: '资源底座', icon: 'Monitor', anyPermissions: ['ops.task.resource.view', 'ops.task.resource.manage'] },
+      { path: '/tasks/workbench', title: '任务工作台', icon: 'Operation', anyPermissions: ['ops.task.execute', 'ops.host.execute'] },
+      { path: '/tasks/schedules', title: '计划任务', icon: 'Timer', anyPermissions: ['ops.host.schedule.view', 'ops.host.schedule.manage', 'ops.host.schedule.execute'] },
     ],
   },
   {
     title: '工单系统',
     icon: 'Tickets',
     children: [
-      {
-        path: '/workorders/releases',
-        title: '应用发布',
-        icon: 'Promotion',
-        anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'],
-      },
-      {
-        path: '/workorders/sql',
-        title: 'SQL 审计',
-        icon: 'DataAnalysis',
-        anyPermissions: [
-          'sqlaudit.datasource.view',
-          'sqlaudit.order.view',
-          'sqlaudit.order.submit',
-          'sqlaudit.order.review',
-          'sqlaudit.order.execute',
-          'sqlaudit.query.view',
-          'sqlaudit.query.execute',
-        ],
-      },
-      {
-        path: '/workorders/transactions',
-        title: '事务工单',
-        icon: 'Tickets',
-        anyPermissions: ['ops.ticket.view', 'ops.ticket.manage', 'ops.ticket.approve'],
-      },
-      {
-        path: '/workorders/approval-flows',
-        title: '审批流',
-        icon: 'Checked',
-        anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'],
-      },
+      { path: '/workorders/releases', title: '应用发布', icon: 'Promotion', anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'] },
+      { path: '/workorders/sql', title: 'SQL 审计', icon: 'DataAnalysis', anyPermissions: ['sqlaudit.datasource.view', 'sqlaudit.order.view', 'sqlaudit.order.submit', 'sqlaudit.order.review', 'sqlaudit.order.execute', 'sqlaudit.query.view', 'sqlaudit.query.execute'] },
+      { path: '/workorders/transactions', title: '事务工单', icon: 'Tickets', anyPermissions: ['ops.ticket.view', 'ops.ticket.manage', 'ops.ticket.approve'] },
+      { path: '/workorders/approval-flows', title: '审批流', icon: 'Checked', anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'] },
     ],
   },
   {
-    title: '容器环境',
+    title: '容器管理',
     icon: 'Box',
     children: [
       { path: '/containers/k8s', title: 'K8s 集群', icon: 'Connection', permission: 'ops.k8s.view' },
@@ -491,86 +252,12 @@ const menuItems = [
     title: '用户管理',
     icon: 'User',
     children: [
-      {
-        path: '/users',
-        title: '用户管理',
-        icon: 'User',
-        anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view'],
-      },
+      { path: '/users', title: '用户管理', icon: 'User', anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view'] },
       { path: '/users/audit', title: '操作审计', icon: 'DocumentChecked', permission: 'rbac.audit.view' },
     ],
   },
-  {
-    title: 'CMDB-将下线',
-    icon: 'Files',
-    children: [
-      {
-        path: '/cmdb',
-        menuKey: '/cmdb?tab=items',
-        route: { path: '/cmdb', query: { tab: 'items' } },
-        title: '配置项管理',
-        icon: 'Grid',
-        permission: 'cmdb.ci.view',
-      },
-      {
-        path: '/cmdb',
-        menuKey: '/cmdb?tab=topology',
-        route: { path: '/cmdb', query: { tab: 'topology' } },
-        title: '资源地图',
-        icon: 'Share',
-        permission: 'cmdb.topology.view',
-      },
-      {
-        path: '/cmdb',
-        menuKey: '/cmdb?tab=cost',
-        route: { path: '/cmdb', query: { tab: 'cost' } },
-        title: '成本分析',
-        icon: 'TrendCharts',
-        permission: 'cmdb.cost.view',
-      },
-      {
-        path: '/cmdb',
-        menuKey: '/cmdb?tab=optimize',
-        route: { path: '/cmdb', query: { tab: 'optimize' } },
-        title: '资源优化',
-        icon: 'Lightning',
-        permission: 'cmdb.cost.view',
-      },
-      {
-        path: '/cmdb',
-        menuKey: '/cmdb?tab=requests',
-        route: { path: '/cmdb', query: { tab: 'requests' } },
-        title: '主机申请',
-        icon: 'Ticket',
-        anyPermissions: ['cmdb.request.submit', 'cmdb.request.approve'],
-      },
-    ],
-  },
-  {
-    title: '多云管理-将下线',
-    icon: 'MostlyCloudy',
-    children: [
-      { path: '/multicloud', title: '多云环境', icon: 'MostlyCloudy', permission: 'ops.multicloud.view' },
-      { path: '/terraform', title: 'IaC 编排', icon: 'SetUp', permission: 'ops.iac.view' },
-    ],
-  },
-  {
-    title: '中间件-将下线',
-    icon: 'DataBoard',
-    children: [
-      { path: '/middleware/nginx', title: 'Nginx 管理', icon: 'Location', permission: 'ops.nginx.view' },
-      { path: '/middleware/redis', title: 'Redis 管理', icon: 'Coin', permission: 'ops.middleware.view' },
-      { path: '/middleware/rocketmq', title: 'RocketMQ 管理', icon: 'Promotion', permission: 'ops.middleware.view' },
-      { path: '/middleware/elasticsearch', title: 'ES 管理', icon: 'Search', permission: 'ops.middleware.view' },
-    ],
-  },
-  {
-    path: '/marketplace',
-    title: '工具市场',
-    icon: 'Shop',
-    anyPermissions: ['marketplace.template.view', 'marketplace.deployment.view', 'marketplace.deployment.manage'],
-  },
 ]
+
 
 function canAccess(item) {
   if (item.permission) return authStore.hasPermission(item.permission)
@@ -578,28 +265,14 @@ function canAccess(item) {
   return true
 }
 
-const visibleMenuItems = computed(() => {
-  const mapped = menuItems
-    .map((item) => {
-      if (!item.children) return item
-      const children = item.children.filter(canAccess)
-      return { ...item, children }
-    })
-    .filter((item) => item.children ? item.children.length > 0 : canAccess(item))
-
-  const marketplaceIndex = mapped.findIndex((item) => item.path === '/marketplace')
-  const containerIndex = mapped.findIndex((item) => Array.isArray(item.children) && item.children.some((child) => child.path === '/containers/k8s'))
-
-  if (marketplaceIndex === -1 || containerIndex === -1) return mapped
-
-  const marketplaceItem = mapped[marketplaceIndex]
-  const nextItems = mapped.filter((_, index) => index !== marketplaceIndex)
-  const target = nextItems[containerIndex > marketplaceIndex ? containerIndex - 1 : containerIndex]
-  if (!target?.children?.some((child) => child.path === '/marketplace')) {
-    target.children = [...target.children, marketplaceItem]
-  }
-  return nextItems
-})
+const visibleMenuItems = computed(() => menuItems
+  .map((item) => {
+    if (!item.children) return item
+    const children = item.children.filter(canAccess)
+    return { ...item, children }
+  })
+  .filter((item) => item.children ? item.children.length > 0 : canAccess(item))
+)
 
 const normalizedMenuPath = computed(() => {
   if (route.path.startsWith('/sql')) {
@@ -610,10 +283,6 @@ const normalizedMenuPath = computed(() => {
   }
   if (route.path.startsWith('/logs/')) {
     return '/logs'
-  }
-  if (route.path === '/cmdb') {
-    const currentTab = typeof route.query.tab === 'string' ? route.query.tab : 'items'
-    return `/cmdb?tab=${currentTab}`
   }
   return route.path
 })
@@ -744,23 +413,6 @@ function buildTransactionApprovalItem(item) {
   }
 }
 
-function buildResourceRequestApprovalItem(item) {
-  const scopeText = formatScopeText(item)
-  const quantityText = item.quantity ? ` × ${item.quantity}` : ''
-  return {
-    key: `resource-approval-${item.id}`,
-    section: 'approval',
-    title: item.title || '主机申请待审批',
-    description: `${scopeText} · ${(item.resource_type || '资源')}申请待处理${quantityText}`,
-    time: item.created_at,
-    route: { path: '/cmdb', query: { tab: 'requests' } },
-    tag: '资源审批',
-    tagType: 'info',
-    dotTone: 'info',
-    priority: 4,
-  }
-}
-
 function buildEventNotificationItem(item) {
   const resultToneMap = {
     failed: { tag: '高风险事件', tagType: 'danger', priority: 3 },
@@ -803,12 +455,6 @@ async function loadNotifications() {
       tasks.push(Promise.resolve(null))
     }
 
-    if (authStore.hasPermission('cmdb.request.approve')) {
-      tasks.push(getResourceRequests({ status: 'pending' }))
-    } else {
-      tasks.push(Promise.resolve(null))
-    }
-
     if (authStore.hasPermission('ops.ticket.approve')) {
       tasks.push(getTransactionTickets({ status: 'pending' }))
     } else {
@@ -827,9 +473,8 @@ async function loadNotifications() {
       tasks.push(Promise.resolve(null))
     }
 
-    const [deploymentsResult, resourceRequestsResult, transactionTicketsResult, dashboardStatsResult, eventOverviewResult] = await Promise.allSettled(tasks)
+    const [deploymentsResult, transactionTicketsResult, dashboardStatsResult, eventOverviewResult] = await Promise.allSettled(tasks)
     const deploymentsResponse = deploymentsResult.status === 'fulfilled' ? deploymentsResult.value : null
-    const resourceRequestsResponse = resourceRequestsResult.status === 'fulfilled' ? resourceRequestsResult.value : null
     const transactionTicketsResponse = transactionTicketsResult.status === 'fulfilled' ? transactionTicketsResult.value : null
     const dashboardStats = dashboardStatsResult.status === 'fulfilled' ? dashboardStatsResult.value : null
     const eventOverview = eventOverviewResult.status === 'fulfilled' ? eventOverviewResult.value : null
@@ -842,12 +487,6 @@ async function loadNotifications() {
       const pendingDeploymentApprovals = deploymentItems.filter(canHandleDeploymentApproval)
       items.push(...pendingDeploymentApprovals.slice(0, 3).map(buildDeploymentApprovalItem))
       total += pendingDeploymentApprovals.length
-    }
-
-    if (resourceRequestsResponse) {
-      const requestItems = Array.isArray(resourceRequestsResponse.results) ? resourceRequestsResponse.results : (resourceRequestsResponse || [])
-      items.push(...requestItems.slice(0, 3).map(buildResourceRequestApprovalItem))
-      total += requestItems.length
     }
 
     if (transactionTicketsResponse) {

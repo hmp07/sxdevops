@@ -1,74 +1,71 @@
 <template>
-  <div class="transaction-ticket-page fade-in">
+  <div class="transaction-ticket-page fade-in workbench-page-shell">
     <section class="hero panel">
       <div class="release-hero-title-row release-hero-title-inline">
         <span class="ticket-header-icon"><el-icon><Tickets /></el-icon></span>
         <h2>事务工单</h2>
         <p class="ticket-hero-desc">覆盖变更执行、巡检维护、权限开通与故障处置，统一走审批流并沉淀处理窗口。</p>
       </div>
-      <div class="hero-actions">
-        <el-button v-if="canCreate" type="primary" @click="openCreateDialog">
-          <el-icon><Plus /></el-icon>
-          新建事务工单
-        </el-button>
-      </div>
     </section>
 
-    <div class="stats-grid release-stats">
-      <div class="stat-card release-stat-card">
+    <div class="audit-grid">
+      <button type="button" class="audit-card audit-card--inline audit-card--action" :class="{ 'is-active': activeSummaryKey === 'all' }" @click="applySummaryFilter('all')">
         <div class="stat-value">{{ summary.total }}</div>
         <div class="stat-label">工单总数</div>
-      </div>
-      <div class="stat-card release-stat-card warning-card">
+      </button>
+      <button type="button" class="audit-card audit-card--inline audit-card--warning audit-card--action" :class="{ 'is-active': activeSummaryKey === 'pending' }" @click="applySummaryFilter('pending')">
         <div class="stat-value">{{ summary.pending }}</div>
         <div class="stat-label">待审批</div>
-      </div>
-      <div class="stat-card release-stat-card success-card">
+      </button>
+      <button type="button" class="audit-card audit-card--inline audit-card--success audit-card--action" :class="{ 'is-active': activeSummaryKey === 'processing' }" @click="applySummaryFilter('processing')">
         <div class="stat-value">{{ summary.processing }}</div>
         <div class="stat-label">处理中</div>
-      </div>
-      <div class="stat-card release-stat-card danger-card">
+      </button>
+      <button type="button" class="audit-card audit-card--inline audit-card--danger audit-card--action" :class="{ 'is-active': activeSummaryKey === 'urgent' }" @click="applySummaryFilter('urgent')">
         <div class="stat-value">{{ summary.urgent }}</div>
         <div class="stat-label">高优先级</div>
+      </button>
+    </div>
+
+    <div class="workbench-card">
+      <div class="section-toolbar">
+        <div class="toolbar-head">
+          <span class="toolbar-title">事务工单列表</span>
+          <span class="toolbar-desc">延续任务工作台的筛选密度和操作节奏，统一处理审批、执行与回看。</span>
+        </div>
+        <div class="workbench-card-actions">
+          <el-button v-if="canCreate" type="primary" @click="openCreateDialog">
+            <el-icon><Plus /></el-icon>
+            新建事务工单
+          </el-button>
+        </div>
       </div>
-    </div>
 
-    <div v-if="platformTips.length" class="ticket-alert-strip">
-      <span class="ticket-alert-strip__label">平台提醒</span>
-      <el-tag
-        v-for="item in platformTips"
-        :key="item"
-        size="small"
-        effect="light"
-        type="info"
-        class="ticket-alert-strip__tag"
-      >
-        {{ item }}
-      </el-tag>
-    </div>
-
-    <div class="table-card">
-      <div class="filter-bar ticket-filter-bar">
-        <el-select v-model="typeFilter" clearable placeholder="工单类型" style="width: 128px">
-          <el-option v-for="item in typeOptions" :key="item.value" :label="item.label" :value="item.value" />
-        </el-select>
-        <el-select v-model="statusFilter" clearable placeholder="状态" style="width: 118px">
-          <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />
-        </el-select>
-        <el-select v-model="priorityFilter" clearable placeholder="优先级" style="width: 118px">
-          <el-option v-for="item in priorityOptions" :key="item.value" :label="item.label" :value="item.value" />
-        </el-select>
-        <el-select v-model="bizFilter" clearable filterable placeholder="系统" style="width: 128px" @change="handleBizFilterChange">
-          <el-option v-for="item in businessLineOptions" :key="item.value" :label="item.label" :value="item.value" />
-        </el-select>
-        <el-select v-model="envFilter" clearable placeholder="环境" style="width: 118px">
-          <el-option v-for="item in envFilterOptions" :key="item.value" :label="item.label" :value="item.value" />
-        </el-select>
-        <el-input v-model="search" clearable placeholder="搜索标题 / 申请人 / 处理人" style="width: 280px" />
-        <el-button class="filter-refresh-btn" :loading="loading" @click="loadTickets">
-          <el-icon><RefreshRight /></el-icon>
-          刷新
-        </el-button>
+      <div class="workbench-toolbar workbench-toolbar--history ticket-filter-bar">
+        <div class="workbench-toolbar-left">
+          <el-select v-model="typeFilter" clearable placeholder="工单类型" style="width: 128px">
+            <el-option v-for="item in typeOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-select v-model="statusFilter" clearable placeholder="状态" style="width: 118px">
+            <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-select v-model="priorityFilter" clearable placeholder="优先级" style="width: 118px">
+            <el-option v-for="item in priorityOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-select v-model="bizFilter" clearable filterable placeholder="系统" style="width: 128px" @change="handleBizFilterChange">
+            <el-option v-for="item in businessLineOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-select v-model="envFilter" clearable placeholder="环境" style="width: 118px">
+            <el-option v-for="item in envFilterOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-input v-model="search" clearable placeholder="搜索标题 / 申请人 / 处理人" style="width: 280px" />
+        </div>
+        <div class="workbench-toolbar-right">
+          <el-button class="filter-refresh-btn" :loading="loading" @click="loadTickets">
+            <el-icon><RefreshRight /></el-icon>
+            刷新
+          </el-button>
+        </div>
       </div>
 
       <el-table v-loading="loading" :data="filteredTickets" stripe style="width: 100%">
@@ -227,7 +224,6 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Plus, RefreshRight, Tickets } from '@element-plus/icons-vue'
-import { getResourceNodeTree } from '@/api/modules/cmdb'
 import {
   approveTransactionTicket,
   completeTransactionTicket,
@@ -257,6 +253,7 @@ const statusFilter = ref('')
 const priorityFilter = ref('')
 const bizFilter = ref('')
 const envFilter = ref('')
+const activeSummaryKey = ref('all')
 
 const typeOptions = [
   { label: '变更执行', value: 'change' },
@@ -288,15 +285,17 @@ const businessLineOptions = computed(() => (resourceTree.value || [])
   .map(item => ({ label: item.name, value: item.name })))
 
 const envFilterOptions = computed(() => {
-  if (!bizFilter.value) return listEnvironments(resourceTree.value)
+  if (!bizFilter.value) return defaultEnvironmentOptions()
   const bizNode = (resourceTree.value || []).find(item => item.node_type === 'biz' && item.name === bizFilter.value)
-  return (bizNode?.children || []).map(item => ({ label: environmentLabel(item.name), value: item.name }))
+  const options = (bizNode?.children || []).map(item => ({ label: environmentLabel(item.name), value: item.name }))
+  return options.length ? options : defaultEnvironmentOptions()
 })
 
 const formEnvironmentOptions = computed(() => {
-  if (!ticketForm.value.business_line) return []
+  if (!ticketForm.value.business_line) return defaultEnvironmentOptions()
   const bizNode = (resourceTree.value || []).find(item => item.node_type === 'biz' && item.name === ticketForm.value.business_line)
-  return (bizNode?.children || []).map(item => ({ label: environmentLabel(item.name), value: item.name }))
+  const options = (bizNode?.children || []).map(item => ({ label: environmentLabel(item.name), value: item.name }))
+  return options.length ? options : defaultEnvironmentOptions()
 })
 
 const transactionFlows = computed(() => {
@@ -305,6 +304,9 @@ const transactionFlows = computed(() => {
 })
 
 const filteredTickets = computed(() => tickets.value.filter((item) => {
+  if (activeSummaryKey.value === 'pending' && item.status !== 'pending') return false
+  if (activeSummaryKey.value === 'processing' && item.status !== 'processing') return false
+  if (activeSummaryKey.value === 'urgent' && item.priority !== 'high') return false
   if (typeFilter.value && item.ticket_type !== typeFilter.value) return false
   if (statusFilter.value && item.status !== statusFilter.value) return false
   if (priorityFilter.value && item.priority !== priorityFilter.value) return false
@@ -322,13 +324,11 @@ const summary = computed(() => ({
   urgent: tickets.value.filter(item => item.priority === 'high').length,
 }))
 
-const platformTips = computed(() => {
-  const tips = []
-  if (summary.value.pending) tips.push(`当前有 ${summary.value.pending} 张事务工单待审批`)
-  if (summary.value.processing) tips.push(`当前有 ${summary.value.processing} 张事务工单处理中`)
-  if (!transactionFlows.value.length) tips.push('当前未配置事务工单专属审批流，将回退展示通用审批流')
-  return tips.slice(0, 3)
-})
+function applySummaryFilter(key) {
+  activeSummaryKey.value = key
+  statusFilter.value = ''
+  priorityFilter.value = ''
+}
 
 function resetTicketForm() {
   ticketForm.value = {
@@ -368,24 +368,11 @@ async function loadFlows() {
 }
 
 async function loadResourceTree() {
-  try {
-    const response = await getResourceNodeTree()
-    resourceTree.value = response?.results || response || []
-  } catch {
-    resourceTree.value = []
-  }
+  resourceTree.value = []
 }
 
-function listEnvironments(tree) {
-  const map = new Map()
-  ;(tree || []).forEach((bizNode) => {
-    ;(bizNode.children || []).forEach((envNode) => {
-      if (!map.has(envNode.name)) {
-        map.set(envNode.name, { label: environmentLabel(envNode.name), value: envNode.name })
-      }
-    })
-  })
-  return Array.from(map.values())
+function defaultEnvironmentOptions() {
+  return ['prod', 'test', 'dev'].map(value => ({ label: environmentLabel(value), value }))
 }
 
 function environmentLabel(value) {
@@ -423,6 +410,7 @@ function formatTime(value) {
 function handleBusinessLineChange(value) {
   const bizNode = (resourceTree.value || []).find(item => item.node_type === 'biz' && item.name === value)
   const envs = (bizNode?.children || []).map(item => item.name)
+  if (!envs.length) return
   if (!envs.includes(ticketForm.value.environment)) {
     ticketForm.value.environment = envs[0] || ''
   }
@@ -522,27 +510,24 @@ onMounted(async () => {
 
 <style scoped>
 .transaction-ticket-page{display:flex;flex-direction:column;gap:6px}
-.panel{background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border:1px solid rgba(148,163,184,.16);border-radius:20px;box-shadow:0 12px 28px rgba(15,23,42,.05);padding:12px 14px}
-.hero{background:linear-gradient(135deg,#f6fbff 0%,#f8fbff 100%);display:flex;gap:12px;justify-content:space-between;align-items:center}
+.panel{background:linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(250,252,255,.96) 100%);border:1px solid rgba(15,23,42,.08);border-radius:18px;box-shadow:0 8px 24px rgba(15,23,42,.04);padding:14px 16px}
+.hero{background:linear-gradient(135deg,#fbfdff 0%,#f7faff 52%,#f9fbfd 100%);display:flex;gap:12px;justify-content:space-between;align-items:center;border-color:rgba(36,91,219,.09)}
 .release-hero-title-row{display:flex;align-items:center;gap:12px}
 .release-hero-title-inline{flex-wrap:wrap}
 .hero h2{margin:0;color:#0f172a}
 .ticket-hero-desc{margin:0;color:#64748b;font-size:13px;line-height:1.5}
-.ticket-header-icon{width:42px;height:42px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;font-size:20px;color:#fff;background:linear-gradient(135deg,#5b8def,#36cfc9);box-shadow:0 10px 20px rgba(64,158,255,.2)}
-.hero-actions{display:flex;align-items:center}
-.table-card{padding:12px;border-radius:20px;background:rgba(255,255,255,.92);box-shadow:0 12px 26px rgba(15,23,42,.04);border:1px solid rgba(148,163,184,.16)}
-.release-stats{gap:8px}
-.release-stat-card{position:relative;min-height:76px;background:linear-gradient(145deg,#ffffff 0%,#f6faff 100%);border:1px solid rgba(148,163,184,.16);box-shadow:0 12px 26px rgba(15,23,42,.05);text-align:left;padding:12px 16px;overflow:hidden}
-.release-stat-card::after{content:'';position:absolute;inset:auto -24px -30px auto;width:108px;height:108px;border-radius:50%;background:radial-gradient(circle,rgba(64,158,255,.16) 0%,rgba(64,158,255,0) 70%)}
-.warning-card::after{background:radial-gradient(circle,rgba(245,158,11,.18) 0%,rgba(245,158,11,0) 70%)}
-.success-card::after{background:radial-gradient(circle,rgba(16,185,129,.18) 0%,rgba(16,185,129,0) 70%)}
-.danger-card::after{background:radial-gradient(circle,rgba(239,68,68,.18) 0%,rgba(239,68,68,0) 70%)}
-.release-stat-card .stat-value{font-size:26px;line-height:1.05}
-.release-stat-card .stat-label{margin-top:4px;color:#64748b}
-.ticket-alert-strip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 2px;padding:10px 12px;border-radius:14px;background:rgba(248,250,252,.9);border:1px solid rgba(148,163,184,.18)}
-.ticket-alert-strip__label{font-size:12px;font-weight:700;color:#475569}
-.ticket-filter-bar{display:flex;align-items:center;gap:10px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px;margin-bottom:10px}
-.filter-refresh-btn{margin-left:auto;flex-shrink:0}
+.ticket-header-icon{width:42px;height:42px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;font-size:20px;color:#245bdb;background:linear-gradient(180deg,#f3f7ff 0%,#ebf2ff 100%);border:1px solid rgba(36,91,219,.12);box-shadow:inset 0 1px 0 rgba(255,255,255,.8)}
+.audit-grid{gap:10px}
+.audit-card{border-radius:14px;border:1px solid rgba(15,23,42,.08);background:linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(252,253,255,.94) 100%);box-shadow:0 4px 14px rgba(15,23,42,.03)}
+.audit-card--inline{min-height:68px;padding:14px 16px}
+.audit-card .stat-label{font-size:13px;font-weight:600;color:#334155}
+.audit-card .stat-value{font-size:24px;color:#1f2329}
+.audit-card--warning{background:linear-gradient(180deg,#fffdfa 0%,#ffffff 100%)}
+.audit-card--success{background:linear-gradient(180deg,#fbfffd 0%,#ffffff 100%)}
+.audit-card--danger{background:linear-gradient(180deg,#fffafb 0%,#ffffff 100%)}
+.audit-card--action:hover{border-color:rgba(36,91,219,.16);box-shadow:0 10px 20px rgba(36,91,219,.06)}
+.audit-card--action.is-active{border-color:rgba(36,91,219,.24);background:linear-gradient(180deg,#f4f7ff 0%,#ffffff 100%);box-shadow:0 0 0 1px rgba(36,91,219,.05),0 12px 22px rgba(36,91,219,.08)}
+.ticket-filter-bar{align-items:flex-start}
 .stack-cell{display:flex;flex-direction:column;gap:6px}
 .ticket-title{font-weight:600;color:#0f172a}
 .sub-text{font-size:13px;color:#64748b;line-height:1.5}

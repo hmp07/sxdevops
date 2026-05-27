@@ -106,26 +106,6 @@ const routes = [
         },
       },
       {
-        path: 'hosts/requests',
-        redirect: '/cmdb?tab=requests',
-        meta: {
-          hidden: true,
-          title: '主机申请',
-          icon: 'Ticket',
-          anyPermissions: ['cmdb.request.submit', 'cmdb.request.approve'],
-        },
-      },
-      {
-        path: 'cmdb',
-        name: 'CmdbManage',
-        component: () => import('@/views/CmdbManage.vue'),
-        meta: {
-          title: 'CMDB',
-          icon: 'Files',
-          anyPermissions: ['cmdb.ci.view', 'cmdb.topology.view', 'cmdb.cost.view', 'cmdb.request.submit', 'cmdb.request.approve'],
-        },
-      },
-      {
         path: 'deployments',
         redirect: '/workorders/releases',
         meta: { hidden: true, anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'] },
@@ -205,16 +185,6 @@ const routes = [
         },
       },
       {
-        path: 'marketplace',
-        name: 'ServiceMarket',
-        component: () => import('@/views/ServiceMarket.vue'),
-        meta: {
-          title: '工具市场',
-          icon: 'Shop',
-          anyPermissions: ['marketplace.template.view', 'marketplace.deployment.view', 'marketplace.deployment.manage'],
-        },
-      },
-      {
         path: 'containers/k8s',
         name: 'ContainerManageK8s',
         component: () => import('@/views/K8sManage.vue'),
@@ -225,52 +195,6 @@ const routes = [
         name: 'ContainerManageDocker',
         component: () => import('@/views/ContainerManage.vue'),
         meta: { title: 'Docker 环境', icon: 'Platform', permission: 'ops.docker.view' },
-      },
-      {
-        path: 'middleware/redis',
-        name: 'RedisManage',
-        component: () => import('@/views/MiddlewareManage.vue'),
-        meta: { title: 'Redis 管理', icon: 'Coin', permission: 'ops.middleware.view', moduleKey: 'redis' },
-      },
-      {
-        path: 'middleware/rocketmq',
-        name: 'RocketMqManage',
-        component: () => import('@/views/MiddlewareManage.vue'),
-        meta: { title: 'RocketMQ 管理', icon: 'Promotion', permission: 'ops.middleware.view', moduleKey: 'rocketmq' },
-      },
-      {
-        path: 'middleware/elasticsearch',
-        name: 'ElasticsearchManage',
-        component: () => import('@/views/MiddlewareManage.vue'),
-        meta: { title: 'Elasticsearch 管理', icon: 'Search', permission: 'ops.middleware.view', moduleKey: 'elasticsearch' },
-      },
-      {
-        path: 'middleware/nginx',
-        name: 'NginxManage',
-        component: () => import('@/views/NginxManage.vue'),
-        meta: { title: 'Nginx 管理', icon: 'Location', permission: 'ops.nginx.view' },
-      },
-      {
-        path: 'middleware/common',
-        redirect: '/middleware/redis',
-        meta: { hidden: true, permission: 'ops.middleware.view' },
-      },
-      {
-        path: 'nginx',
-        redirect: '/middleware/nginx',
-        meta: { hidden: true, permission: 'ops.nginx.view' },
-      },
-      {
-        path: 'terraform',
-        name: 'TerraformIac',
-        component: () => import('@/views/TerraformIac.vue'),
-        meta: { title: 'IaC 编排', icon: 'SetUp', permission: 'ops.iac.view' },
-      },
-      {
-        path: 'multicloud',
-        name: 'MultiCloudManage',
-        component: () => import('@/views/MultiCloudManage.vue'),
-        meta: { title: '多云环境', icon: 'MostlyCloudy', permission: 'ops.multicloud.view' },
       },
       {
         path: 'logs',

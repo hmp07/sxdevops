@@ -48,7 +48,6 @@ import { Monitor, Timer } from '@element-plus/icons-vue'
 import CmdbHostsPanel from '@/components/cmdb/CmdbHostsPanel.vue'
 import CmdbHostScheduleCenter from '@/components/cmdb/CmdbHostScheduleCenter.vue'
 import { useAuthStore } from '@/stores/auth'
-import { getResourceNodeTree } from '@/api/modules/cmdb'
 import { getHosts, getHostTaskScheduleStats } from '@/api/modules/ops'
 
 const route = useRoute()
@@ -99,7 +98,7 @@ const summaryCards = computed(() => {
 })
 
 async function fetchResourceTree() {
-  try { resourceTree.value = await getResourceNodeTree() } catch (error) {}
+  resourceTree.value = []
 }
 
 async function fetchHostSummary() {

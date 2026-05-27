@@ -5,8 +5,6 @@ from . import loki_views
 from . import log_views
 from . import docker_views
 from . import k8s_views
-from . import middleware_views
-from . import nginx_views
 from . import observability_views
 router = DefaultRouter()
 router.register(r'hosts', views.HostViewSet)
@@ -39,13 +37,6 @@ router.register(r'observability/system-posture/systems', observability_views.Sys
 router.register(r'observability/tracing/datasources', observability_views.TracingDataSourceViewSet, basename='tracing-datasource')
 router.register(r'k8s/clusters', k8s_views.K8sClusterViewSet)
 router.register(r'docker/hosts', docker_views.DockerHostViewSet)
-router.register(r'nginx/envs', nginx_views.NginxEnvironmentViewSet)
-router.register(r'nginx/certs', nginx_views.NginxCertificateViewSet)
-router.register(r'nginx/domains', nginx_views.NginxDomainViewSet)
-router.register(r'nginx/routes', nginx_views.NginxRouteViewSet)
-
-
-
 urlpatterns = [
     path('dashboard/stats/', views.dashboard_stats, name='dashboard-stats'),
     path('alerts/webhooks/<str:provider>/', views.alert_webhook, name='alert-webhook'),
@@ -68,8 +59,6 @@ urlpatterns = [
     path('docker/containers/<str:container_id>/remove/', docker_views.container_remove, name='docker-container-remove'),
     path('docker/containers/<str:container_id>/logs/', docker_views.container_logs, name='docker-container-logs'),
     path('docker/containers/<str:container_id>/inspect/', docker_views.container_inspect, name='docker-container-inspect'),
-    path('middleware/overview/', middleware_views.middleware_overview, name='middleware-overview'),
-    path('middleware/action/', middleware_views.middleware_action, name='middleware-action'),
     path('observability/system-posture/history/', observability_views.observability_system_posture_history, name='observability-system-posture-history'),
     path('observability/system-posture/', observability_views.observability_system_posture, name='observability-system-posture'),
     path('observability/overview/', observability_views.observability_overview, name='observability-overview'),

@@ -25,8 +25,6 @@ from django.utils import timezone
 from cmdb.models import ConfigItem
 from eventwall.models import EventRecord
 from eventwall.services import record_event
-from iac.models import TerraformExecution, TerraformStack
-from multicloud.models import CloudAsset
 from ops.host_tasks import build_host_target_snapshot as build_ops_host_target_snapshot
 from ops.host_tasks import resolve_host_source_refs, start_host_task
 from ops.models import (
@@ -39,7 +37,6 @@ from ops.models import (
     K8sCluster,
     LogDataSource,
     LogEntry,
-    NginxEnvironment,
     ObservabilityDataSourceLink,
     SystemPostureSLAHistory,
     SystemPostureSystem,
@@ -55,8 +52,6 @@ from ops.tracing_providers import (
     _resolve_provider,
     load_tracing_catalog,
 )
-from ops.middleware_views import _build_payload as build_middleware_payload
-from ops.middleware_views import _get_demo_state as get_middleware_demo_state
 from ops.log_views import _merge_config as merge_log_config
 from ops.log_views import _run_query as run_log_provider_query
 from ops.observability_views import execute_dashboard_panel_queries, execute_promql_query
@@ -321,12 +316,6 @@ BUILTIN_MCP_SERVERS = [
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
         'description': '查询 Kubernetes 集群与 Docker 主机。',
         'tool_whitelist': ['query_container_assets', 'query_k8s_cluster_summary', 'query_k8s_resources'],
-    },
-    {
-        'name': '中间件 MCP',
-        'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
-        'description': '查询 Nginx、Redis、RocketMQ、Elasticsearch 等中间件状态。',
-        'tool_whitelist': ['query_middleware_assets'],
     },
     {
         'name': 'N9E 监控 MCP',
@@ -640,7 +629,7 @@ def _ensure_builtin_runtime_assets(config):
     deprecated_builtin_mcp_names = {
         item['name']
         for item in BUILTIN_MCP_SERVERS
-        if set(item.get('tool_whitelist') or []) & {'query_workorders', 'query_middleware_assets'}
+        if set(item.get('tool_whitelist') or []) & {'query_workorders'}
     }
     builtin_mcp_names = {item['name'] for item in BUILTIN_MCP_SERVERS if item['name'] not in deprecated_builtin_mcp_names}
     builtin_skill_slugs = {item['slug'] for item in BUILTIN_SKILLS}
@@ -2249,30 +2238,7 @@ def query_resources(session, user_message, user, query='', environment='', limit
                 'items': [f'{item.name} / {item.ci_type.name} / {item.get_status_display()}' for item in items],
             })
             summary['cmdb_items'] = len(items)
-            citations.append({'title': 'CMDB', 'path': '/cmdb', 'query': {'tab': 'items'}})
-
-    if user_has_permissions(user, ['ops.multicloud.view']):
-        asset_queryset = CloudAsset.objects.select_related('environment').all()
-        asset_queryset = _queryset_search(asset_queryset, ['name', 'resource_id', 'resource_type', 'region', 'vpc_name'], tokens)
-        assets = list(asset_queryset.order_by('-updated_at')[:limit])
-        if assets:
-            sections.append({
-                'title': '多云资源',
-                'items': [f'{asset.name} / {asset.resource_type} / {asset.get_status_display()}' for asset in assets],
-            })
-            summary['cloud_assets'] = len(assets)
-            citations.append({'title': '多云环境', 'path': '/multicloud'})
-
-    if user_has_permissions(user, ['ops.iac.view']):
-        stack_queryset = _queryset_search(TerraformStack.objects.all(), ['name', 'description', 'region', 'zone'], tokens)
-        stacks = list(stack_queryset.order_by('-updated_at')[:4])
-        if stacks:
-            sections.append({
-                'title': 'IaC 方案',
-                'items': [f'{stack.name} / {stack.get_cloud_provider_display()} / {stack.region}' for stack in stacks],
-            })
-            summary['iac_stacks'] = len(stacks)
-            citations.append({'title': 'IaC 编排', 'path': '/terraform'})
+            citations.append({'title': 'CMDB'})
 
     if user_has_permissions(user, ['ops.k8s.view']):
         cluster_queryset = _queryset_search(K8sCluster.objects.all(), ['name', 'api_server', 'description'], tokens)
@@ -2295,17 +2261,6 @@ def query_resources(session, user_message, user, query='', environment='', limit
             })
             summary['docker_hosts'] = len(docker_hosts)
             citations.append({'title': 'Docker 环境', 'path': '/containers/docker'})
-
-    if user_has_permissions(user, ['ops.nginx.view']):
-        nginx_queryset = _queryset_search(NginxEnvironment.objects.all(), ['name', 'ip_address', 'description'], tokens)
-        nginx_envs = list(nginx_queryset.order_by('-updated_at')[:5])
-        if nginx_envs:
-            sections.append({
-                'title': 'Nginx 环境',
-                'items': [f'{item.name} ({item.ip_address}) / {item.get_status_display()}' for item in nginx_envs],
-            })
-            summary['nginx_envs'] = len(nginx_envs)
-            citations.append({'title': 'Nginx 管理', 'path': '/middleware/nginx'})
 
     if user_has_permissions(user, ['ops.log.datasource.view']):
         datasource_queryset = _queryset_search(LogDataSource.objects.all(), ['name', 'provider', 'description'], tokens)
@@ -2651,7 +2606,7 @@ def query_cost_report(session, user_message, user, query='', environment='', bus
         'total_monthly_cost': float(total),
     }
     _finish_tool_invocation(invocation, summary, started_at, success=True)
-    return {'summary': summary, 'sections': sections, 'citations': [{'title': 'CMDB 成本分析', 'path': '/cmdb/cost'}], 'items': top_items}
+    return {'summary': summary, 'sections': sections, 'citations': [{'title': 'CMDB 成本分析'}], 'items': top_items}
 
 
 def query_alerts(session, user_message, user, query='', level='', only_unacknowledged=False, status='', date_filter='', business_line='', system_name='', limit=8):
@@ -4690,14 +4645,6 @@ def query_recent_changes(session, user_message, user, limit=5):
                 'items': [f'{item.app_name} / {item.version} / {item.get_status_display()}' for item in deployments],
             })
             citations.append({'title': '应用发布', 'path': '/deployments'})
-    if user_has_permissions(user, ['ops.iac.view']):
-        executions = list(TerraformExecution.objects.select_related('stack').order_by('-created_at')[:limit])
-        if executions:
-            sections.append({
-                'title': '最近 IaC 执行',
-                'items': [f'{item.stack.name} / {item.get_action_display()} / {item.get_status_display()}' for item in executions],
-            })
-            citations.append({'title': 'IaC 编排', 'path': '/terraform'})
     _finish_tool_invocation(invocation, {'section_count': len(sections)}, started_at, success=True)
     return {'sections': sections, 'citations': citations}
 
@@ -4751,7 +4698,7 @@ def query_cmdb_items(session, user_message, user, query='', environment='', limi
     return {
         'summary': {'count': len(serialized_items), 'tokens': tokens, 'environment': environment},
         'sections': sections,
-        'citations': [{'title': 'CMDB', 'path': '/cmdb', 'query': {'tab': 'items'}}],
+        'citations': [{'title': 'CMDB'}],
         'items': serialized_items,
     }
 
@@ -5208,35 +5155,6 @@ def query_k8s_cluster_summary(session, user_message, user, query='', cluster_nam
     }
     _finish_tool_invocation(invocation, tool_summary, started_at, success=True)
     return {'summary': tool_summary, 'sections': sections, 'citations': [{'title': 'K8s 集群', 'path': '/containers/k8s'}], 'cluster': summary_payload, 'pods': pods}
-
-
-def query_middleware_assets(session, user_message, user, query='', limit=6):
-    started_at = time.time()
-    tokens = _clean_tokens(query)
-    invocation = _create_tool_invocation(session, user_message, 'query_middleware_assets', {'query': query, 'limit': limit})
-    sections = []
-    citations = []
-    if user_has_permissions(user, ['ops.nginx.view']):
-        nginx_envs = list(_queryset_search(NginxEnvironment.objects.all(), ['name', 'ip_address', 'description'], tokens).order_by('-updated_at')[:limit])
-        if nginx_envs:
-            sections.append({'title': 'Nginx 环境', 'items': [f'{item.name} ({item.ip_address}) / {item.get_status_display()}' for item in nginx_envs]})
-            citations.append({'title': 'Nginx 管理', 'path': '/middleware/nginx'})
-    if user_has_permissions(user, ['ops.middleware.view']):
-        payload = build_middleware_payload(get_middleware_demo_state())
-        redis_summary = payload.get('redis', {}).get('summary', {})
-        rocketmq_summary = payload.get('rocketmq', {}).get('summary', {})
-        es_summary = payload.get('elasticsearch', {}).get('summary', {})
-        sections.append({
-            'title': '中间件概览',
-            'items': [
-                f"Redis / 集群 {redis_summary.get('cluster_count', 0)} / 告警 {redis_summary.get('warning_count', 0)}",
-                f"RocketMQ / 集群 {rocketmq_summary.get('cluster_count', 0)} / 告警 {rocketmq_summary.get('warning_count', 0)}",
-                f"Elasticsearch / 集群 {es_summary.get('cluster_count', 0)} / 告警 {es_summary.get('warning_count', 0)}",
-            ],
-        })
-        citations.append({'title': '中间件', 'path': '/middleware/manage'})
-    _finish_tool_invocation(invocation, {'section_count': len(sections)}, started_at, success=True)
-    return {'sections': sections, 'citations': _dedupe_citations(citations)}
 
 
 def build_markdown_answer(title, sections, citations, intro=''):
@@ -7944,7 +7862,6 @@ def _tool_allowed(user, tool_name):
             user_has_permissions(user, ['ops.log.query']),
             user_has_permissions(user, ['ops.trace.view']),
             user_has_permissions(user, ['ops.deployment.view']),
-            user_has_permissions(user, ['ops.iac.view']),
         ])
     if tool_name == 'query_workorders':
         return user_has_permissions(user, ['ops.ticket.view']) or user_has_permissions(user, ['ops.deployment.view'])
@@ -7960,17 +7877,12 @@ def _tool_allowed(user, tool_name):
         return user_has_permissions(user, ['ops.k8s.view'])
     if tool_name == 'query_k8s_resources':
         return user_has_permissions(user, ['ops.k8s.view'])
-    if tool_name == 'query_middleware_assets':
-        return user_has_permissions(user, ['ops.nginx.view']) or user_has_permissions(user, ['ops.middleware.view'])
     if tool_name == 'query_resources':
         return any([
             user_has_permissions(user, ['ops.host.view']),
             user_has_permissions(user, ['cmdb.ci.view']),
-            user_has_permissions(user, ['ops.multicloud.view']),
-            user_has_permissions(user, ['ops.iac.view']),
             user_has_permissions(user, ['ops.k8s.view']),
             user_has_permissions(user, ['ops.docker.view']),
-            user_has_permissions(user, ['ops.nginx.view']),
             user_has_permissions(user, ['ops.log.datasource.view']),
         ])
     if tool_name == 'query_alerts':
@@ -7994,7 +7906,7 @@ def _tool_allowed(user, tool_name):
     if tool_name == 'query_traces':
         return user_has_permissions(user, ['ops.trace.view'])
     if tool_name == 'query_recent_changes':
-        return user_has_permissions(user, ['ops.deployment.view']) or user_has_permissions(user, ['ops.iac.view'])
+        return user_has_permissions(user, ['ops.deployment.view'])
     if tool_name == 'query_host_tasks':
         return user_has_permissions(user, ['ops.host.execute'])
     if tool_name == 'generate_host_task':
@@ -8064,12 +7976,8 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
             'description': '查询 K8s 资源列表。用户明确问 Deployment、Service、Node、StatefulSet、DaemonSet、Job、CronJob、Ingress、PVC、ConfigMap、Secret 时必须使用本工具，不要用 Pod 摘要代替。',
             'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'resource_type': {'type': 'string', 'enum': ['deployments', 'services', 'nodes', 'statefulsets', 'daemonsets', 'jobs', 'cronjobs', 'ingresses', 'pvcs', 'configmaps', 'secrets', 'workloads']}, 'cluster_name': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20}}},
         },
-        'query_middleware_assets': {
-            'description': '查询中间件管理中的 Nginx、Redis、RocketMQ、Elasticsearch 状态。',
-            'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
-        },
         'query_resources': {
-            'description': '查询平台资源，包括资源底座、CMDB、多云、IaC、中间件与日志数据源。若用户明确问主机/服务器/离线主机、成本、K8s 异常 Pod，优先改用 query_task_resources、query_cost_report、query_k8s_cluster_summary。',
+            'description': '查询平台资源，包括资源底座、CMDB、IaC 与日志数据源。若用户明确问主机/服务器/离线主机、成本、K8s 异常 Pod，优先改用 query_task_resources、query_cost_report、query_k8s_cluster_summary。',
             'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'environment': {'type': 'string', 'enum': ['prod', 'test', 'dev']}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
         },
         'query_alerts': {
@@ -8103,7 +8011,7 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
             'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'errors_only': {'type': 'boolean'}, 'duration_minutes': {'type': 'integer', 'minimum': 5, 'maximum': 1440}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
         },
         'query_recent_changes': {
-            'description': '查询最近发布与 IaC 变更。',
+            'description': '查询最近应用发布变更。',
             'parameters': {'type': 'object', 'properties': {'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
         },
         'query_host_tasks': {
@@ -8563,9 +8471,6 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
             limit=arguments.get('limit') or 8,
         )
         return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
-    if tool_name == 'query_middleware_assets':
-        result = query_middleware_assets(session, user_message, user, query=arguments.get('query', ''), limit=arguments.get('limit') or 6)
-        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_TEXT}
     if tool_name == 'query_resources':
         result = query_resources(session, user_message, user, query=arguments.get('query', ''), environment=arguments.get('environment', ''), limit=arguments.get('limit') or 6)
         return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_TEXT}

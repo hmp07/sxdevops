@@ -1,5 +1,5 @@
 ﻿<template>
-  <div class="fade-in release-page">
+  <div class="fade-in release-page workbench-page-shell">
     <section class="hero panel">
       <div class="release-hero-copy">
         <div class="release-hero-title-row release-hero-title-inline">
@@ -10,98 +10,92 @@
           </p>
         </div>
       </div>
-      <div class="hero-actions">
-        <el-button v-if="canManageDeployments && !isFlowMode" type="primary" @click="openReleaseDialog">
-          <el-icon><Plus /></el-icon>
-          新建发布单
-        </el-button>
-        <el-button v-if="canManageDeployments && isFlowMode" type="primary" @click="openFlowDialog()">
-          <el-icon><Plus /></el-icon>
-          新建审批流
-        </el-button>
-      </div>
     </section>
 
-    <div v-if="!isFlowMode" class="stats-grid release-stats">
-      <button type="button" class="stat-card release-stat-card" :class="{ 'active-card': activeSummaryKey === 'all' }" @click="applySummaryFilter('all')">
+    <div v-if="!isFlowMode" class="audit-grid">
+      <button type="button" class="audit-card audit-card--inline audit-card--action" :class="{ 'is-active': activeSummaryKey === 'all' }" @click="applySummaryFilter('all')">
         <div class="stat-value">{{ summary.total }}</div>
         <div class="stat-label">发布单总数</div>
       </button>
-      <button type="button" class="stat-card release-stat-card warning-card" :class="{ 'active-card': activeSummaryKey === 'pending' }" @click="applySummaryFilter('pending')">
+      <button type="button" class="audit-card audit-card--inline audit-card--warning audit-card--action" :class="{ 'is-active': activeSummaryKey === 'pending' }" @click="applySummaryFilter('pending')">
         <div class="stat-value">{{ summary.pendingApproval }}</div>
         <div class="stat-label">待审批</div>
       </button>
-      <button type="button" class="stat-card release-stat-card success-card" :class="{ 'active-card': activeSummaryKey === 'running' }" @click="applySummaryFilter('running')">
+      <button type="button" class="audit-card audit-card--inline audit-card--success audit-card--action" :class="{ 'is-active': activeSummaryKey === 'running' }" @click="applySummaryFilter('running')">
         <div class="stat-value">{{ summary.running }}</div>
         <div class="stat-label">运行中</div>
       </button>
-      <button type="button" class="stat-card release-stat-card danger-card" :class="{ 'active-card': activeSummaryKey === 'failed' }" @click="applySummaryFilter('failed')">
+      <button type="button" class="audit-card audit-card--inline audit-card--danger audit-card--action" :class="{ 'is-active': activeSummaryKey === 'failed' }" @click="applySummaryFilter('failed')">
         <div class="stat-value">{{ summary.failed }}</div>
         <div class="stat-label">执行失败</div>
       </button>
     </div>
-    <div v-else class="stats-grid release-stats">
-      <div class="stat-card release-stat-card">
+    <div v-else class="audit-grid">
+      <button type="button" class="audit-card audit-card--inline audit-card--action" :class="{ 'is-active': activeFlowSummaryKey === 'all' }" @click="applyFlowSummaryFilter('all')">
         <div class="stat-value">{{ flowSummary.total }}</div>
         <div class="stat-label">审批流总数</div>
-      </div>
-      <div class="stat-card release-stat-card success-card">
+      </button>
+      <button type="button" class="audit-card audit-card--inline audit-card--success audit-card--action" :class="{ 'is-active': activeFlowSummaryKey === 'active' }" @click="applyFlowSummaryFilter('active')">
         <div class="stat-value">{{ flowSummary.active }}</div>
         <div class="stat-label">启用中</div>
-      </div>
-      <div class="stat-card release-stat-card warning-card">
+      </button>
+      <button type="button" class="audit-card audit-card--inline audit-card--warning audit-card--action" :class="{ 'is-active': activeFlowSummaryKey === 'scoped' }" @click="applyFlowSummaryFilter('scoped')">
         <div class="stat-value">{{ flowSummary.ticketScopes }}</div>
         <div class="stat-label">覆盖工单类型</div>
-      </div>
-      <div class="stat-card release-stat-card">
+      </button>
+      <button type="button" class="audit-card audit-card--inline audit-card--action" :class="{ 'is-active': activeFlowSummaryKey === 'dense' }" @click="applyFlowSummaryFilter('dense')">
         <div class="stat-value">{{ flowSummary.nodeCount }}</div>
         <div class="stat-label">审批节点数</div>
+      </button>
+    </div>
+
+    <div v-if="!isFlowMode" class="workbench-card release-content-card">
+      <div class="section-toolbar">
+        <div class="toolbar-head">
+          <span class="toolbar-title">发布工单列表</span>
+          <span class="toolbar-desc">延续任务历史的信息密度和筛选布局，用一套工作台视图处理发布与审批。</span>
+        </div>
+        <div class="workbench-card-actions">
+          <el-button v-if="canManageDeployments" type="primary" @click="openReleaseDialog">
+            <el-icon><Plus /></el-icon>
+            新建发布单
+          </el-button>
+        </div>
       </div>
-    </div>
 
-    <div v-if="!isFlowMode && deploymentPlatformTips.length" class="runtime-strip">
-      <span class="runtime-strip__label">平台提醒</span>
-      <el-tag
-        v-for="item in deploymentPlatformTips"
-        :key="item"
-        size="small"
-        effect="light"
-        type="info"
-      >
-        {{ item }}
-      </el-tag>
-    </div>
-
-    <div v-if="!isFlowMode" class="release-content-card">
-      <div class="filter-bar release-filter-bar">
-        <el-select v-model="envFilter" clearable placeholder="环境" style="width: 104px">
-          <el-option v-for="item in environmentOptions" :key="item.value" :label="item.label" :value="item.value" />
-        </el-select>
-        <el-select v-model="bizFilter" clearable filterable placeholder="系统" style="width: 128px">
-          <el-option v-for="item in businessLineOptions" :key="item.value" :label="item.label" :value="item.value" />
-        </el-select>
-        <el-input v-model="search" clearable placeholder="搜索应用 / 版本 / 镜像 / 目标 / 申请人" style="width: 280px" />
-        <el-select v-model="modeFilter" clearable placeholder="模式" style="width: 104px">
-          <el-option label="Docker 环境" value="docker_compose" />
-          <el-option label="K8s 集群" value="k8s" />
-        </el-select>
-        <el-select v-model="strategyFilter" clearable placeholder="策略" style="width: 104px">
-          <el-option label="标准发布" value="standard" />
-          <el-option label="灰度发布" value="canary" />
-          <el-option label="批次发布" value="batch" />
-        </el-select>
-        <el-select v-model="approvalFilter" clearable placeholder="审批状态" style="width: 112px">
-          <el-option label="待审批" value="pending" />
-          <el-option label="已通过" value="approved" />
-          <el-option label="已拒绝" value="rejected" />
-        </el-select>
-        <el-select v-model="statusFilter" clearable placeholder="执行状态" style="width: 112px">
-          <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />
-        </el-select>
-        <el-button class="filter-refresh-btn" @click="fetchDeployments">
-          <el-icon><RefreshRight /></el-icon>
-          刷新
-        </el-button>
+      <div class="workbench-toolbar workbench-toolbar--history release-filter-bar">
+        <div class="workbench-toolbar-left">
+          <el-select v-model="envFilter" clearable placeholder="环境" style="width: 104px">
+            <el-option v-for="item in environmentOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-select v-model="bizFilter" clearable filterable placeholder="系统" style="width: 128px">
+            <el-option v-for="item in businessLineOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-input v-model="search" clearable placeholder="搜索应用 / 版本 / 镜像 / 目标 / 申请人" style="width: 280px" />
+          <el-select v-model="modeFilter" clearable placeholder="模式" style="width: 104px">
+            <el-option label="Docker 环境" value="docker_compose" />
+            <el-option label="K8s 集群" value="k8s" />
+          </el-select>
+          <el-select v-model="strategyFilter" clearable placeholder="策略" style="width: 104px">
+            <el-option label="标准发布" value="standard" />
+            <el-option label="灰度发布" value="canary" />
+            <el-option label="批次发布" value="batch" />
+          </el-select>
+          <el-select v-model="approvalFilter" clearable placeholder="审批状态" style="width: 112px">
+            <el-option label="待审批" value="pending" />
+            <el-option label="已通过" value="approved" />
+            <el-option label="已拒绝" value="rejected" />
+          </el-select>
+          <el-select v-model="statusFilter" clearable placeholder="执行状态" style="width: 112px">
+            <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+        </div>
+        <div class="workbench-toolbar-right">
+          <el-button class="filter-refresh-btn" @click="fetchDeployments">
+            <el-icon><RefreshRight /></el-icon>
+            刷新
+          </el-button>
+        </div>
       </div>
 
       <el-table v-loading="loading" :data="filteredDeployments" stripe style="width: 100%" class="release-orders-table">
@@ -185,23 +179,35 @@
             </el-table-column>
       </el-table>
     </div>
-    <div v-else class="release-content-card">
-      <div class="filter-bar release-filter-bar">
-        <el-input v-model="flowSearch" clearable placeholder="搜索流程名称 / 描述" style="width: 280px" />
-        <el-select v-model="flowEnvFilter" clearable placeholder="适用环境" style="width: 140px">
-          <el-option label="全部环境" value="" />
-          <el-option v-for="item in environmentOptions" :key="item.value" :label="item.label" :value="item.value" />
-        </el-select>
-        <el-switch v-model="onlyActiveFlow" inline-prompt active-text="启用中" inactive-text="全部" />
-        <el-button @click="fetchFlows">
-          <el-icon><RefreshRight /></el-icon>
-          刷新
-        </el-button>
-        <div class="flow-toolbar-spacer" />
-        <el-button v-if="canManageDeployments" type="primary" @click="openFlowDialog()">
-          <el-icon><Plus /></el-icon>
-          新建审批流
-        </el-button>
+    <div v-else class="workbench-card release-content-card">
+      <div class="section-toolbar">
+        <div class="toolbar-head">
+          <span class="toolbar-title">审批流列表</span>
+          <span class="toolbar-desc">和任务历史相同的工作台容器，集中维护流程范围和审批节点。</span>
+        </div>
+        <div class="workbench-card-actions">
+          <el-button v-if="canManageDeployments" type="primary" @click="openFlowDialog()">
+            <el-icon><Plus /></el-icon>
+            新建审批流
+          </el-button>
+        </div>
+      </div>
+
+      <div class="workbench-toolbar workbench-toolbar--history release-filter-bar">
+        <div class="workbench-toolbar-left">
+          <el-input v-model="flowSearch" clearable placeholder="搜索流程名称 / 描述" style="width: 280px" />
+          <el-select v-model="flowEnvFilter" clearable placeholder="适用环境" style="width: 140px">
+            <el-option label="全部环境" value="" />
+            <el-option v-for="item in environmentOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-switch v-model="onlyActiveFlow" inline-prompt active-text="启用中" inactive-text="全部" />
+        </div>
+        <div class="workbench-toolbar-right">
+          <el-button @click="fetchFlows">
+            <el-icon><RefreshRight /></el-icon>
+            刷新
+          </el-button>
+        </div>
       </div>
 
       <el-table v-loading="flowLoading" :data="filteredFlows" stripe style="width: 100%">
@@ -486,7 +492,6 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Promotion, RefreshRight } from '@element-plus/icons-vue'
-import { getResourceNodeTree } from '@/api/modules/cmdb'
 import { getDockerHosts, getK8sClusters } from '@/api/modules/container'
 import { advanceDeploymentBatch, approveDeployment, createDeployment, createDeploymentApprovalFlow, deleteDeploymentApprovalFlow, getDeploymentApprovalFlows, getDeployments, getDeploymentStatus, getUsers, rejectDeployment, removeDeployment, rerunDeployment, rollbackDeployment, startDeployment, updateDeploymentApprovalFlow } from '@/api/modules/ops'
 import { getGroups, getRoles } from '@/api/modules/rbac'
@@ -515,24 +520,11 @@ const environmentLabelMap = { prod: '生产', test: '测试', dev: '开发' }
 const businessLineOptions = computed(() => (resourceTree.value || [])
   .filter(item => item.node_type === 'biz')
   .map(item => ({ label: item.name, value: item.name })))
-const environmentOptions = computed(() => {
-  const envMap = new Map()
-  ;(resourceTree.value || []).forEach((bizNode) => {
-    ;(bizNode.children || []).forEach((envNode) => {
-      if (!envMap.has(envNode.name)) {
-        envMap.set(envNode.name, { label: environmentLabelMap[envNode.name] || envNode.name, value: envNode.name })
-      }
-    })
-  })
-  if (!envMap.size) {
-    return Object.entries(environmentLabelMap).map(([value, label]) => ({ label, value }))
-  }
-  return Array.from(envMap.values())
-})
+const environmentOptions = computed(() => Object.entries(environmentLabelMap).map(([value, label]) => ({ label, value })))
 const releaseEnvironmentOptions = computed(() => {
-  if (!releaseForm.value.business_line) return []
   const bizNode = (resourceTree.value || []).find(item => item.node_type === 'biz' && item.name === releaseForm.value.business_line)
-  return (bizNode?.children || []).map(item => ({ label: environmentLabelMap[item.name] || item.name, value: item.name }))
+  const options = (bizNode?.children || []).map(item => ({ label: environmentLabelMap[item.name] || item.name, value: item.name }))
+  return options.length ? options : environmentOptions.value
 })
 const statusOptions = [
   { label: '待执行', value: 'pending' },
@@ -556,6 +548,7 @@ const flowSearch = ref('')
 const flowEnvFilter = ref('')
 const onlyActiveFlow = ref(false)
 const activeSummaryKey = ref('all')
+const activeFlowSummaryKey = ref('all')
 
 const summary = computed(() => ({
   total: deployments.value.length,
@@ -577,14 +570,6 @@ const flowSummary = computed(() => ({
   ticketScopes: new Set(flows.value.flatMap(item => item.ticket_types || ['deployment'])).size,
   nodeCount: flows.value.reduce((sum, item) => sum + (item.node_count || item.nodes?.length || 0), 0),
 }))
-const deploymentPlatformTips = computed(() => {
-  const tips = []
-  if (summary.value.pendingApproval) tips.push(`当前有 ${summary.value.pendingApproval} 张发布单待审批`)
-  if (summary.value.failed) tips.push(`当前有 ${summary.value.failed} 张发布单执行失败，建议优先复盘`)
-  if (summary.value.running) tips.push(`当前有 ${summary.value.running} 个版本处于稳定运行中`)
-  return tips.slice(0, 3)
-})
-
 function routeQueryText(key) {
   const value = route.query[key]
   return Array.isArray(value) ? String(value[0] || '').trim() : String(value || '').trim()
@@ -630,6 +615,10 @@ const filteredDeployments = computed(() => deployments.value.filter((item) => {
 }))
 
 const filteredFlows = computed(() => flows.value.filter((item) => {
+  const ticketTypes = item.ticket_types || ['deployment']
+  if (activeFlowSummaryKey.value === 'active' && !item.is_active) return false
+  if (activeFlowSummaryKey.value === 'scoped' && !(ticketTypes.length > 1 || ticketTypes[0] !== 'deployment')) return false
+  if (activeFlowSummaryKey.value === 'dense' && (item.node_count || item.nodes?.length || 0) < 3) return false
   if (flowEnvFilter.value !== '' && item.environment !== flowEnvFilter.value) return false
   if (onlyActiveFlow.value && !item.is_active) return false
   const keyword = flowSearch.value.trim().toLowerCase()
@@ -696,6 +685,13 @@ function applySummaryFilter(key) {
   }
 }
 
+function applyFlowSummaryFilter(key) {
+  activeFlowSummaryKey.value = key
+  flowSearch.value = ''
+  flowEnvFilter.value = ''
+  onlyActiveFlow.value = false
+}
+
 async function fetchFlows() {
   flowLoading.value = true
   try {
@@ -706,13 +702,13 @@ async function fetchFlows() {
 }
 
 async function fetchLookups() {
-  const [dockerHostRes, clusterRes, userRes, roleRes, groupRes, treeRes] = await Promise.allSettled([getDockerHosts(), getK8sClusters(), getUsers(), getRoles(), getGroups(), getResourceNodeTree()])
+  const [dockerHostRes, clusterRes, userRes, roleRes, groupRes] = await Promise.allSettled([getDockerHosts(), getK8sClusters(), getUsers(), getRoles(), getGroups()])
   dockerHosts.value = dockerHostRes.status === 'fulfilled' ? safeList(dockerHostRes.value) : []
   clusters.value = clusterRes.status === 'fulfilled' ? safeList(clusterRes.value) : []
   users.value = userRes.status === 'fulfilled' ? safeList(userRes.value) : []
   roles.value = roleRes.status === 'fulfilled' ? safeList(roleRes.value) : []
   groups.value = groupRes.status === 'fulfilled' ? safeList(groupRes.value) : []
-  resourceTree.value = treeRes.status === 'fulfilled' ? safeList(treeRes.value) : []
+  resourceTree.value = []
 }
 
 const releaseDialogVisible = ref(false)
@@ -723,10 +719,7 @@ function resetReleaseForm() {
 function handleBusinessLineChange(value) {
   const matched = (resourceTree.value || []).find(item => item.node_type === 'biz' && item.name === value)
   const envList = (matched?.children || []).map(item => item.name)
-  if (!envList.length) {
-    releaseForm.value.environment = ''
-    return
-  }
+  if (!envList.length) return
   if (!envList.includes(releaseForm.value.environment)) {
     releaseForm.value.environment = envList[0]
   }
@@ -948,33 +941,28 @@ onMounted(async () => {
 
 <style scoped>
 .release-page{display:flex;flex-direction:column;gap:6px}
-.panel{background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border:1px solid rgba(148,163,184,.16);border-radius:20px;box-shadow:0 12px 28px rgba(15,23,42,.05);padding:12px 14px}
-.hero{background:linear-gradient(135deg,#fff7ed 0%,#f8fbff 100%);display:flex;gap:12px;justify-content:space-between}
+.panel{background:linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(250,252,255,.96) 100%);border:1px solid rgba(15,23,42,.08);border-radius:18px;box-shadow:0 8px 24px rgba(15,23,42,.04);padding:14px 16px}
+.hero{background:linear-gradient(135deg,#fbfdff 0%,#f7faff 52%,#f9fbfd 100%);display:flex;gap:12px;justify-content:space-between;border-color:rgba(36,91,219,.09)}
 .hero h2{color:#0f172a;margin:0}
 .subtitle{color:#475569;margin:8px 0 0;max-width:620px}
-.hero-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .status-meta{display:flex;gap:10px}
 .release-hero-title-row{display:flex;align-items:center;gap:12px}
 .release-hero-title-inline{flex-wrap:wrap}
 .inline-subtitle{margin:0;max-width:none;font-size:13px;line-height:1.45}
-.hero-actions :deep(.el-button){min-height:38px;padding:0 16px;border-radius:12px}
-.release-header-icon{width:42px;height:42px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;font-size:20px;color:#fff;background:linear-gradient(135deg,#409eff,#36cfc9);box-shadow:0 10px 20px rgba(64,158,255,.2)}
+.release-header-icon{width:42px;height:42px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;font-size:20px;color:#245bdb;background:linear-gradient(180deg,#f3f7ff 0%,#ebf2ff 100%);border:1px solid rgba(36,91,219,.12);box-shadow:inset 0 1px 0 rgba(255,255,255,.8)}
+.audit-grid{gap:10px}
+.audit-card{border-radius:14px;border:1px solid rgba(15,23,42,.08);background:linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(252,253,255,.94) 100%);box-shadow:0 4px 14px rgba(15,23,42,.03)}
+.audit-card--inline{min-height:68px;padding:14px 16px}
+.audit-card .stat-label{font-size:13px;font-weight:600;color:#334155}
+.audit-card .stat-value{font-size:24px;color:#1f2329}
+.audit-card--warning{background:linear-gradient(180deg,#fffdfa 0%,#ffffff 100%)}
+.audit-card--success{background:linear-gradient(180deg,#fbfffd 0%,#ffffff 100%)}
+.audit-card--danger{background:linear-gradient(180deg,#fffafb 0%,#ffffff 100%)}
+.audit-card--action:hover{border-color:rgba(36,91,219,.16);box-shadow:0 10px 20px rgba(36,91,219,.06)}
+.audit-card--action.is-active{border-color:rgba(36,91,219,.24);background:linear-gradient(180deg,#f4f7ff 0%,#ffffff 100%);box-shadow:0 0 0 1px rgba(36,91,219,.05),0 12px 22px rgba(36,91,219,.08)}
 .sub-text{font-size:13px;color:var(--text-secondary);font-weight:400}
-.release-stats{gap:8px}
-.runtime-strip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 2px;padding:10px 12px;border-radius:14px;background:rgba(248,250,252,.9);border:1px solid rgba(148,163,184,.18)}
-.runtime-strip__label{font-size:12px;font-weight:700;color:#475569}
-.release-stat-card{position:relative;min-height:76px;background:linear-gradient(145deg,#ffffff 0%,#f6faff 100%);border:1px solid rgba(148,163,184,.16);box-shadow:0 12px 26px rgba(15,23,42,.05);text-align:left;padding:12px 16px;cursor:pointer;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease;overflow:hidden;appearance:none;width:100%;font:inherit;color:inherit}
-.release-stat-card::after{content:'';position:absolute;inset:auto -24px -30px auto;width:108px;height:108px;border-radius:50%;background:radial-gradient(circle,rgba(64,158,255,.16) 0%,rgba(64,158,255,0) 70%)}
-.release-stat-card:hover{transform:translateY(-2px);box-shadow:0 18px 38px rgba(37,99,235,.12);border-color:rgba(96,165,250,.4)}
-.release-stat-card.active-card{border-color:#3b82f6;box-shadow:0 18px 40px rgba(59,130,246,.18)}
-.warning-card::after{background:radial-gradient(circle,rgba(245,158,11,.18) 0%,rgba(245,158,11,0) 70%)}
-.success-card::after{background:radial-gradient(circle,rgba(16,185,129,.18) 0%,rgba(16,185,129,0) 70%)}
-.danger-card::after{background:radial-gradient(circle,rgba(239,68,68,.18) 0%,rgba(239,68,68,0) 70%)}
-.release-stat-card .stat-value{font-size:26px;line-height:1.05}
-.release-stat-card .stat-label{margin-top:4px;color:#64748b}
-.release-content-card{margin-top:-8px;padding:12px;border-radius:20px;background:rgba(255,255,255,.9);box-shadow:0 12px 26px rgba(15,23,42,.04);border:1px solid rgba(148,163,184,.16)}
-.release-filter-bar{display:flex;align-items:center;gap:10px;flex-wrap:nowrap;margin-bottom:10px;overflow-x:auto;padding-bottom:2px}.flow-toolbar-spacer{flex:1}.app-cell,.stack-cell,.strategy-cell{display:flex;flex-direction:column;gap:6px}.app-cell-title{display:flex;align-items:center;gap:8px}.app-name{font-weight:600}
-.filter-refresh-btn{margin-left:auto;flex-shrink:0}
+.release-content-card{margin-top:0}
+.release-filter-bar{align-items:flex-start}.app-cell,.stack-cell,.strategy-cell{display:flex;flex-direction:column;gap:6px}.app-cell-title{display:flex;align-items:center;gap:8px}.app-name{font-weight:600}
 .tag-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .scope-cell{display:flex;flex-direction:column;gap:6px;min-width:0}
 .scope-cell__env{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -989,7 +977,7 @@ onMounted(async () => {
 .status-meta{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:8px}.status-message{margin-bottom:8px}.approval-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px}.approval-step-card{padding:14px;border-radius:14px;border:1px solid var(--border-color-light);background:var(--el-fill-color-lighter);display:flex;flex-direction:column;gap:8px}.approval-step-top{display:flex;justify-content:space-between;align-items:center;gap:10px}.approval-step-title{font-weight:600}.approval-step-comment{font-size:13px;color:var(--text-regular);line-height:1.6}
 .log-output{max-height:56vh;overflow:auto;padding:12px;border-radius:12px;background:#0f172a;color:#e2e8f0;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
 @media (max-width:1200px){.release-form-grid{grid-template-columns:1fr}.release-form-grid :deep(.span-2){grid-column:span 1}}
-@media (max-width:768px){.hero{flex-direction:column}.hero-actions{justify-content:flex-start}}
+@media (max-width:768px){.hero{flex-direction:column}}
 .hero.panel { border-radius: 20px; }
 </style>
 

@@ -57,7 +57,7 @@ class RbacPermissionTests(TestCase):
 
         self.assertIn('rbac.user.manage', permissions)
         self.assertIn('ops.k8s.manage', permissions)
-        self.assertIn('marketplace.deployment.manage', permissions)
+        self.assertIn('ops.deployment.manage', permissions)
 
     def test_demo_account_cannot_create_users(self):
         demo_user = User.objects.create_user(username='demo', password='Demo#123')
