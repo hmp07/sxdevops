@@ -2079,10 +2079,33 @@ def build_knowledge_graph(params=None):
     infrastructure_node_ids = []
     k8s_member_node_ids = {}
 
+    def task_resource_env_is_represented(resource_env, resources, environment, concrete_names, concrete_ips, concrete_cluster_ids):
+        if _clean(resource_env.name) != _clean(environment):
+            return False
+        if not resources or not (concrete_names or concrete_ips or concrete_cluster_ids):
+            return False
+
+        def resource_is_represented(resource):
+            name = _clean(resource.name)
+            ip_address = _clean(resource.ip_address)
+            if name and name in concrete_names:
+                return True
+            if ip_address and ip_address in concrete_ips:
+                return True
+            if resource.resource_type == TaskResource.RESOURCE_K8S and getattr(resource, 'cluster_id', None) in concrete_cluster_ids:
+                return True
+            return False
+
+        represented = [resource_is_represented(resource) for resource in resources]
+        return bool(represented) and all(represented)
+
     for config in selected_knowledge_configs:
         environment = config.name
         env_id = _node_key('environment', environment)
         add_node(env_id, environment, 'environment', '环境', environment=environment)
+        concrete_infra_names = set()
+        concrete_infra_ips = set()
+        concrete_cluster_ids = set()
 
         posture_keys = _clean_list(getattr(config, 'posture_environments', []) or [])
         posture_environment_map = {
@@ -2110,6 +2133,8 @@ def build_knowledge_graph(params=None):
 
         for cluster in k8s_clusters:
             node_id = _node_key('infrastructure', 'k8s', cluster.id)
+            concrete_cluster_ids.add(cluster.id)
+            concrete_infra_names.add(_clean(cluster.name))
             add_node(
                 node_id,
                 cluster.name,
@@ -2131,6 +2156,8 @@ def build_knowledge_graph(params=None):
             cluster_nodes = k8s_node_cache.get(cluster.id, [])
             for cluster_node in cluster_nodes[:12]:
                 member_id = _node_key('infrastructure', 'k8s_host', cluster.id, cluster_node.get('name'))
+                concrete_infra_names.add(_clean(cluster_node.get('name')))
+                concrete_infra_ips.add(_clean(cluster_node.get('internal_ip')))
                 add_node(
                     member_id,
                     cluster_node.get('name') or 'unknown-node',
@@ -2154,6 +2181,8 @@ def build_knowledge_graph(params=None):
 
         for host in docker_hosts:
             node_id = _node_key('infrastructure', 'docker', host.id)
+            concrete_infra_names.add(_clean(host.name))
+            concrete_infra_ips.add(_clean(host.ip_address))
             add_node(
                 node_id,
                 host.name,
@@ -2175,7 +2204,17 @@ def build_knowledge_graph(params=None):
             infrastructure_node_ids.append(node_id)
 
         for resource_env in task_resource_env_groups:
-            resource_count = TaskResource.objects.filter(environment=resource_env).count()
+            resources = list(TaskResource.objects.filter(environment=resource_env).only('id', 'name', 'resource_type', 'ip_address', 'cluster'))
+            resource_count = len(resources)
+            if task_resource_env_is_represented(
+                resource_env,
+                resources,
+                environment,
+                concrete_infra_names,
+                concrete_infra_ips,
+                concrete_cluster_ids,
+            ):
+                continue
             node_id = _node_key('infrastructure', 'task_resource_env', resource_env.id)
             add_node(
                 node_id,

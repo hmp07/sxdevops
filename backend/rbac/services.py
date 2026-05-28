@@ -1,7 +1,7 @@
 ﻿from django.contrib.auth import get_user_model
 from django.db import transaction
 
-from .models import PermissionDefinition, Role, UserGroup
+from .models import PermissionDefinition, Role, SystemModuleSetting, UserGroup
 from .registry import BUILTIN_ROLES, PERMISSION_DEFINITIONS
 
 
@@ -11,6 +11,16 @@ DEFAULT_ADMIN_PASSWORD = 'Admin@123456'
 DEFAULT_ADMIN_EMAIL = 'admin@example.com'
 DEMO_ACCOUNT_USERNAME = 'demo'
 DEMO_ACCOUNT_MUTATION_MESSAGE = '演示账号无实际操作权限。'
+SYSTEM_MODULE_CATALOG = [
+    {'code': 'dashboard', 'title': '仪表盘', 'required': True, 'description': '平台首页与核心概览入口。', 'sort_order': 10},
+    {'code': 'aiops', 'title': 'AIOps', 'required': True, 'description': '智能助手、知识图谱与配置入口。', 'sort_order': 20},
+    {'code': 'observability', 'title': '可观测性', 'required': True, 'description': '监控、日志、链路与告警入口。', 'sort_order': 30},
+    {'code': 'events', 'title': '事件中心', 'required': True, 'description': '事件流、事件源与分析入口。', 'sort_order': 40},
+    {'code': 'tasks', 'title': '任务中心', 'required': True, 'description': '资源、工作台与定时任务入口。', 'sort_order': 50},
+    {'code': 'workorders', 'title': '工单系统', 'required': False, 'description': '发布、SQL 审计与事务工单入口。', 'sort_order': 60},
+    {'code': 'containers', 'title': '容器管理', 'required': False, 'description': 'K8s 与 Docker 管理入口。', 'sort_order': 70},
+    {'code': 'system', 'title': '系统管理', 'required': True, 'description': '用户、审计与模块配置入口。', 'sort_order': 80},
+]
 
 
 @transaction.atomic
@@ -112,6 +122,34 @@ def get_permission_catalog():
 
 def get_builtin_role_catalog():
     return Role.objects.filter(is_builtin=True).order_by('name')
+
+
+@transaction.atomic
+def ensure_system_module_settings():
+    existing = {item.code: item for item in SystemModuleSetting.objects.all()}
+    for module in SYSTEM_MODULE_CATALOG:
+        setting = existing.get(module['code'])
+        if setting is None:
+            SystemModuleSetting.objects.create(code=module['code'], enabled=True)
+
+
+def get_system_module_settings():
+    ensure_system_module_settings()
+    setting_map = {item.code: item for item in SystemModuleSetting.objects.all()}
+    items = []
+    for module in SYSTEM_MODULE_CATALOG:
+        setting = setting_map.get(module['code'])
+        items.append({
+            'code': module['code'],
+            'title': module['title'],
+            'description': module['description'],
+            'required': module['required'],
+            'sort_order': module['sort_order'],
+            'enabled': True if setting is None else setting.enabled,
+            'updated_by': '' if setting is None else setting.updated_by,
+            'updated_at': None if setting is None else setting.updated_at,
+        })
+    return items
 
 
 def get_user_summary(user):

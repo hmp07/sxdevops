@@ -651,6 +651,27 @@ class AIOpsApiTests(TestCase):
         self.assertTrue(any(edge['relation'] == 'service_deployment' for edge in knowledge_env.association_snapshot.get('edges', [])))
         self.assertTrue(knowledge_env.child_node_snapshot.get('children'))
 
+    @mock.patch('aiops.knowledge_graph._k8s_cluster_nodes')
+    def test_knowledge_graph_hides_represented_task_resource_environment(self, mocked_k8s_nodes):
+        cluster, resource_env, _ = self.ensure_ecommerce_knowledge_environment()
+        mocked_k8s_nodes.return_value = [{
+            'name': 'tf-k3s-single-node',
+            'status': 'Ready',
+            'roles': 'control-plane',
+            'version': 'v1.30.0',
+            'internal_ip': '120.26.213.176',
+        }]
+        cache.clear()
+
+        response = self.client.get('/api/aiops/knowledge-graph/', {'environment': '电商测试环境'})
+
+        self.assertEqual(response.status_code, 200)
+        node_ids = {node['id'] for node in response.data['nodes']}
+        node_labels = {node['label'] for node in response.data['nodes']}
+        self.assertIn(f'infrastructure:k8s_host:{cluster.id}:tf-k3s-single-node', node_ids)
+        self.assertIn('tf-k3s-single-node', node_labels)
+        self.assertNotIn(f'infrastructure:task_resource_env:{resource_env.id}', node_ids)
+
     def test_knowledge_environment_observability_link_scope_overrides_datasource_autolink(self):
         log_source = LogDataSource.objects.create(name='scope-loki', provider='loki', config={'url': 'http://loki'}, is_enabled=True)
         trace_source = TracingDataSource.objects.create(name='scope-tempo', provider='tempo', config={'url': 'http://tempo'}, is_enabled=True)

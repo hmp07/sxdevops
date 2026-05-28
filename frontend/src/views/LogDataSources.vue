@@ -490,6 +490,12 @@ onMounted(async () => {
   border-radius: 8px;
 }
 
+.log-center-tabs.theme-blue .neo-tab-btn.active {
+  color: #245bdb !important;
+  background: rgba(51, 112, 255, 0.1) !important;
+  box-shadow: inset 0 0 0 1px rgba(51, 112, 255, 0.08) !important;
+}
+
 .table-head {
   display: flex;
   align-items: center;

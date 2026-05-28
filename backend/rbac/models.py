@@ -57,3 +57,19 @@ class UserGroup(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class SystemModuleSetting(models.Model):
+    code = models.CharField('模块编码', max_length=64, unique=True)
+    enabled = models.BooleanField('是否显示', default=True)
+    updated_by = models.CharField('更新人', max_length=150, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '系统模块配置'
+        verbose_name_plural = '系统模块配置'
+        ordering = ['code']
+
+    def __str__(self):
+        return self.code

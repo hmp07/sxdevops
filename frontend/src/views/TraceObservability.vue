@@ -2197,6 +2197,12 @@ onUnmounted(() => {
   border-radius: 8px;
 }
 
+.trace-center-tabs.theme-blue .neo-tab-btn.active {
+  color: #245bdb;
+  background: rgba(51, 112, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(51, 112, 255, 0.08);
+}
+
 .section-head {
   align-items: center;
   justify-content: space-between;

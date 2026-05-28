@@ -1,70 +1,140 @@
-﻿<template>
-  <div class="fade-in">
+<template>
+  <div class="fade-in users-page workbench-page-shell">
     <section class="hero panel">
-      <div class="hero-copy">
-        <div class="hero-title-row">
-          <span class="hero-icon"><el-icon><User /></el-icon></span>
+      <div class="release-hero-copy">
+        <div class="release-hero-title-row">
+          <span class="release-header-icon"><el-icon><User /></el-icon></span>
           <h2>用户管理</h2>
           <p class="page-inline-desc">统一维护用户、用户组、角色与权限字典，支持内置权限同步与账号治理。</p>
         </div>
       </div>
-      <div class="hero-actions">
-        <el-button v-if="canSync" @click="handleSyncPermissions">同步内置权限</el-button>
-        <el-button v-if="activeTab === 'users' && canManageUsers" type="primary" @click="openUserDialog()">
-          <el-icon><Plus /></el-icon> 新增用户
-        </el-button>
-        <el-button v-if="activeTab === 'roles' && canManageRoles" type="primary" @click="openRoleDialog()">
-          <el-icon><Plus /></el-icon> 新增角色
-        </el-button>
-        <el-button v-if="activeTab === 'groups' && canManageGroups" type="primary" @click="openGroupDialog()">
-          <el-icon><Plus /></el-icon> 新增用户组</el-button>
-      </div>
     </section>
 
-    <div class="table-card">
-      <el-tabs v-model="activeTab">
-        <el-tab-pane v-if="canViewUsers" label="用户" name="users" />
-        <el-tab-pane v-if="canViewGroups" label="用户组" name="groups" />
-        <el-tab-pane v-if="canViewRoles" label="角色" name="roles" />
-        <el-tab-pane v-if="canViewPermissions" label="权限字典" name="permissions" />
-      </el-tabs>
+    <div class="neo-tabs theme-blue users-tabs">
+      <button
+        v-if="canViewUsers"
+        type="button"
+        class="neo-tab-btn"
+        :class="{ active: activeTab === 'users' }"
+        @click="switchTab('users')"
+      >
+        <el-icon><User /></el-icon>
+        用户
+      </button>
+      <button
+        v-if="canViewGroups"
+        type="button"
+        class="neo-tab-btn"
+        :class="{ active: activeTab === 'groups' }"
+        @click="switchTab('groups')"
+      >
+        <el-icon><UserFilled /></el-icon>
+        用户组
+      </button>
+      <button
+        v-if="canViewRoles"
+        type="button"
+        class="neo-tab-btn"
+        :class="{ active: activeTab === 'roles' }"
+        @click="switchTab('roles')"
+      >
+        <el-icon><Avatar /></el-icon>
+        角色
+      </button>
+      <button
+        v-if="canViewPermissions"
+        type="button"
+        class="neo-tab-btn"
+        :class="{ active: activeTab === 'permissions' }"
+        @click="switchTab('permissions')"
+      >
+        <el-icon><Grid /></el-icon>
+        权限字典
+      </button>
+    </div>
+
+    <div class="workbench-card users-content-card">
+      <div class="section-toolbar">
+        <div class="toolbar-head">
+          <span class="toolbar-title">{{ sectionTitle }}</span>
+          <span class="toolbar-desc">{{ sectionDesc }}</span>
+        </div>
+        <div class="workbench-card-actions">
+          <el-button v-if="canSync" class="filter-refresh-btn" @click="handleSyncPermissions">
+            <el-icon><RefreshRight /></el-icon>
+            同步内置权限
+          </el-button>
+          <el-button v-if="activeTab === 'users' && canManageUsers" type="primary" @click="openUserDialog()">
+            <el-icon><Plus /></el-icon>
+            新增用户
+          </el-button>
+          <el-button v-if="activeTab === 'roles' && canManageRoles" type="primary" @click="openRoleDialog()">
+            <el-icon><Plus /></el-icon>
+            新增角色
+          </el-button>
+          <el-button v-if="activeTab === 'groups' && canManageGroups" type="primary" @click="openGroupDialog()">
+            <el-icon><Plus /></el-icon>
+            新增用户组
+          </el-button>
+        </div>
+      </div>
+
+      <div class="workbench-toolbar workbench-toolbar--history users-toolbar">
+        <div class="workbench-toolbar-left">
+          <template v-if="activeTab === 'users'">
+            <el-input v-model="userSearch" placeholder="搜索用户名 / 邮箱" clearable style="width: 260px" @input="fetchUsers" />
+          </template>
+          <template v-else-if="activeTab === 'roles'">
+            <el-input v-model="roleSearch" placeholder="搜索角色编码 / 名称" clearable style="width: 260px" @input="fetchRoles" />
+          </template>
+          <template v-else-if="activeTab === 'groups'">
+            <el-input v-model="groupSearch" placeholder="搜索用户组编码 / 名称" clearable style="width: 260px" @input="fetchGroups" />
+          </template>
+          <template v-else>
+            <el-input v-model="permissionSearch" placeholder="搜索权限编码 / 名称" clearable style="width: 280px" @input="applyPermissionFilter" />
+          </template>
+        </div>
+        <div class="workbench-toolbar-right">
+          <el-button class="filter-refresh-btn" @click="handleRefreshCurrentTab">
+            <el-icon><RefreshRight /></el-icon>
+            刷新
+          </el-button>
+        </div>
+      </div>
 
       <template v-if="activeTab === 'users' && canViewUsers">
-        <div class="filter-bar">
-          <el-input v-model="userSearch" placeholder="搜索用户名 / 邮箱" clearable style="width: 260px" @input="fetchUsers" />
-        </div>
-        <el-table :data="users" stripe v-loading="loading.users">
+        <el-table :data="users" stripe v-loading="loading.users" style="width: 100%">
           <el-table-column prop="username" label="用户名" min-width="130" />
           <el-table-column label="姓名" min-width="120">
             <template #default="{ row }">{{ row.display_name || row.username }}</template>
           </el-table-column>
           <el-table-column prop="email" label="邮箱" min-width="180" />
-          <el-table-column label="用户组" min-width="180">
+          <el-table-column label="用户组" min-width="130">
             <template #default="{ row }">
-              <el-tag v-for="group in row.user_groups" :key="group.id" size="small" type="info" style="margin-right:6px;">{{ group.name }}</el-tag>
+              <el-tag v-for="group in row.user_groups" :key="group.id" size="small" type="info" class="tag-gap">{{ group.name }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="角色" min-width="220">
+          <el-table-column label="角色" min-width="150">
             <template #default="{ row }">
-              <el-tag v-for="role in row.roles" :key="role.id" size="small" style="margin-right:6px;">{{ role.name }}</el-tag>
+              <el-tag v-for="role in row.roles" :key="role.id" size="small" class="tag-gap">{{ role.name }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="状态" width="100">
+          <el-table-column label="状态" width="82">
             <template #default="{ row }">
               <el-tag :type="row.is_active ? 'success' : 'danger'" size="small">{{ row.is_active ? '启用' : '禁用' }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="系统身份" width="120">
+          <el-table-column label="系统身份" width="108">
             <template #default="{ row }">
               <el-tag :type="row.is_superuser ? 'danger' : row.is_staff ? 'warning' : 'info'" size="small">
                 {{ row.is_superuser ? '超级管理员' : row.is_staff ? '管理员' : '普通用户' }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="加入时间" width="170">
+          <el-table-column label="加入时间" width="150">
             <template #default="{ row }">{{ formatTime(row.date_joined) }}</template>
           </el-table-column>
-          <el-table-column v-if="canManageUsers" label="操作" width="220" fixed="right">
+          <el-table-column v-if="canManageUsers" label="操作" width="168" fixed="right" class-name="users-actions-column">
             <template #default="{ row }">
               <el-button link type="primary" @click="openUserDialog(row)">编辑</el-button>
               <el-button link type="warning" @click="openPasswordDialog(row)">重置密码</el-button>
@@ -76,7 +146,7 @@
             </template>
           </el-table-column>
         </el-table>
-        <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+        <div class="pagination-row">
           <el-pagination
             v-model:current-page="userPage"
             :page-size="20"
@@ -88,10 +158,7 @@
       </template>
 
       <template v-else-if="activeTab === 'roles' && canViewRoles">
-        <div class="filter-bar">
-          <el-input v-model="roleSearch" placeholder="搜索角色编码 / 名称" clearable style="width: 260px" @input="fetchRoles" />
-        </div>
-        <el-table :data="roles" stripe v-loading="loading.roles">
+        <el-table :data="roles" stripe v-loading="loading.roles" style="width: 100%">
           <el-table-column prop="code" label="角色编码" width="160" />
           <el-table-column prop="name" label="角色名称" min-width="160" />
           <el-table-column prop="description" label="说明" min-width="220" />
@@ -117,16 +184,13 @@
       </template>
 
       <template v-else-if="activeTab === 'groups' && canViewGroups">
-        <div class="filter-bar">
-          <el-input v-model="groupSearch" placeholder="搜索用户组编码 / 名称" clearable style="width: 260px" @input="fetchGroups" />
-        </div>
-        <el-table :data="groups" stripe v-loading="loading.groups">
+        <el-table :data="groups" stripe v-loading="loading.groups" style="width: 100%">
           <el-table-column prop="code" label="用户组编码" width="160" />
           <el-table-column prop="name" label="用户组名称" min-width="160" />
           <el-table-column prop="description" label="说明" min-width="220" />
           <el-table-column label="角色" min-width="220">
             <template #default="{ row }">
-              <el-tag v-for="role in row.roles" :key="role.id" size="small" style="margin-right:6px;">{{ role.name }}</el-tag>
+              <el-tag v-for="role in row.roles" :key="role.id" size="small" class="tag-gap">{{ role.name }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="成员数" width="90">
@@ -146,10 +210,7 @@
       </template>
 
       <template v-else-if="activeTab === 'permissions' && canViewPermissions">
-        <div class="filter-bar">
-          <el-input v-model="permissionSearch" placeholder="搜索权限编码 / 名称" clearable style="width: 280px" @input="applyPermissionFilter" />
-        </div>
-        <el-table :data="filteredPermissions" stripe v-loading="loading.permissions">
+        <el-table :data="filteredPermissions" stripe v-loading="loading.permissions" style="width: 100%">
           <el-table-column prop="category" label="模块" width="120" />
           <el-table-column prop="name" label="权限名称" min-width="180" />
           <el-table-column prop="code" label="权限编码" min-width="220" />
@@ -279,6 +340,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Avatar, Grid, Plus, RefreshRight, User, UserFilled } from '@element-plus/icons-vue'
 import {
   createGroup,
   createRole,
@@ -317,10 +379,13 @@ const availableTabs = computed(() => [
   canViewPermissions.value && 'permissions',
 ].filter(Boolean))
 
-const activeTab = useRouteTabState({
+const activeTabState = useRouteTabState({
   tabs: () => availableTabs.value,
   defaultTab: 'users',
-}).activeTab
+})
+const activeTab = activeTabState.activeTab
+const switchTab = activeTabState.switchTab
+
 const loading = ref({ users: false, roles: false, groups: false, permissions: false })
 const saving = ref({ user: false, role: false, group: false, password: false })
 
@@ -357,6 +422,20 @@ const currentGroupBuiltin = computed(() => groups.value.find(item => item.id ===
 const passwordDialogVisible = ref(false)
 const passwordUserId = ref(null)
 const passwordForm = ref({ password: '' })
+
+const sectionTitle = computed(() => ({
+  users: '用户列表',
+  groups: '用户组列表',
+  roles: '角色列表',
+  permissions: '权限字典',
+}[activeTab.value] || '用户管理'))
+
+const sectionDesc = computed(() => ({
+  users: '维护账号、归属关系和系统身份，并支持编辑、重置密码和删除操作。',
+  groups: '维护用户组及成员映射，便于批量授权和治理。',
+  roles: '维护角色及其权限集合，支持和内置权限同步。',
+  permissions: '查看内置权限字典，辅助角色和用户组配置。',
+}[activeTab.value] || '管理平台身份体系。'))
 
 function formatTime(value) {
   return value ? new Date(value).toLocaleString('zh-CN') : '-'
@@ -609,6 +688,19 @@ async function handleSyncPermissions() {
   ElMessage.success('权限与内置角色已同步')
 }
 
+async function handleRefreshCurrentTab() {
+  if (activeTab.value === 'users') {
+    await fetchUsers()
+    await fetchUserOptions()
+  } else if (activeTab.value === 'roles') {
+    await fetchRoles()
+  } else if (activeTab.value === 'groups') {
+    await fetchGroups()
+  } else {
+    await fetchPermissions()
+  }
+}
+
 onMounted(async () => {
   const tasks = []
   if (canViewUsers.value) tasks.push(fetchUsers(), fetchUserOptions())
@@ -620,119 +712,113 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.panel {
-  background: linear-gradient(180deg, #ffffff 0%, #fffdf8 100%);
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04);
-  padding: 12px 14px;
-}
-
-.hero,
-.hero-copy,
-.hero-title-row,
-.hero-actions {
+.users-page {
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.hero-copy {
-  gap: 4px;
+.users-page.workbench-page-shell {
+  gap: 6px;
+}
+
+.panel {
+  background: linear-gradient(180deg, rgba(255,255,255,.98) 0%, rgba(250,252,255,.96) 100%);
+  border: 1px solid rgba(15,23,42,.08);
+  border-radius: 18px;
+  box-shadow: 0 8px 24px rgba(15,23,42,.04);
+  padding: 14px 16px;
 }
 
 .hero {
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: 0;
+  background: linear-gradient(135deg, #fbfdff 0%, #f7faff 52%, #f9fbfd 100%);
+  border-color: rgba(36,91,219,.09);
 }
 
-.hero-title-row {
+.release-hero-title-row {
+  display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
-.hero-title-row h2 {
-  font-size: 23px;
-  line-height: 1.1;
-  margin: 0;
+.release-hero-title-row h2 {
   color: #0f172a;
+  margin: 0;
 }
 
-.hero-icon {
+.release-header-icon {
   width: 42px;
   height: 42px;
-  border-radius: 16px;
+  border-radius: 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 20px;
-  color: #fff;
-  background: linear-gradient(135deg, #0f766e, #0ea5e9);
+  color: #245bdb;
+  background: linear-gradient(180deg,#f3f7ff 0%,#ebf2ff 100%);
+  border: 1px solid rgba(36,91,219,.12);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.8);
 }
 
 .page-inline-desc {
-  margin: 0;
-  color: #64748b;
+  color: #475569;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.45;
+  margin: 0;
+  flex: 0 1 auto;
 }
 
-.hero-actions {
-  align-items: center;
+.users-tabs {
+  width: 100%;
+  padding: 3px;
+  gap: 6px;
+  margin-bottom: 0;
+}
+
+.users-tabs.theme-blue .neo-tab-btn.active {
+  color: #245bdb;
+  background: rgba(51, 112, 255, 0.1) !important;
+  box-shadow: inset 0 0 0 1px rgba(51, 112, 255, 0.08) !important;
+}
+
+.users-content-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.users-toolbar {
+  margin-top: 0;
+}
+
+.tag-gap {
+  margin-right: 6px;
+}
+
+.pagination-row {
+  display: flex;
   justify-content: flex-end;
+  margin-top: 8px;
 }
 
-.hero-actions :deep(.el-button) {
-  min-height: 32px;
-  padding: 0 14px;
-  border-radius: 10px;
-  font-weight: 500;
-}
-
-.filter-bar {
+:deep(.users-actions-column .cell) {
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
+  gap: 6px;
+  white-space: nowrap;
 }
 
-.table-card {
-  border-radius: 12px;
-  background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,252,.92));
-  box-shadow: 0 18px 36px rgba(15,23,42,.06);
-}
-
-.table-card :deep(.el-tabs__header) {
-  margin-bottom: 8px;
-}
-
-.table-card :deep(.el-tabs__nav-wrap::after) {
-  background-color: rgba(148,163,184,.18);
-}
-
-.table-card :deep(.el-tabs__item) {
-  font-weight: 600;
-}
-
-.dialog-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 12px;
-}
-
-:deep(.password-reset-dialog) {
-  margin: 0 !important;
+:deep(.users-actions-column .el-button) {
+  margin-left: 0;
+  padding: 0;
 }
 
 @media (max-width: 900px) {
-  .hero {
-    flex-direction: column;
-    align-items: stretch;
+  .release-hero-title-row {
+    align-items: flex-start;
   }
 }
+
 .hero.panel { border-radius: 20px; }
 </style>
-
-

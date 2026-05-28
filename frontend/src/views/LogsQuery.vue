@@ -1853,19 +1853,20 @@ onUnmounted(() => {
 .hero-panel {
   background: linear-gradient(135deg, rgba(239,246,255,.96) 0%, rgba(236,254,255,.94) 52%, rgba(248,250,252,.98) 100%);
   border: 1px solid rgba(96,165,250,.18);
-  border-radius: 24px;
+  border-radius: 20px;
   box-shadow: 0 16px 36px rgba(14,165,233,.08);
-  padding: 12px 14px;
+  padding: 10px 14px;
 }
 
 .release-hero-title-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
 }
 
 .release-hero-title-inline {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 
 .log-header-icon {
@@ -1884,7 +1885,7 @@ onUnmounted(() => {
 .hero h2 {
   margin: 0;
   color: #0f172a;
-  font-size: 23px;
+  font-size: 22px;
   line-height: 1.1;
 }
 
@@ -1900,6 +1901,12 @@ onUnmounted(() => {
   font-weight: 500;
   min-height: 32px;
   padding: 0 14px;
+}
+
+.hero-panel .release-hero-copy {
+  flex: 1;
+  min-height: 42px;
+  min-width: 0;
 }
 
 
@@ -1918,6 +1925,12 @@ onUnmounted(() => {
   border-radius: 8px;
 }
 
+.log-center-tabs.theme-blue .neo-tab-btn.active {
+  color: #245bdb !important;
+  background: rgba(51, 112, 255, 0.1) !important;
+  box-shadow: inset 0 0 0 1px rgba(51, 112, 255, 0.08) !important;
+}
+
 .page-desc {
   margin: 0;
   color: #475569;
@@ -1926,7 +1939,12 @@ onUnmounted(() => {
 }
 
 .inline-subtitle {
+  flex: 1;
   max-width: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .panel {

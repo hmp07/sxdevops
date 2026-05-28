@@ -1,49 +1,82 @@
 <template>
-  <div class="fade-in operation-audit-page">
+  <div class="fade-in operation-audit-page workbench-page-shell">
     <section class="hero panel">
-      <div class="hero-copy">
-        <div class="hero-title-row">
-          <span class="hero-icon"><el-icon><DocumentChecked /></el-icon></span>
+      <div class="release-hero-copy">
+        <div class="release-hero-title-row">
+          <span class="release-header-icon"><el-icon><DocumentChecked /></el-icon></span>
           <h2>操作审计</h2>
           <p class="page-inline-desc">查看平台关键写操作、执行动作、审批与配置变更记录。</p>
         </div>
       </div>
-      <div class="hero-actions">
-        <el-button :loading="loading" @click="fetchAudits">
-          <el-icon><RefreshRight /></el-icon>
-          刷新
-        </el-button>
-        <el-button v-if="canManageAudit" type="danger" plain @click="cleanupVisible = true">
-          <el-icon><Delete /></el-icon>
-          批量删除
-        </el-button>
-      </div>
     </section>
 
-    <div class="table-card">
-      <div class="filter-bar">
-        <el-input v-model="filters.search" placeholder="搜索标题 / 资源 / 操作人" clearable style="width: 280px" @keyup.enter="handleSearch" />
-        <el-select v-model="filters.result" placeholder="结果" clearable style="width: 140px" @change="handleSearch">
-          <el-option label="成功" value="success" />
-          <el-option label="失败" value="failed" />
-          <el-option label="部分成功" value="partial" />
-          <el-option label="待处理" value="pending" />
-        </el-select>
-        <el-input v-model="filters.actor" placeholder="操作人" clearable style="width: 160px" @keyup.enter="handleSearch" />
-        <el-date-picker
-          v-model="timeRange"
-          type="datetimerange"
-          start-placeholder="开始时间"
-          end-placeholder="结束时间"
-          range-separator="至"
-          style="width: 360px"
-          @change="handleSearch"
-        />
-        <el-button type="primary" @click="handleSearch">查询</el-button>
-        <el-button @click="resetFilters">重置</el-button>
+    <div class="audit-grid operation-audit-stats">
+      <div class="audit-card audit-card--inline">
+        <div class="stat-label">当前结果</div>
+        <div class="stat-value">{{ total }}</div>
+      </div>
+      <div class="audit-card audit-card--inline audit-card--success">
+        <div class="stat-label">成功</div>
+        <div class="stat-value">{{ visibleSummary.success }}</div>
+      </div>
+      <div class="audit-card audit-card--inline audit-card--warning">
+        <div class="stat-label">待处理 / 部分成功</div>
+        <div class="stat-value">{{ visibleSummary.pending }}</div>
+      </div>
+      <div class="audit-card audit-card--inline audit-card--danger">
+        <div class="stat-label">失败</div>
+        <div class="stat-value">{{ visibleSummary.failed }}</div>
+      </div>
+    </div>
+
+    <div class="workbench-card operation-audit-card">
+      <div class="section-toolbar">
+        <div class="toolbar-head">
+          <span class="toolbar-title">审计记录</span>
+          <span class="toolbar-desc">按时间、结果、操作人与资源快速定位平台变更链路。</span>
+        </div>
+        <div class="workbench-card-actions">
+          <el-button class="filter-refresh-btn" :loading="loading" @click="fetchAudits">
+            <el-icon><RefreshRight /></el-icon>
+            刷新
+          </el-button>
+          <el-button v-if="canManageAudit" type="danger" plain @click="cleanupVisible = true">
+            <el-icon><Delete /></el-icon>
+            批量删除
+          </el-button>
+        </div>
       </div>
 
-      <el-table :data="audits" stripe v-loading="loading">
+      <div class="workbench-toolbar workbench-toolbar--history operation-audit-toolbar">
+        <div class="workbench-toolbar-left">
+          <el-input v-model="filters.search" placeholder="搜索标题 / 资源 / 操作人" clearable style="width: 220px" @keyup.enter="handleSearch" />
+          <el-select v-model="filters.result" placeholder="结果" clearable style="width: 104px" @change="handleSearch">
+            <el-option label="成功" value="success" />
+            <el-option label="失败" value="failed" />
+            <el-option label="部分成功" value="partial" />
+            <el-option label="待处理" value="pending" />
+          </el-select>
+          <el-select v-model="filters.module" placeholder="模块" clearable style="width: 104px" @change="handleSearch">
+            <el-option v-for="item in moduleOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-input v-model="filters.actor" placeholder="操作人" clearable style="width: 112px" @keyup.enter="handleSearch" />
+          <el-date-picker
+            v-model="timeRange"
+            type="datetimerange"
+            start-placeholder="开始时间"
+            end-placeholder="结束时间"
+            range-separator="至"
+            class="audit-time-range"
+            @change="handleSearch"
+          />
+        </div>
+        <div class="workbench-toolbar-right">
+          <el-button type="primary" @click="handleSearch">查询</el-button>
+          <el-button @click="resetFilters">重置</el-button>
+        </div>
+      </div>
+
+      <el-table :data="audits" stripe v-loading="loading" style="width: 100%">
         <el-table-column label="时间" width="170">
           <template #default="{ row }">{{ formatTime(row.occurred_at) }}</template>
         </el-table-column>
@@ -121,14 +154,30 @@ const timeRange = ref([])
 const filters = reactive({
   search: '',
   result: '',
+  module: '',
   actor: '',
 })
 const canManageAudit = computed(() => authStore.hasPermission('rbac.audit.manage'))
+const moduleOptions = [
+  { label: '运维', value: 'ops' },
+  { label: 'CMDB', value: 'cmdb' },
+  { label: 'SQL 审计', value: 'sqlaudit' },
+  { label: '工具市场', value: 'marketplace' },
+  { label: '用户权限', value: 'rbac' },
+  { label: 'AIOps', value: 'aiops' },
+  { label: '事件墙', value: 'eventwall' },
+]
+const visibleSummary = computed(() => ({
+  success: audits.value.filter(item => item.result === 'success').length,
+  failed: audits.value.filter(item => item.result === 'failed').length,
+  pending: audits.value.filter(item => ['pending', 'partial'].includes(item.result)).length,
+}))
 
 function buildParams() {
   const params = { page: page.value }
   if (filters.search.trim()) params.search = filters.search.trim()
   if (filters.result) params.result = filters.result
+  if (filters.module) params.module = filters.module
   if (filters.actor.trim()) params.actor = filters.actor.trim()
   if (Array.isArray(timeRange.value) && timeRange.value.length === 2) {
     params.start_at = new Date(timeRange.value[0]).toISOString()
@@ -156,6 +205,7 @@ function handleSearch() {
 function resetFilters() {
   filters.search = ''
   filters.result = ''
+  filters.module = ''
   filters.actor = ''
   timeRange.value = []
   handleSearch()
@@ -244,89 +294,87 @@ onMounted(fetchAudits)
 </script>
 
 <style scoped>
-.panel {
-  background: linear-gradient(180deg, #ffffff 0%, #fffdf8 100%);
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04);
-  padding: 12px 14px;
-}
-
-.hero,
-.hero-copy,
-.hero-title-row,
-.hero-actions {
+.operation-audit-page {
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.hero-copy {
-  gap: 4px;
+.panel {
+  background: linear-gradient(180deg, rgba(255,255,255,.98) 0%, rgba(250,252,255,.96) 100%);
+  border: 1px solid rgba(15,23,42,.08);
+  border-radius: 18px;
+  box-shadow: 0 8px 24px rgba(15,23,42,.04);
+  padding: 14px 16px;
 }
 
 .hero {
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: 0;
+  background: linear-gradient(135deg, #fbfdff 0%, #f7faff 52%, #f9fbfd 100%);
+  border-color: rgba(36,91,219,.09);
 }
 
-.hero-title-row {
+.release-hero-title-row {
+  display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
-.hero-title-row h2 {
-  font-size: 23px;
-  line-height: 1.1;
-  margin: 0;
+.release-hero-title-row h2 {
   color: #0f172a;
+  margin: 0;
 }
 
-.hero-icon {
+.release-header-icon {
   width: 42px;
   height: 42px;
-  border-radius: 16px;
+  border-radius: 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 20px;
-  color: #fff;
-  background: linear-gradient(135deg, #0f766e, #0ea5e9);
+  color: #245bdb;
+  background: linear-gradient(180deg,#f3f7ff 0%,#ebf2ff 100%);
+  border: 1px solid rgba(36,91,219,.12);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.8);
 }
 
 .page-inline-desc {
-  margin: 0;
-  color: #64748b;
+  color: #475569;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.45;
+  margin: 0;
+  flex: 0 1 auto;
 }
 
-.hero-actions {
-  align-items: center;
-  justify-content: flex-end;
-}
-
-.hero-actions :deep(.el-button) {
-  min-height: 32px;
-  padding: 0 14px;
-  border-radius: 10px;
-  font-weight: 500;
-}
-
-.filter-bar {
-  display: flex;
-  align-items: center;
+.operation-audit-stats {
   gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
 }
 
-.table-card {
-  padding: 14px;
-  border-radius: 12px;
-  background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,252,.92));
-  box-shadow: 0 18px 36px rgba(15,23,42,.06);
+.operation-audit-toolbar {
+  margin-top: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+
+.operation-audit-toolbar .workbench-toolbar-left,
+.operation-audit-toolbar .workbench-toolbar-right {
+  flex-wrap: nowrap;
+}
+
+.operation-audit-toolbar .workbench-toolbar-left {
+  min-width: 0;
+  flex: 1;
+}
+
+.operation-audit-toolbar .workbench-toolbar-right {
+  flex-shrink: 0;
+}
+
+.audit-time-range {
+  width: 280px;
+  flex-shrink: 0;
 }
 
 .pagination-row {
@@ -348,11 +396,8 @@ onMounted(fetchAudits)
 }
 
 @media (max-width: 900px) {
-  .hero {
-    flex-direction: column;
-    align-items: stretch;
+  .audit-time-range {
+    width: 100%;
   }
 }
-
-.hero.panel { border-radius: 20px; }
 </style>

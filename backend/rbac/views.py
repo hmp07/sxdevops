@@ -11,7 +11,7 @@ from eventwall.mixins import EventWallModelViewSetMixin
 from eventwall.models import EventRecord
 from eventwall.services import record_event
 
-from .models import PermissionDefinition, Role, UserGroup
+from .models import PermissionDefinition, Role, SystemModuleSetting, UserGroup
 from .permissions import RBACPermissionMixin, build_rbac_permission
 from .serializers import (
     LoginSerializer,
@@ -20,7 +20,15 @@ from .serializers import (
     UserGroupSerializer,
     UserSerializer,
 )
-from .services import ensure_builtin_rbac, ensure_default_superuser
+from .services import (
+    DEMO_ACCOUNT_MUTATION_MESSAGE,
+    ensure_builtin_rbac,
+    ensure_default_superuser,
+    ensure_system_module_settings,
+    get_system_module_settings,
+    is_demo_account,
+    user_has_permissions,
+)
 
 
 User = get_user_model()
@@ -132,6 +140,66 @@ class PermissionDefinitionViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelVie
         'list': ['rbac.permission.view'],
         'retrieve': ['rbac.permission.view'],
     }
+
+
+@api_view(['GET', 'PUT', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def system_module_settings_view(request):
+    ensure_system_module_settings()
+
+    if request.method == 'GET':
+        return Response(get_system_module_settings())
+
+    if is_demo_account(request.user):
+        return Response({'detail': DEMO_ACCOUNT_MUTATION_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
+
+    if not user_has_permissions(request.user, ['rbac.module.manage']):
+        return Response({'detail': '当前用户没有执行此操作的权限。'}, status=status.HTTP_403_FORBIDDEN)
+
+    payload = request.data.get('modules', request.data) if isinstance(request.data, dict) else request.data
+    if not isinstance(payload, list):
+        return Response({'detail': '模块配置必须是列表。'}, status=status.HTTP_400_BAD_REQUEST)
+
+    enabled_map = {
+        item.get('code'): bool(item.get('enabled'))
+        for item in payload
+        if isinstance(item, dict) and item.get('code')
+    }
+    setting_map = {item.code: item for item in SystemModuleSetting.objects.all()}
+    updated_items = []
+    for item in get_system_module_settings():
+        code = item['code']
+        setting = setting_map.get(code)
+        if not setting:
+            continue
+        if item['required']:
+            setting.enabled = True
+        elif code in enabled_map:
+            setting.enabled = enabled_map[code]
+        setting.updated_by = request.user.username
+        setting.save(update_fields=['enabled', 'updated_by', 'updated_at'])
+        updated_items.append({
+            **item,
+            'enabled': setting.enabled,
+            'updated_by': setting.updated_by,
+            'updated_at': setting.updated_at,
+        })
+
+    record_event(
+        request=request,
+        module='rbac',
+        category='system',
+        action='update_module_settings',
+        title='更新系统模块显示配置',
+        summary=f'已更新系统模块显示配置，共 {len(updated_items)} 项',
+        resource_type='rbac_system_module_setting',
+        resource_id='module-settings',
+        resource_name='系统模块配置',
+        severity=EventRecord.SEVERITY_INFO,
+        correlation_id='rbac-system-module-settings',
+        metadata={'updated_count': len(updated_items)},
+    )
+    return Response({'success': True, 'data': get_system_module_settings()})
 
 
 @api_view(['POST'])

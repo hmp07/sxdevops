@@ -75,6 +75,7 @@ PERMISSION_DEFINITIONS = [
     ('rbac.group.view', '查看用户组', 'rbac', '查看用户组与成员关系'),
     ('rbac.group.manage', '管理用户组', 'rbac', '新增、编辑、删除用户组'),
     ('rbac.permission.view', '查看权限字典', 'rbac', '查看系统权限清单'),
+    ('rbac.module.manage', '管理模块显示', 'rbac', '配置左侧菜单模块的显示与隐藏'),
     ('rbac.audit.view', '查看操作审计', 'rbac', '查看平台关键操作、执行动作和配置变更审计记录'),
     ('rbac.audit.manage', '管理操作审计', 'rbac', '按保留策略批量清理操作审计记录'),
 ]

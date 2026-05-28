@@ -669,8 +669,9 @@ function nodeLaneKind(node) {
 }
 
 function nodeTypeBadge(node) {
-  if (!['datasource', 'dashboard', 'logs', 'tracing', 'infrastructure', 'runtime_component'].includes(node.kind)) return ''
+  if (!['datasource', 'dashboard', 'logs', 'tracing', 'posture', 'infrastructure', 'runtime_component'].includes(node.kind)) return ''
   const category = String(node.category || '')
+  if (node.kind === 'posture') return '系统态势'
   if (node.kind === 'infrastructure') {
     if (node.infra_type === 'k8s') return 'K8s'
     if (node.infra_type === 'k8s_host') return '主机'

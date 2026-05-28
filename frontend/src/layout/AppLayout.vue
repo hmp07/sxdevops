@@ -17,9 +17,10 @@
         :collapse="appStore.sidebarCollapsed"
         router
         :collapse-transition="false"
+        :default-openeds="defaultOpenMenuKeys"
       >
         <template v-for="item in visibleMenuItems" :key="item.title">
-          <el-sub-menu v-if="item.children?.length" :index="item.menuKey || item.title">
+          <el-sub-menu v-if="item.children?.length" :index="item.menuKey || item.moduleKey || item.title">
             <template #title>
               <el-icon><component :is="item.icon" /></el-icon>
               <span>{{ item.title }}</span>
@@ -37,7 +38,7 @@
             </el-menu-item>
           </el-sub-menu>
 
-          <el-menu-item v-else :index="item.menuKey || item.path" :route="item.route || item.path">
+          <el-menu-item v-else :index="item.menuKey || item.moduleKey || item.path" :route="item.route || item.path">
             <el-icon><component :is="item.icon" /></el-icon>
             <template #title>
               <span>{{ item.title }}</span>
@@ -179,6 +180,7 @@ import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import AIOpsChatWidget from '@/components/aiops/AIOpsChatWidget.vue'
+import { getModuleSettings } from '@/api/modules/rbac'
 import { getDashboardStats, getDeployments, getTransactionTickets } from '@/api/modules/ops'
 import { getEventWallAnalysis } from '@/api/modules/eventwall'
 
@@ -189,11 +191,15 @@ const authStore = useAuthStore()
 const notificationsLoading = ref(false)
 const notificationItems = ref([])
 const notificationCount = ref(0)
+const moduleVisibility = ref({})
+const MODULE_SETTINGS_EVENT = 'sxdevops-module-settings-updated'
+const defaultOpenMenuKeys = ['aiops', 'observability', 'events']
 let notificationTimer = null
 
 const menuItems = [
-  { path: '/dashboard', title: '仪表盘', icon: 'Odometer', permission: 'ops.dashboard.view' },
+  { moduleKey: 'dashboard', path: '/dashboard', title: '仪表盘', icon: 'Odometer', permission: 'ops.dashboard.view' },
   {
+    moduleKey: 'aiops',
     title: 'AIOps',
     icon: 'ChatDotSquare',
     children: [
@@ -203,6 +209,7 @@ const menuItems = [
     ],
   },
   {
+    moduleKey: 'observability',
     title: '可观测性',
     icon: 'DataLine',
     children: [
@@ -214,6 +221,7 @@ const menuItems = [
     ],
   },
   {
+    moduleKey: 'events',
     title: '事件中心',
     icon: 'Tickets',
     children: [
@@ -222,6 +230,7 @@ const menuItems = [
     ],
   },
   {
+    moduleKey: 'tasks',
     title: '任务中心',
     icon: 'Operation',
     children: [
@@ -231,6 +240,7 @@ const menuItems = [
     ],
   },
   {
+    moduleKey: 'workorders',
     title: '工单系统',
     icon: 'Tickets',
     children: [
@@ -241,6 +251,7 @@ const menuItems = [
     ],
   },
   {
+    moduleKey: 'containers',
     title: '容器管理',
     icon: 'Box',
     children: [
@@ -249,11 +260,13 @@ const menuItems = [
     ],
   },
   {
-    title: '用户管理',
+    moduleKey: 'system',
+    title: '系统管理',
     icon: 'User',
     children: [
       { path: '/users', title: '用户管理', icon: 'User', anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view'] },
       { path: '/users/audit', title: '操作审计', icon: 'DocumentChecked', permission: 'rbac.audit.view' },
+      { path: '/users/modules', title: '模块管理', icon: 'Menu', permission: 'rbac.module.manage' },
     ],
   },
 ]
@@ -265,7 +278,13 @@ function canAccess(item) {
   return true
 }
 
+function isModuleVisible(item) {
+  if (!item.moduleKey) return true
+  return moduleVisibility.value[item.moduleKey] !== false
+}
+
 const visibleMenuItems = computed(() => menuItems
+  .filter(isModuleVisible)
   .map((item) => {
     if (!item.children) return item
     const children = item.children.filter(canAccess)
@@ -528,6 +547,19 @@ function handleNoticeOpen() {
   }
 }
 
+async function loadModuleSettings() {
+  if (!authStore.isAuthenticated) return
+  try {
+    const settings = await getModuleSettings({ skipErrorMessage: true })
+    moduleVisibility.value = (settings || []).reduce((result, item) => ({
+      ...result,
+      [item.code]: item.required ? true : item.enabled !== false,
+    }), {})
+  } catch {
+    moduleVisibility.value = {}
+  }
+}
+
 function openAIOpsAssistant() {
   window.dispatchEvent(new Event('sxdevops-aiops-open'))
 }
@@ -572,6 +604,8 @@ async function handleUserCommand(command) {
 }
 
 onMounted(() => {
+  window.addEventListener(MODULE_SETTINGS_EVENT, loadModuleSettings)
+  void loadModuleSettings()
   void loadNotifications()
   notificationTimer = window.setInterval(() => {
     void loadNotifications()
@@ -579,6 +613,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener(MODULE_SETTINGS_EVENT, loadModuleSettings)
   if (notificationTimer) {
     window.clearInterval(notificationTimer)
     notificationTimer = null

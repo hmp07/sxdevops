@@ -330,6 +330,12 @@ const routes = [
         meta: { title: '操作审计', icon: 'DocumentChecked', permission: 'rbac.audit.view' },
       },
       {
+        path: 'users/modules',
+        name: 'ModuleManage',
+        component: () => import('@/views/ModuleManage.vue'),
+        meta: { title: '模块管理', icon: 'Menu', permission: 'rbac.module.manage' },
+      },
+      {
         path: 'aiops/chat',
         name: 'AIOpsChat',
         component: () => import('@/views/AIOpsChatEntry.vue'),

@@ -22,3 +22,5 @@ export const updateGroup = (id, data) => request.patch(`/groups/${id}/`, data)
 export const deleteGroup = (id) => request.delete(`/groups/${id}/`)
 
 export const getPermissions = (params) => request.get('/permissions/', { params })
+export const getModuleSettings = (config = {}) => request.get('/module-settings/', config)
+export const updateModuleSettings = (data) => request.put('/module-settings/', data)
