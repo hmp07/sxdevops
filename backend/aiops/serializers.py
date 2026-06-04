@@ -108,6 +108,41 @@ class AIOpsSkillSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['is_builtin']
 
+    def validate(self, attrs):
+        list_fields = [
+            'allowed_role_codes',
+            'applicable_actions',
+            'examples',
+            'builtin_tools',
+            'recommended_tools',
+        ]
+        for field in list_fields:
+            if field not in attrs:
+                continue
+            value = attrs.get(field)
+            if value in (None, ''):
+                attrs[field] = []
+                continue
+            if not isinstance(value, list):
+                raise serializers.ValidationError({field: '必须为数组'})
+            normalized = []
+            for item in value:
+                normalized_item = str(item or '').strip()
+                if normalized_item and normalized_item not in normalized:
+                    normalized.append(normalized_item)
+            attrs[field] = normalized
+
+        if 'output_contract' in attrs:
+            value = attrs.get('output_contract')
+            if value in (None, ''):
+                attrs['output_contract'] = {}
+            elif not isinstance(value, dict):
+                raise serializers.ValidationError({'output_contract': '必须为对象'})
+
+        if 'max_iterations' in attrs and attrs.get('max_iterations') is None:
+            attrs['max_iterations'] = 0
+        return attrs
+
     def update(self, instance, validated_data):
         if instance.is_builtin:
             validated_data.pop('slug', None)
@@ -217,14 +252,20 @@ class AIOpsPendingActionSerializer(serializers.ModelSerializer):
 
 class AIOpsChatMessageSerializer(serializers.ModelSerializer):
     pending_action = serializers.SerializerMethodField()
+    blocks = serializers.SerializerMethodField()
 
     class Meta:
         model = AIOpsChatMessage
-        fields = ['id', 'role', 'message_type', 'content', 'citations', 'tool_calls', 'metadata', 'pending_action', 'created_at']
+        fields = ['id', 'role', 'message_type', 'content', 'citations', 'tool_calls', 'metadata', 'blocks', 'pending_action', 'created_at']
 
     def get_pending_action(self, obj):
         action = obj.pending_actions.order_by('-id').first()
         return AIOpsPendingActionSerializer(action).data if action else None
+
+    def get_blocks(self, obj):
+        metadata = obj.metadata or {}
+        blocks = metadata.get('response_blocks') or metadata.get('blocks') or []
+        return blocks if isinstance(blocks, list) else []
 
 
 class AIOpsChatSessionSerializer(serializers.ModelSerializer):

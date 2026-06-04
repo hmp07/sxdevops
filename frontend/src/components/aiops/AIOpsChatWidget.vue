@@ -264,6 +264,90 @@
                       </div>
                       <div v-else class="message-content user-content">{{ message.content }}</div>
 
+                      <div v-if="message.role === 'assistant' && getMessageBlocks(message).length" class="response-block-list">
+                        <div
+                          v-for="(responseBlock, responseBlockIndex) in getMessageBlocks(message)"
+                          :key="`${message.id || message.localKey}-block-${responseBlock._key || responseBlockIndex}`"
+                          class="response-block-card"
+                          :class="`type-${responseBlock.type}`"
+                        >
+                          <div class="response-block-head">
+                            <div class="response-block-headline">
+                              <div class="response-block-title">{{ responseBlock.title }}</div>
+                              <div v-if="responseBlock.summary" class="response-block-summary">{{ responseBlock.summary }}</div>
+                            </div>
+                            <span class="response-block-badge">{{ getBlockTypeLabel(responseBlock.type) }}</span>
+                          </div>
+
+                          <div v-if="responseBlock.type === 'approval_form'" class="response-block-approval">
+                            <div v-if="getBlockMetrics(responseBlock).length" class="response-block-metric-grid">
+                              <div v-for="metric in getBlockMetrics(responseBlock)" :key="`${responseBlock._key}-metric-${metric.label}`" class="response-block-metric">
+                                <span>{{ metric.label }}</span>
+                                <strong>{{ metric.value }}</strong>
+                              </div>
+                            </div>
+                            <div v-if="message.pending_action?.action_payload?.payload?.command" class="response-block-command">
+                              {{ message.pending_action.action_payload.payload.command }}
+                            </div>
+                          </div>
+
+                          <div v-else-if="responseBlock.type === 'tool_trace'" class="response-block-trace">
+                            <div
+                              v-for="item in getBlockItems(responseBlock)"
+                              :key="`${responseBlock._key}-trace-${getBlockItemText(item)}`"
+                              class="response-block-trace-item"
+                              :class="getBlockItemStatus(item)"
+                            >
+                              <span class="response-block-trace-dot" :class="getBlockItemStatus(item)" />
+                              <div class="response-block-trace-body">
+                                <div class="response-block-trace-name">{{ getBlockItemText(item) }}</div>
+                                <div class="response-block-trace-detail">{{ getBlockItemDetail(item) }}</div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div v-else-if="responseBlock.type === 'query_suggestion'" class="response-block-chip-list">
+                            <button
+                              v-for="item in getBlockItems(responseBlock)"
+                              :key="`${responseBlock._key}-suggest-${getBlockItemText(item)}`"
+                              type="button"
+                              class="response-block-chip"
+                              @click="reuseMessage(getBlockItemText(item))"
+                            >
+                              {{ getBlockItemText(item) }}
+                            </button>
+                          </div>
+
+                          <div v-else-if="getBlockItems(responseBlock).length" class="response-block-item-list">
+                            <div
+                              v-for="item in getBlockItems(responseBlock)"
+                              :key="`${responseBlock._key}-item-${getBlockItemText(item)}`"
+                              class="response-block-item"
+                            >
+                              <span class="response-block-item-dot" />
+                              <div class="response-block-item-body">
+                                <div class="response-block-item-text">{{ getBlockItemText(item) }}</div>
+                                <div v-if="getBlockItemDetail(item)" class="response-block-item-detail">{{ getBlockItemDetail(item) }}</div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div v-if="getBlockActions(responseBlock, message).length" class="response-block-actions">
+                            <el-button
+                              v-for="action in getBlockActions(responseBlock, message)"
+                              :key="`${responseBlock._key}-action-${action.type || action.label}`"
+                              size="small"
+                              text
+                              class="response-block-action-btn"
+                              @click="handleBlockAction(responseBlock, action, message)"
+                            >
+                              <el-icon><component :is="getBlockActionIcon(action.type)" /></el-icon>
+                              <span>{{ action.label || '操作' }}</span>
+                            </el-button>
+                          </div>
+                        </div>
+                      </div>
+
                       <div v-if="message.citations?.length" class="citation-row">
                         <button
                           v-for="citation in message.citations"
@@ -276,7 +360,7 @@
                         </button>
                       </div>
 
-                      <div v-if="message.pending_action" class="pending-action-card">
+                      <div v-if="message.pending_action && !hasApprovalBlock(message)" class="pending-action-card">
                         <div class="pending-title-row">
                           <div class="pending-title">{{ message.pending_action.title }}</div>
                           <span class="pending-risk" :class="message.pending_action.risk_level">{{ message.pending_action.risk_level_display }}</span>
@@ -323,7 +407,7 @@
                         </div>
                       </div>
 
-                      <div v-else-if="message.metadata?.action_execution_disabled" class="message-state-card">
+                      <div v-else-if="message.metadata?.action_execution_disabled && !hasApprovalBlock(message)" class="message-state-card">
                         管理员已关闭机器人动作执行，当前只保留分析和任务草稿能力。
                       </div>
 
@@ -449,7 +533,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Fold, Plus, Promotion } from '@element-plus/icons-vue'
+import { CircleCheck, CopyDocument, Delete, Fold, Plus, Promotion, TopRight } from '@element-plus/icons-vue'
 import {
   cancelAIOpsAction,
   confirmAIOpsAction,
@@ -672,6 +756,186 @@ function getEnvironmentCandidates(message) {
       seen.add(item.name)
       return true
     })
+}
+
+const RESPONSE_BLOCK_TYPE_LABELS = {
+  incident_card: '摘要',
+  evidence_timeline: '证据',
+  query_suggestion: '建议',
+  chart_query: '图表',
+  alert_rule_draft: '草稿',
+  dashboard_draft: '草稿',
+  change_candidate: '变更',
+  rollback_plan: '回滚',
+  k8s_action: 'K8s',
+  self_heal_recommendation: '自愈',
+  approval_form: '待确认',
+  tool_trace: '追踪',
+  risk_notice: '风险',
+}
+
+function normalizeResponseBlockItems(items) {
+  if (!Array.isArray(items)) return []
+  return items
+    .map((item) => {
+      if (item == null) return null
+      if (typeof item === 'string') {
+        const text = String(item || '').trim()
+        return text ? { text } : null
+      }
+      if (typeof item !== 'object') return null
+      const text = String(item.text || item.title || item.label || item.name || item.value || '').trim()
+      if (!text) return null
+      return {
+        ...item,
+        text,
+      }
+    })
+    .filter(Boolean)
+}
+
+function buildApprovalFormBlock(pendingAction) {
+  const payload = pendingAction?.action_payload || {}
+  const metrics = [
+    { label: '目标主机', value: `${payload.host_count || 0} 台` },
+    { label: '执行方式', value: payload.execution_mode || '--' },
+    { label: '执行策略', value: payload.execution_strategy || '--' },
+    { label: '超时', value: `${payload.timeout_seconds || '--'}s` },
+  ]
+  return {
+    type: 'approval_form',
+    title: pendingAction?.title || '待确认动作',
+    summary: pendingAction?.status === 'pending'
+      ? '确认后将载入任务中心草稿，可编辑后再执行。'
+      : '动作已进入下一步处理。',
+    status: pendingAction?.status || 'pending',
+    status_display: pendingAction?.status_display || '待确认',
+    risk_level: pendingAction?.risk_level || 'low',
+    metrics,
+    items: metrics.map(item => ({ text: `${item.label}：${item.value}`, ...item })),
+    actions: [],
+    _key: `pending-action-${pendingAction?.id || 'legacy'}`,
+  }
+}
+
+function getMessageBlocks(message) {
+  const rawBlocks = Array.isArray(message?.blocks)
+    ? message.blocks
+    : Array.isArray(message?.metadata?.response_blocks)
+      ? message.metadata.response_blocks
+      : []
+  const blocks = rawBlocks
+    .filter(Boolean)
+    .map((block, index) => {
+      const normalizedItems = normalizeResponseBlockItems(block?.items)
+      const type = String(block?.type || 'incident_card')
+      return {
+        ...block,
+        type,
+        title: String(block?.title || RESPONSE_BLOCK_TYPE_LABELS[type] || '结构化信息').trim(),
+        summary: String(block?.summary || normalizedItems[0]?.text || '').trim(),
+        items: normalizedItems,
+        actions: Array.isArray(block?.actions) ? block.actions.filter(Boolean) : [],
+        metrics: Array.isArray(block?.metrics) ? block.metrics.filter(Boolean) : [],
+        _key: String(block?.id || block?.key || `${type}-${index}`),
+      }
+    })
+
+  if (message?.pending_action && !blocks.some(block => block.type === 'approval_form')) {
+    blocks.push(buildApprovalFormBlock(message.pending_action))
+  }
+
+  return blocks
+}
+
+function hasApprovalBlock(message) {
+  return getMessageBlocks(message).some(block => block.type === 'approval_form')
+}
+
+function getBlockTypeLabel(type) {
+  return RESPONSE_BLOCK_TYPE_LABELS[String(type || '')] || '结构化信息'
+}
+
+function getBlockItemText(item) {
+  return String(item?.text || item?.label || item?.title || item?.name || item?.value || '').trim()
+}
+
+function getBlockItemDetail(item) {
+  return String(item?.detail || item?.description || item?.message || '').trim()
+}
+
+function getBlockItemStatus(item) {
+  return String(item?.status || '').trim()
+}
+
+function getBlockCopyValue(block) {
+  const lines = [String(block?.title || '').trim(), String(block?.summary || '').trim()]
+  const itemLines = (block?.items || []).map(getBlockItemText).filter(Boolean)
+  return [...lines.filter(Boolean), ...itemLines].join('\n')
+}
+
+function getBlockMetrics(block) {
+  return Array.isArray(block?.metrics) ? block.metrics.filter(Boolean) : []
+}
+
+function getBlockItems(block) {
+  return Array.isArray(block?.items) ? block.items.filter(Boolean) : []
+}
+
+function getBlockActions(block, message) {
+  const actions = Array.isArray(block?.actions) ? block.actions.filter(Boolean).map(action => ({ ...action })) : []
+  if (block?.type === 'approval_form') {
+    const actionTypes = new Set(actions.map(action => action.type).filter(Boolean))
+    if (message?.pending_action?.status === 'pending') {
+      if (!actionTypes.has('confirm')) actions.unshift({ type: 'confirm', label: '确认载入' })
+      if (!actionTypes.has('cancel')) actions.push({ type: 'cancel', label: '取消' })
+    } else if (message?.pending_action?.result_payload?.draft_ready) {
+      if (!actionTypes.has('open_task_center')) actions.unshift({ type: 'open_task_center', label: '前往任务中心' })
+    } else if (message?.pending_action?.result_payload?.task_id) {
+      if (!actionTypes.has('open_task_center')) actions.unshift({ type: 'open_task_center', label: '查看任务中心' })
+    }
+  }
+  if (!actions.length && block?.summary) {
+    actions.push({ type: 'copy', label: '复制内容', value: getBlockCopyValue(block) })
+  }
+  return actions
+}
+
+function getBlockActionIcon(type) {
+  if (type === 'copy') return CopyDocument
+  if (type === 'open' || type === 'open_task_center') return TopRight
+  if (type === 'reuse') return Promotion
+  if (type === 'confirm') return CircleCheck
+  if (type === 'cancel') return Delete
+  return CopyDocument
+}
+
+async function handleBlockAction(block, action, message) {
+  const type = String(action?.type || '').trim()
+  if (type === 'copy') {
+    await copyMessage(action?.value || getBlockCopyValue(block))
+    return
+  }
+  if (type === 'reuse') {
+    reuseMessage(action?.value || getBlockCopyValue(block))
+    return
+  }
+  if (type === 'open' && action?.path) {
+    router.push({ path: action.path, query: action.query || {} })
+    closePanel()
+    return
+  }
+  if (type === 'open_task_center') {
+    openTaskCenter()
+    return
+  }
+  if (type === 'confirm' && message?.pending_action) {
+    await handleConfirmAction(message.pending_action)
+    return
+  }
+  if (type === 'cancel' && message?.pending_action) {
+    await handleCancelAction(message.pending_action)
+  }
 }
 
 function formatDateTime(value) {
@@ -1624,6 +1888,38 @@ onBeforeUnmount(() => {
 .rich-inline-link{color:#2563eb;text-decoration:none}
 .rich-inline-link:hover{text-decoration:underline}
 .rich-code{margin:8px 0 0;padding:8px 10px;border-radius:10px;background:#0f172a;color:#e2e8f0;font-size:11px;line-height:1.5;white-space:pre-wrap;overflow:auto}
+.response-block-list{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.response-block-card{padding:9px 10px;border-radius:12px;border:1px solid #dbe4f0;background:linear-gradient(180deg,#fbfdff 0%,#fff 100%);box-shadow:0 4px 12px rgba(15,23,42,.035)}
+.response-block-card.type-tool_trace{background:#f8fafc;border-color:#e2e8f0}
+.response-block-card.type-query_suggestion{background:linear-gradient(180deg,#f8fbff 0%,#fff 100%);border-color:#bfdbfe}
+.response-block-card.type-risk_notice,.response-block-card.type-approval_form{background:linear-gradient(180deg,#fffaf5 0%,#fff 100%);border-color:#fed7aa}
+.response-block-card.type-k8s_action{background:linear-gradient(180deg,#f7fbff 0%,#fff 100%);border-color:#d7e8ff}
+.response-block-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.response-block-headline{min-width:0;display:flex;flex-direction:column;gap:3px}
+.response-block-title{font-size:12px;font-weight:700;color:#1e293b}
+.response-block-summary{font-size:11px;line-height:1.5;color:#64748b;word-break:break-word}
+.response-block-badge{flex:0 0 auto;padding:2px 7px;border-radius:999px;background:#eff6ff;color:#1d4ed8;font-size:10px;font-weight:700}
+.response-block-card.type-risk_notice .response-block-badge,.response-block-card.type-approval_form .response-block-badge{background:#fff7ed;color:#c2410c}
+.response-block-metric-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:8px}
+.response-block-metric{padding:7px 8px;border-radius:10px;background:rgba(255,255,255,.72);border:1px solid rgba(226,232,240,.9);display:flex;flex-direction:column;gap:3px}
+.response-block-metric span{font-size:10px;color:#64748b}
+.response-block-metric strong{font-size:12px;color:#1f2937}
+.response-block-command{margin-top:8px;padding:8px 10px;border-radius:10px;background:#111827;color:#f8fafc;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.response-block-trace{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.response-block-trace-item,.response-block-item{display:flex;align-items:flex-start;gap:8px;min-width:0}
+.response-block-trace-dot,.response-block-item-dot{width:8px;height:8px;border-radius:50%;margin-top:6px;background:#94a3b8;flex:0 0 auto}
+.response-block-trace-dot.success{background:#22c55e}
+.response-block-trace-dot.failed{background:#ef4444}
+.response-block-trace-body,.response-block-item-body{min-width:0;flex:1}
+.response-block-trace-name,.response-block-item-text{font-size:12px;font-weight:600;color:#334155;word-break:break-word}
+.response-block-trace-detail,.response-block-item-detail{margin-top:2px;font-size:11px;line-height:1.5;color:#64748b;word-break:break-word}
+.response-block-chip-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.response-block-chip{border:1px solid #bfdbfe;border-radius:999px;background:#fff;color:#1d4ed8;padding:4px 8px;font-size:11px;font-weight:600;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.response-block-chip:hover{background:#eff6ff}
+.response-block-item-list{display:flex;flex-direction:column;gap:7px;margin-top:8px}
+.response-block-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;padding-top:7px;border-top:1px dashed #e2e8f0}
+.response-block-action-btn{height:24px;padding:3px 8px;border-radius:8px;color:#334155}
+.response-block-action-btn :deep(.el-icon){margin-right:3px}
 .citation-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .citation-chip{border:none;border-radius:999px;padding:4px 8px;background:#ecfeff;color:#0f766e;cursor:pointer;font-size:11px}
 .pending-action-card{margin-top:10px;padding:10px;border-radius:12px;background:#fff7ed;border:1px solid #fdba74}
@@ -1763,6 +2059,8 @@ onBeforeUnmount(() => {
   .aiops-panel-body{grid-template-columns:1fr}
   .aiops-session-list{display:none}
   .pending-detail-grid{grid-template-columns:1fr}
+  .response-block-metric-grid{grid-template-columns:1fr}
+  .response-block-actions{align-items:stretch}
   .chat-toolbar{flex-direction:column;align-items:flex-start;gap:6px}
   .chat-toolbar-left,.chat-toolbar-right{width:100%;justify-content:space-between}
   .toolbar-hint{max-width:100%}

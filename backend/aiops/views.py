@@ -37,6 +37,7 @@ from .serializers import (
     AIOpsToolInvocationSerializer,
 )
 from .services import (
+    build_action_registry_summary,
     bootstrap_payload_for_user,
     build_audit_overview,
     cancel_action,
@@ -46,12 +47,14 @@ from .services import (
     list_model_provider_models,
     list_model_provider_presets,
     list_mcp_server_tools,
+    list_action_registry,
     recover_masked_suggested_question,
     start_async_chat_processing,
     sync_admin_sessions_to_demo,
     sync_session_to_demo_if_needed,
     test_model_provider_connection,
     test_mcp_server_connection,
+    DEPRECATED_BUILTIN_MCP_SERVER_NAMES,
 )
 from .knowledge_graph import build_knowledge_graph
 
@@ -138,7 +141,7 @@ class AIOpsMCPServerViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         get_agent_config()
-        return AIOpsMCPServer.objects.all().order_by('is_builtin', 'name', 'id')
+        return AIOpsMCPServer.objects.exclude(name__in=DEPRECATED_BUILTIN_MCP_SERVER_NAMES).order_by('is_builtin', 'name', 'id')
 
     @action(detail=True, methods=['post'])
     def test_connection(self, request, pk=None):
@@ -807,6 +810,16 @@ class AIOpsPendingActionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             metadata={'actions': action_meta},
         )
         return Response({'deleted': deleted_count}, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('aiops.config.view')])
+def action_registry(request):
+    actions = list_action_registry(user=request.user, include_unavailable=True)
+    return Response({
+        'summary': build_action_registry_summary(actions),
+        'actions': actions,
+    })
 
 
 @api_view(['GET'])

@@ -23,6 +23,7 @@ from .models import (
     AIOpsMCPServer,
     AIOpsModelProvider,
     AIOpsPendingAction,
+    AIOpsSkill,
     AIOpsToolInvocation,
 )
 from .services import (
@@ -37,6 +38,7 @@ from .services import (
     _normalize_mcp_input_schema,
     _request_model_completion,
     _sanitize_mcp_error_text,
+    _skills_for_action,
     _summarize_external_tool_result,
     _build_runtime_tool_registry,
     recover_masked_suggested_question,
@@ -53,6 +55,7 @@ from .services import (
     query_cost_report,
     query_cmdb_items,
     query_hosts,
+    query_knowledge_graph,
     query_task_resources,
     query_k8s_cluster_summary,
     query_grafana_promql,
@@ -162,15 +165,17 @@ class AIOpsApiTests(TestCase):
         self.assertIn('电商测试环境当前未确认的严重告警有哪些？', response.data['suggested_questions'])
         self.assertTrue(response.data['active_mcp_servers'])
         self.assertTrue(response.data['active_skills'])
+        self.assertTrue(response.data['action_registry'])
         active_mcp_names = {item['name'] for item in response.data['active_mcp_servers']}
+        self.assertIn('知识图谱 MCP', active_mcp_names)
+        self.assertNotIn('CMDB MCP', active_mcp_names)
         active_mcp_names.update({
-            'CMDB MCP',
-            '鍙娴嬫€?MCP',
-            '宸ュ崟绯荤粺 MCP',
-            '浠诲姟涓績 MCP',
-            '浜嬩欢澧?MCP',
-            '瀹瑰櫒绠＄悊 MCP',
-            '涓棿浠?MCP',
+            '可观测性 MCP',
+            '工单系统 MCP',
+            '任务中心 MCP',
+            '事件墙 MCP',
+            '容器管理 MCP',
+            '中间件 MCP',
             'SkyWalking MCP',
             'Grafana MCP',
         })
@@ -187,6 +192,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('query_dashboard_panel_data', active_tools)
         self.assertIn('query_event_wall', active_tools)
         self.assertIn('query_container_assets', active_tools)
+        self.assertIn('query_knowledge_graph', active_tools)
         self.assertIn('generate_host_task', active_tools)
         self.assertIn('query_task_resources', active_tools)
         self.assertIn('query_k8s_resources', active_tools)
@@ -194,10 +200,33 @@ class AIOpsApiTests(TestCase):
         self.assertNotIn('query_task_center', active_tools)
         self.assertNotIn('query_middleware_assets', active_tools)
         self.assertNotIn('query_cmdb_items', active_tools)
+        self.assertNotIn('query_cost_report', active_tools)
         self.assertIn('answer-formatter', {item['slug'] for item in response.data['active_skills']})
-        return
+        active_skills_by_slug = {item['slug']: item for item in response.data['active_skills']}
+        alert_skill = active_skills_by_slug['sx-alert-evidence-checklist']
+        self.assertIn('category', alert_skill)
+        self.assertIn('alert.root_cause', alert_skill['applicable_actions'])
+        self.assertIn('query_alerts', alert_skill['builtin_tools'])
+        self.assertTrue(alert_skill['examples'])
+        self.assertEqual(alert_skill['risk_level'], 'read_only')
+        self.assertIn('sections', alert_skill['output_contract'])
+        action_codes = {item['code'] for item in response.data['action_registry']}
         self.assertTrue({
-            'CMDB MCP',
+            'alert.root_cause',
+            'change.correlation',
+            'log.query_generate',
+            'k8s.diagnose',
+            'self_heal.recommend',
+            'metric.query_generate',
+            'deploy.failure_diagnose',
+            'slo.analysis',
+            'notification.policy_suggest',
+            'runbook.generate',
+        }.issubset(action_codes))
+        self.assertEqual(response.data['action_registry_summary']['total'], 10)
+        self.assertIn('read_only', response.data['action_registry_summary'])
+        self.assertTrue({
+            '知识图谱 MCP',
             '可观测性 MCP',
             '工单系统 MCP',
             '任务中心 MCP',
@@ -209,6 +238,79 @@ class AIOpsApiTests(TestCase):
         }.issubset(active_mcp_names))
         self.assertTrue(any(item['name'] == 'N9E 监控 MCP' for item in response.data['active_mcp_servers']))
         self.assertIn('回答整形器', active_skill_names)
+
+    def test_skills_for_action_uses_skill_metadata_and_formatter(self):
+        get_agent_config()
+        active_skills = list(AIOpsSkill.objects.filter(is_enabled=True).order_by('slug'))
+
+        selected = _skills_for_action(active_skills, {
+            'code': 'alert.root_cause',
+            'skills': ['sx-alert-evidence-checklist'],
+        })
+
+        selected_slugs = {item.slug for item in selected}
+        self.assertIn('sx-alert-evidence-checklist', selected_slugs)
+        self.assertIn('sx-k8s-alert-troubleshooting', selected_slugs)
+        self.assertIn('sx-log-pattern-analysis', selected_slugs)
+        self.assertIn('answer-formatter', selected_slugs)
+        self.assertNotIn('sx-self-heal-risk-guard', selected_slugs)
+
+    def test_skill_api_accepts_package_metadata(self):
+        payload = {
+            'name': '团队日志排障 Skill',
+            'slug': 'team-log-troubleshooting',
+            'description': '团队自定义日志排障知识包',
+            'category': '日志查询',
+            'applicable_actions': ['log.query_generate', 'alert.root_cause'],
+            'examples': ['查询订单服务错误日志', '按 trace_id 聚合日志'],
+            'builtin_tools': ['query_logs'],
+            'recommended_tools': ['query_knowledge_graph'],
+            'max_iterations': 3,
+            'risk_level': 'read_only',
+            'output_contract': {'sections': ['查询条件', '证据']},
+            'source_type': 'inline',
+            'content': '先确认环境和时间窗口，再生成可复制查询。',
+            'allowed_role_codes': [],
+            'is_enabled': True,
+        }
+
+        response = self.client.post('/api/aiops/admin/skills/', payload, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['slug'], 'team-log-troubleshooting')
+        self.assertEqual(response.data['applicable_actions'], ['log.query_generate', 'alert.root_cause'])
+        self.assertEqual(response.data['builtin_tools'], ['query_logs'])
+        self.assertEqual(response.data['output_contract']['sections'][0], '查询条件')
+
+    def test_action_registry_endpoint_returns_core_actions(self):
+        response = self.client.get('/api/aiops/admin/actions/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('summary', response.data)
+        self.assertIn('actions', response.data)
+        self.assertEqual(response.data['summary']['total'], len(response.data['actions']))
+        action_codes = {item['code'] for item in response.data['actions']}
+        self.assertTrue({
+            'alert.root_cause',
+            'change.correlation',
+            'log.query_generate',
+            'k8s.diagnose',
+            'self_heal.recommend',
+            'metric.query_generate',
+            'deploy.failure_diagnose',
+            'slo.analysis',
+            'notification.policy_suggest',
+            'runbook.generate',
+        }.issubset(action_codes))
+        self.assertEqual(response.data['summary']['total'], 10)
+        alert_action = next(item for item in response.data['actions'] if item['code'] == 'alert.root_cause')
+        self.assertTrue(alert_action['available'])
+        self.assertIn('query_alerts', alert_action['allowed_tools'])
+        self.assertIn('incident_card', alert_action['output_blocks'])
+        self.assertEqual(alert_action['risk_level_display'], '只读')
+        metric_action = next(item for item in response.data['actions'] if item['code'] == 'metric.query_generate')
+        self.assertEqual(metric_action['category'], '查询生成')
+        self.assertIn('query_grafana_promql', metric_action['allowed_tools'])
 
     def test_agent_config_repairs_unscoped_default_alert_question(self):
         config = get_agent_config()
@@ -224,6 +326,68 @@ class AIOpsApiTests(TestCase):
         repaired = get_agent_config()
 
         self.assertEqual(repaired.suggested_questions[0], '电商测试环境当前未确认的严重告警有哪些？')
+
+    @mock.patch('aiops.services.build_knowledge_graph')
+    def test_query_knowledge_graph_returns_preview_sections(self, mocked_build_graph):
+        mocked_build_graph.return_value = {
+            'summary': {
+                'node_count': 2,
+                'edge_count': 1,
+                'service_count': 1,
+                'runtime_component_count': 0,
+            },
+            'nodes': [
+                {'id': 'environment:prod', 'label': '生产环境', 'kind': 'environment', 'environment': 'prod'},
+                {
+                    'id': 'service:prod:订单系统:order-service',
+                    'label': 'order-service',
+                    'kind': 'service',
+                    'environment': 'prod',
+                    'system_name': '订单系统',
+                    'service': 'order-service',
+                },
+            ],
+            'edges': [
+                {
+                    'source': 'environment:prod',
+                    'target': 'service:prod:订单系统:order-service',
+                    'relation': 'environment_system',
+                    'label': '环境包含系统',
+                    'weight': 1,
+                },
+            ],
+            'filters': {'environments': ['prod'], 'services': ['order-service']},
+            'relation_legend': [{'key': 'environment_system', 'label': '环境包含系统'}],
+        }
+        session = AIOpsChatSession.objects.create(user=self.user, title='kg')
+        user_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content='查询电商测试环境订单服务关联',
+        )
+
+        result = query_knowledge_graph(
+            session,
+            user_message,
+            self.user,
+            query='查询电商测试环境订单服务关联',
+            environment='电商测试环境',
+            system_name='订单系统',
+            service='order-service',
+            limit=2,
+        )
+
+        params = mocked_build_graph.call_args.args[0]
+        self.assertEqual(params.getlist('environment'), ['电商测试环境'])
+        self.assertEqual(params.getlist('system'), ['订单系统'])
+        self.assertEqual(params.getlist('business_line'), ['订单系统'])
+        self.assertEqual(params.getlist('service'), ['order-service'])
+        self.assertEqual(result['summary']['environment'], '电商测试环境')
+        self.assertEqual(result['summary']['preview_node_count'], 2)
+        self.assertEqual(result['summary']['preview_edge_count'], 1)
+        self.assertEqual(result['citations'][0]['path'], '/aiops/knowledge')
+        self.assertEqual(result['nodes'][0]['id'], 'environment:prod')
+        self.assertEqual(result['edges'][0]['relation'], 'environment_system')
 
     @mock.patch('ops.k8s_views._get_k8s_client')
     def test_knowledge_environment_catalog_uses_stale_k8s_namespace_cache(self, mock_get_client):
@@ -1606,11 +1770,14 @@ class AIOpsApiTests(TestCase):
         skill_response = self.client.get('/api/aiops/admin/skills/')
         self.assertEqual(mcp_response.status_code, 200)
         self.assertEqual(skill_response.status_code, 200)
-        self.assertTrue(any(item['name'] == 'CMDB MCP' and item['server_type'] == AIOpsMCPServer.SERVER_PLATFORM_BUILTIN for item in mcp_response.data))
+        self.assertTrue(any(item['name'] == '知识图谱 MCP' and item['server_type'] == AIOpsMCPServer.SERVER_PLATFORM_BUILTIN for item in mcp_response.data))
+        self.assertFalse(any(item['name'] == 'CMDB MCP' for item in mcp_response.data))
         self.assertTrue(any(item['name'] == 'N9E 监控 MCP' for item in mcp_response.data))
         self.assertTrue(any(item['name'] == 'SkyWalking MCP' and item['server_type'] == AIOpsMCPServer.SERVER_STDIO for item in mcp_response.data))
         self.assertTrue(any(item['name'] == 'Grafana MCP' and item['server_type'] == AIOpsMCPServer.SERVER_HTTP for item in mcp_response.data))
-        self.assertTrue(any(item['slug'] == 'evidence-first-responder' for item in skill_response.data))
+        alert_skill = next(item for item in skill_response.data if item['slug'] == 'sx-alert-evidence-checklist')
+        self.assertIn('alert.root_cause', alert_skill['applicable_actions'])
+        self.assertIn('query_alerts', alert_skill['builtin_tools'])
         self.assertTrue(any(item['slug'] == 'answer-formatter' for item in skill_response.data))
 
     @mock.patch('aiops.views.test_model_provider_connection')
@@ -2682,6 +2849,10 @@ class AIOpsApiTests(TestCase):
         self.assertIn('query_alerts', assistant_message['tool_calls'])
         self.assertIn('today active checkout alert', assistant_message['content'])
         self.assertNotIn('old active checkout alert', assistant_message['content'])
+        self.assertTrue(assistant_message['blocks'])
+        self.assertEqual(assistant_message['blocks'], assistant_message['metadata']['response_blocks'])
+        self.assertIn('tool_trace', {item['type'] for item in assistant_message['blocks']})
+        self.assertTrue(any(item['type'] in {'incident_card', 'evidence_timeline'} for item in assistant_message['blocks']))
         mocked_completion.assert_not_called()
 
     @mock.patch('aiops.services._request_model_completion')
@@ -3974,6 +4145,140 @@ class AIOpsApiTests(TestCase):
         self.assertIn('tf-k3s-single-node', assistant_message['content'])
         mocked_completion.assert_not_called()
 
+    @mock.patch('aiops.services._request_model_completion')
+    def test_action_router_routes_log_query_and_attaches_metadata(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_ecommerce_knowledge_environment()
+        LogEntry.objects.create(
+            service='订单服务',
+            level='error',
+            message='order database timeout trace_id=log-action-001',
+        )
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'action-log-query'}, format='json')
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '帮我生成电商测试环境订单服务的错误日志查询'},
+            format='json',
+        )
+
+        assistant_message = response.data['assistant_message']
+        metadata = assistant_message['metadata']
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(metadata['execution_mode'], 'direct_logs_fastpath')
+        self.assertEqual(metadata['selected_action']['code'], 'log.query_generate')
+        self.assertIn('query_logs', assistant_message['tool_calls'])
+        block_types = {item.get('type') for item in metadata.get('response_blocks', [])}
+        self.assertIn('tool_trace', block_types)
+        mocked_completion.assert_not_called()
+
+    @mock.patch('aiops.services._request_model_completion')
+    def test_action_router_returns_preflight_when_log_service_missing(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_ecommerce_knowledge_environment()
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'action-log-preflight'}, format='json')
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '帮我生成电商测试环境日志查询语句'},
+            format='json',
+        )
+
+        assistant_message = response.data['assistant_message']
+        metadata = assistant_message['metadata']
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(metadata['execution_mode'], 'action_preflight')
+        self.assertTrue(metadata['action_preflight'])
+        self.assertEqual(metadata['selected_action']['code'], 'log.query_generate')
+        self.assertIn('service', {item.get('name') for item in metadata['missing_context']})
+        self.assertEqual(assistant_message['tool_calls'], [])
+        response_blocks = metadata.get('response_blocks', [])
+        self.assertEqual(response_blocks[0]['type'], 'approval_form')
+        self.assertEqual(response_blocks[0]['status'], 'needs_info')
+        mocked_completion.assert_not_called()
+
+    @mock.patch('aiops.services._request_model_completion')
+    def test_action_router_routes_change_correlation(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_ecommerce_knowledge_environment()
+        Deployment.objects.create(
+            app_name='order-service',
+            version='v2.1.0',
+            business_line='电商交易核心',
+            environment='ecommerce-test',
+        )
+        EventRecord.objects.create(
+            module='deploy',
+            category='release',
+            action='finish',
+            title='order-service release v2.1.0',
+            source_type=EventRecord.SOURCE_SYSTEM,
+            business_line='电商交易核心',
+            environment='ecommerce-test',
+            application='order-service',
+            is_demo=False,
+        )
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'action-change-correlation'}, format='json')
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '分析电商测试环境订单系统最近变更是否导致异常'},
+            format='json',
+        )
+
+        assistant_message = response.data['assistant_message']
+        metadata = assistant_message['metadata']
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(metadata['execution_mode'], 'deterministic_change_correlation')
+        self.assertEqual(metadata['selected_action']['code'], 'change.correlation')
+        self.assertIn('query_knowledge_graph', assistant_message['tool_calls'])
+        self.assertIn('query_recent_changes', assistant_message['tool_calls'])
+        self.assertIn('query_event_wall', assistant_message['tool_calls'])
+        self.assertIn('change_candidate', {item.get('type') for item in metadata.get('response_blocks', [])})
+        mocked_completion.assert_not_called()
+
+    @mock.patch('aiops.services._request_model_completion')
+    def test_action_router_self_heal_recommendation_is_recommend_only(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_ecommerce_knowledge_environment()
+        Alert.objects.create(
+            title='order service 5xx high',
+            level='critical',
+            status=Alert.STATUS_ACTIVE,
+            source='prometheus',
+            message='order service 5xx is high',
+            environment='电商测试',
+            service='order-service',
+            is_acknowledged=False,
+        )
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'action-self-heal'}, format='json')
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '给电商测试环境订单服务最近告警推荐一套自愈方案'},
+            format='json',
+        )
+
+        assistant_message = response.data['assistant_message']
+        metadata = assistant_message['metadata']
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(metadata['execution_mode'], 'deterministic_self_heal_recommendation')
+        self.assertEqual(metadata['selected_action']['code'], 'self_heal.recommend')
+        self.assertIsNone(response.data['pending_action'])
+        self.assertFalse(HostTask.objects.filter(trigger_source=HostTask.TRIGGER_SOURCE_AIOPS).exists())
+        approval_blocks = [item for item in metadata.get('response_blocks', []) if item.get('type') == 'approval_form']
+        self.assertTrue(approval_blocks)
+        self.assertEqual(approval_blocks[-1]['status'], 'waiting_confirmation')
+        mocked_completion.assert_not_called()
+
     def test_recover_masked_suggested_question(self):
         self.assertIn(recover_masked_suggested_question('????????????????????'), DEFAULT_SUGGESTED_QUESTIONS)
         self.assertEqual(
@@ -4174,10 +4479,10 @@ class AIOpsApiTests(TestCase):
         config = get_agent_config()
         config.default_provider = provider
         config.save(update_fields=['default_provider'])
-        cmdb_mcp = AIOpsMCPServer.objects.get(name='CMDB MCP')
-        cmdb_mcp.is_enabled = True
-        cmdb_mcp.save(update_fields=['is_enabled'])
-        config.enabled_mcp_server_ids = list(dict.fromkeys([*(config.enabled_mcp_server_ids or []), cmdb_mcp.id]))
+        knowledge_mcp = AIOpsMCPServer.objects.get(name='知识图谱 MCP')
+        knowledge_mcp.is_enabled = True
+        knowledge_mcp.save(update_fields=['is_enabled'])
+        config.enabled_mcp_server_ids = list(dict.fromkeys([*(config.enabled_mcp_server_ids or []), knowledge_mcp.id]))
         config.save(update_fields=['enabled_mcp_server_ids'])
 
         mocked_completion.side_effect = [
@@ -4188,8 +4493,8 @@ class AIOpsApiTests(TestCase):
                             'id': 'call_1',
                             'type': 'function',
                             'function': {
-                                'name': 'query_cmdb_items',
-                                'arguments': '{"query":"生产 主机"}',
+                                'name': 'query_knowledge_graph',
+                                'arguments': '{"query":"生产环境资源关联","environment":"prod"}',
                             },
                         }],
                     },
@@ -4198,14 +4503,14 @@ class AIOpsApiTests(TestCase):
             {
                 'choices': [{
                     'message': {
-                        'content': '已通过 MCP 查询到平台资源，并整理出主机结果。',
+                        'content': '已通过 MCP 查询到知识图谱关联，并整理出环境关系。',
                     },
                 }],
             },
             {
                 'choices': [{
                     'message': {
-                        'content': '- 结论：已查询到生产环境相关 CMDB 资源。\n- 概要：结果已按主机信息整理输出。\n- 可继续查看：CMDB。',
+                        'content': '- 结论：已查询到生产环境知识图谱关联。\n- 概要：结果已按环境、服务和关系整理输出。\n- 可继续查看：知识图谱。',
                     },
                 }],
             },
@@ -4217,12 +4522,12 @@ class AIOpsApiTests(TestCase):
         AIOpsChatSession.objects.filter(pk=session_id).update(context={'current_environment': {'name': 'prod'}})
         response = self.client.post(
             f'/api/aiops/sessions/{session_id}/send_message/',
-            {'content': '请帮我看下生产环境 CMDB 资源'},
+            {'content': '请帮我看下生产环境资源关联'},
             format='json',
         )
 
         self.assertEqual(response.status_code, 201)
-        self.assertIn('query_cmdb_items', response.data['assistant_message']['tool_calls'])
+        self.assertIn('query_knowledge_graph', response.data['assistant_message']['tool_calls'])
         step_titles = [item.get('title') for item in response.data['assistant_message']['metadata'].get('processing_steps', [])]
         self.assertIn('加载 MCP 与 Skill', step_titles)
         self.assertIn('模型规划', step_titles)

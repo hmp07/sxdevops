@@ -280,11 +280,10 @@ PROCESSING_STATUS_FAILED = 'failed'
 
 BUILTIN_MCP_SERVERS = [
     {
-        'name': 'CMDB MCP',
+        'name': '知识图谱 MCP',
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
-        'description': '查询 CMDB 配置项与资源关系。',
-        'tool_whitelist': ['query_cmdb_items', 'query_hosts', 'query_cost_report'],
-        'default_enabled': False,
+        'description': '查询知识图谱中的环境关联、系统拓扑、服务依赖与主机资源关系。',
+        'tool_whitelist': ['query_knowledge_graph', 'query_hosts'],
     },
     {
         'name': '可观测性 MCP',
@@ -415,86 +414,752 @@ BUILTIN_MCP_SERVERS = [
     },
 ]
 
+DEPRECATED_BUILTIN_MCP_SERVER_NAMES = {'CMDB MCP'}
+
 BUILTIN_SKILLS = [
     {
-        'name': '证据优先应答',
-        'slug': 'evidence-first-responder',
-        'description': '优先调用工具取证，再输出事实、推断与建议。',
+        'name': '告警证据清单',
+        'slug': 'sx-alert-evidence-checklist',
+        'category': '告警排障',
+        'description': '规范告警根因分析的证据收集顺序、判断口径和输出结构。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
-        'content': '先调用 MCP 工具获取平台事实，再作答。输出结构优先为：事实、推断、建议。',
+        'applicable_actions': ['alert.root_cause', 'slo.analysis', 'self_heal.recommend'],
+        'examples': [
+            '分析生产环境当前未恢复严重告警的根因',
+            '这条告警可能影响哪些服务和依赖',
+            '最近一小时 checkout 服务异常是不是告警引起的',
+        ],
+        'builtin_tools': ['query_alerts', 'query_alert_root_cause', 'query_knowledge_graph'],
+        'recommended_tools': ['query_system_posture', 'query_logs', 'query_traces', 'query_recent_changes'],
+        'max_iterations': 4,
+        'risk_level': AIOpsSkill.RISK_READ_ONLY,
+        'output_contract': {
+            'sections': ['结论', '关键证据', '影响范围', '建议动作'],
+            'blocks': ['incident_card', 'evidence_timeline', 'risk_notice'],
+        },
+        'content': """适用场景：
+- 告警根因、告警风险、告警影响范围、告警是否需要升级等问题。
+- 只负责分析和建议，不直接修改告警规则、不直接执行恢复动作。
+
+取证顺序：
+1. 先确认知识图谱环境，提取系统、服务、依赖和上下游范围。
+2. 查询当前告警和历史告警，优先关注级别、状态、开始时间、持续时长、确认状态和指纹。
+3. 如果有根因接口，优先读取根因候选和关联证据。
+4. 按影响对象追加系统态势、日志、链路和最近变更证据。
+5. 没有证据时要明确说明“暂未发现平台证据”，不能编造根因。
+
+判断要求：
+- 结论必须区分事实、推断和待验证假设。
+- 根因只能基于工具事实给出置信度，不允许凭经验直接定性。
+- 如果发现变更、发布、工单或事件时间线接近，要标记为候选原因而不是确定原因。
+
+输出要求：
+- 先给一句结论，再列关键证据、影响范围、建议动作。
+- 建议动作只能是检查、确认、回滚评估、自愈推荐或升级处理，不直接声称已经执行。""",
         'allowed_role_codes': [],
     },
     {
-        'name': '故障关联分析',
-        'slug': 'incident-investigator',
-        'description': '围绕告警、事件、日志、链路和变更做关联分析。',
+        'name': 'K8s 告警排障',
+        'slug': 'sx-k8s-alert-troubleshooting',
+        'category': 'K8s 诊断',
+        'description': '针对 K8s 相关告警组织集群、命名空间、工作负载、Pod、Event 和日志证据。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
-        'content': '异常、故障、根因类问题优先组合调用告警、事件、日志、链路和最近变更工具。',
+        'applicable_actions': ['alert.root_cause', 'k8s.diagnose', 'deploy.failure_diagnose'],
+        'examples': [
+            '分析 app-prod-k8s 集群异常 Pod',
+            'Deployment 副本不可用是什么原因',
+            'CrashLoopBackOff 需要看哪些证据',
+        ],
+        'builtin_tools': ['query_k8s_cluster_summary', 'query_k8s_resources', 'query_logs', 'query_knowledge_graph'],
+        'recommended_tools': ['query_alerts', 'query_system_posture', 'query_recent_changes'],
+        'max_iterations': 5,
+        'risk_level': AIOpsSkill.RISK_READ_ONLY,
+        'output_contract': {
+            'sections': ['异常对象', 'K8s 证据', '可能原因', '处置建议'],
+            'blocks': ['k8s_action', 'evidence_timeline', 'risk_notice'],
+        },
+        'content': """适用场景：
+- K8s 集群、命名空间、工作负载、Pod、容器日志和 Event 相关异常。
+- 只做只读取证和建议，不能直接执行 kubectl 写操作。
+
+取证顺序：
+1. 先确认环境对应的集群和命名空间，避免跨环境查询。
+2. 查询集群摘要，获取异常工作负载、Pod 状态、资源使用和事件概览。
+3. 按问题对象查询 workload、pod、event、container log。
+4. 如果问题与发布或镜像相关，追加最近变更和发布记录。
+5. 如果问题与业务错误相关，追加日志和链路证据。
+
+常见判断：
+- Pending 优先看资源不足、调度约束、PVC 和节点状态。
+- CrashLoopBackOff 优先看容器日志、退出码、探针和配置。
+- ImagePullBackOff 优先看镜像地址、凭据、仓库可达性和 tag。
+- Readiness/Liveness 失败优先看探针路径、启动时间、依赖服务和资源压力。
+
+输出要求：
+- 明确异常对象、命名空间、状态、关键事件和推荐排查顺序。
+- 高风险建议必须以“待确认动作”表达，不允许直接执行。""",
         'allowed_role_codes': [],
     },
     {
         'name': '回答整形器',
         'slug': 'answer-formatter',
+        'category': '回答规范',
         'description': '基于工具事实重组最终回答，输出更稳定的结构化结果。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
-        'content': '拿到 MCP 工具结果后，优先整理为结论、关键信息、风险与建议；如果涉及生成任务，要明确写出当前是任务草稿、待确认创建，还是已经在任务中心创建待执行任务，并给出目标、执行方式、风险和下一步；不要只返回一句泛化结论，也不要脱离工具事实自由发挥。',
+        'applicable_actions': ['alert.root_cause', 'change.correlation', 'log.query_generate', 'k8s.diagnose', 'self_heal.recommend'],
+        'examples': ['把工具结果整理成结论、证据、建议', '将任务草稿说明成待确认动作'],
+        'builtin_tools': [],
+        'recommended_tools': [],
+        'max_iterations': 0,
+        'risk_level': AIOpsSkill.RISK_READ_ONLY,
+        'output_contract': {
+            'sections': ['结论', '依据', '建议操作', '可继续查看'],
+            'blocks': ['tool_trace', 'risk_notice'],
+        },
+        'content': """拿到工具结果后，优先整理为结论、依据、风险与建议。
+
+要求：
+- 不能脱离工具事实自由发挥。
+- 如果工具没有返回证据，要明确说明证据不足。
+- 如果涉及生成任务，要明确当前是任务草稿、待确认创建，还是已经在任务中心创建真实任务。
+- 回答必须包含可执行的下一步，但不能声称未确认动作已经执行。
+- 对告警和故障类问题，要优先保留关键事实：对象、环境、时间窗口、状态、数量、证据来源。""",
         'allowed_role_codes': [],
     },
     {
-        'name': '自动化安全护栏',
-        'slug': 'automation-safety-guard',
-        'description': '执行类任务先生成草稿，强调范围、风险与确认。',
+        'name': '日志模式分析',
+        'slug': 'sx-log-pattern-analysis',
+        'category': '日志查询',
+        'description': '规范日志聚合、样本解释、错误模式归类和证据表达。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
-        'content': '涉及任务执行时，先生成草稿，列出目标、执行方式、执行策略与风险等级，未确认前不能声称已执行。',
+        'applicable_actions': ['alert.root_cause', 'log.query_generate', 'deploy.failure_diagnose'],
+        'examples': [
+            '查询 order-service 最近 30 分钟 ERROR 日志',
+            '登录失败日志按错误码聚合',
+            '从日志里判断异常是否集中在某个 Pod',
+        ],
+        'builtin_tools': ['query_logs', 'query_knowledge_graph'],
+        'recommended_tools': ['query_traces', 'query_alerts'],
+        'max_iterations': 3,
+        'risk_level': AIOpsSkill.RISK_READ_ONLY,
+        'output_contract': {
+            'sections': ['查询条件', '命中概览', '错误模式', '后续建议'],
+            'blocks': ['query_suggestion', 'tool_trace'],
+        },
+        'content': """适用场景：
+- 日志查询、日志聚合、日志异常模式解释、从日志补充故障证据。
+
+查询规范：
+1. 必须携带环境和时间窗口。
+2. 如果用户给出服务名，优先使用 service/app/workload 字段过滤。
+3. 如果用户描述错误级别，映射到 error、warn、info 等平台可识别 level。
+4. 涉及 Trace 排查时保留 trace_id、span_id、request_id 等关联字段。
+5. 聚合时优先按 level、service、pod、namespace、error_code、message_pattern 分组。
+
+分析要求：
+- 日志样本只能作为证据，不能单独定性根因。
+- 需要说明命中数量、样本范围、主要模式和缺失字段。
+- 查询建议必须可复制，并说明每个过滤项的作用。""",
         'allowed_role_codes': [],
     },
     {
-        'name': '环境前置检查',
-        'slug': 'environment-gate',
-        'description': '所有分析必须先确认知识图谱环境。',
+        'name': '变更影响分析',
+        'slug': 'sx-change-impact-analysis',
+        'category': '变更关联',
+        'description': '规范发布、工单、事件与知识图谱依赖的时间线关联分析。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
-        'content': '分析前必须先识别或继承当前会话环境；没有环境时直接返回“必须先指定环境”，并给出可选环境，不进入工具调用。',
+        'applicable_actions': ['alert.root_cause', 'change.correlation', 'deploy.failure_diagnose', 'self_heal.recommend'],
+        'examples': [
+            '最近有哪些变更可能影响订单服务',
+            '今天发布和告警时间是否接近',
+            '帮我判断这个故障是否由发布引起',
+        ],
+        'builtin_tools': ['query_recent_changes', 'query_event_wall', 'query_knowledge_graph'],
+        'recommended_tools': ['query_alerts', 'query_logs', 'query_traces'],
+        'max_iterations': 4,
+        'risk_level': AIOpsSkill.RISK_READ_ONLY,
+        'output_contract': {
+            'sections': ['时间线', '候选变更', '影响路径', '验证建议'],
+            'blocks': ['change_candidate', 'evidence_timeline', 'risk_notice'],
+        },
+        'content': """适用场景：
+- 变更关联、发布失败诊断、变更是否导致告警或故障。
+
+分析步骤：
+1. 先确认故障或告警的开始时间，建立前后时间窗口。
+2. 查询发布、工单、事件和操作记录，按时间排序。
+3. 用知识图谱确认变更对象和故障对象是否存在依赖或上下游关系。
+4. 如果时间接近但没有依赖关系，只能标记为弱关联。
+5. 如果时间接近且依赖关系匹配，再结合日志、链路或指标判断置信度。
+
+输出要求：
+- 候选变更必须包含时间、对象、动作、操作者或来源。
+- 需要给出“强关联 / 弱关联 / 暂无关联”的判断。
+- 回滚建议必须说明前置验证和风险，不直接触发回滚。""",
         'allowed_role_codes': [],
     },
     {
-        'name': '知识图谱取证',
-        'slug': 'knowledge-graph-scope',
-        'description': '先读取环境图谱并形成分析范围。',
+        'name': '日志查询规范',
+        'slug': 'sx-log-query-guide',
+        'category': '日志查询',
+        'description': '将自然语言需求转成可执行、可解释、可复制的日志查询条件。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
-        'content': '确认环境后先读取知识图谱视图，形成 analysis_scope；后续告警、系统态势、日志、链路、看板、事件和容器查询都必须在该范围内进行。',
+        'applicable_actions': ['log.query_generate', 'alert.root_cause'],
+        'examples': [
+            '帮我生成订单服务错误日志查询',
+            '查询最近一小时支付失败日志',
+            '按 trace_id 过滤链路相关日志',
+        ],
+        'builtin_tools': ['query_logs', 'query_knowledge_graph'],
+        'recommended_tools': [],
+        'max_iterations': 2,
+        'risk_level': AIOpsSkill.RISK_DRAFT,
+        'output_contract': {
+            'sections': ['查询语句', '过滤条件', '字段说明', '使用建议'],
+            'blocks': ['query_suggestion'],
+        },
+        'content': """适用场景：
+- 用户要求生成日志查询、解释日志字段、给出过滤条件。
+
+生成规则：
+1. 明确环境、服务、级别、时间范围、关键词和字段过滤。
+2. 查询语句必须避免过宽范围；缺少环境或时间窗口时要求补充。
+3. 优先输出平台可执行参数，其次输出通用 LogQL/SQL-like 参考。
+4. 对每个条件说明目的，例如缩小服务、限定错误级别、关联 trace。
+5. 不要把查询生成说成已经完成排障。""",
         'allowed_role_codes': [],
     },
     {
-        'name': '告警与系统态势优先',
-        'slug': 'alert-posture-first',
-        'description': '线上问题默认先看告警中心和系统态势。',
+        'name': '日志字段字典',
+        'slug': 'sx-log-field-dictionary',
+        'category': '日志查询',
+        'description': '沉淀日志字段含义和跨工具关联字段，提升查询生成稳定性。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
-        'content': '故障、异常、风险、SLA、性能问题优先查询告警中心；如果环境配置了系统态势，必须读取 SLA、健康度、可用性、错误率、延迟和组件状态。事件中心只做辅助定位。',
+        'applicable_actions': ['log.query_generate', 'alert.root_cause', 'k8s.diagnose'],
+        'examples': ['service 字段怎么过滤', 'trace_id 和 request_id 怎么关联', 'namespace 和 pod 字段怎么用'],
+        'builtin_tools': ['query_logs'],
+        'recommended_tools': ['query_knowledge_graph'],
+        'max_iterations': 0,
+        'risk_level': AIOpsSkill.RISK_READ_ONLY,
+        'output_contract': {
+            'sections': ['字段说明', '关联方式', '查询建议'],
+            'blocks': ['query_suggestion'],
+        },
+        'content': """常用字段：
+- environment：环境范围，必须从知识图谱或页面上下文确认。
+- service/app/workload：业务服务或工作负载名称，用于限定对象。
+- level/severity：日志级别，常见值为 error、warn、info、debug。
+- trace_id/span_id/request_id：链路与请求关联字段。
+- namespace/pod/container/node：K8s 维度字段。
+- message/error/error_code：错误内容或错误码字段。
+
+使用要求：
+- 字段不存在时要说明需要确认数据源字段映射。
+- 不同数据源字段名可能不同，优先使用平台返回的字段字典或样本字段。
+- 不能凭空假设所有日志都有 trace_id。""",
         'allowed_role_codes': [],
     },
     {
-        'name': '可观测性关联',
-        'slug': 'observability-correlation',
-        'description': '使用平台关联配置串联日志、Trace、告警和看板。',
+        'name': 'K8s 排障 SOP',
+        'slug': 'sx-k8s-troubleshooting',
+        'category': 'K8s 诊断',
+        'description': '沉淀 K8s 常见异常的只读排障路径和输出格式。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
-        'content': '使用可观测性关联配置决定日志字段、Trace 字段、告警字段、Grafana 变量和事件资源字段如何关联，避免仅靠关键词猜测。',
+        'applicable_actions': ['k8s.diagnose', 'alert.root_cause', 'deploy.failure_diagnose'],
+        'examples': ['Pod Pending 怎么排查', '探针失败如何判断', '节点资源不足会影响哪些服务'],
+        'builtin_tools': ['query_k8s_cluster_summary', 'query_k8s_resources', 'query_logs'],
+        'recommended_tools': ['query_alerts', 'query_knowledge_graph'],
+        'max_iterations': 5,
+        'risk_level': AIOpsSkill.RISK_READ_ONLY,
+        'output_contract': {
+            'sections': ['现象', '证据', '原因判断', '建议'],
+            'blocks': ['k8s_action', 'evidence_timeline'],
+        },
+        'content': """排障路径：
+- Pod Pending：看调度事件、资源请求、节点 taint、亲和性、PVC。
+- CrashLoopBackOff：看退出码、容器日志、启动命令、环境变量、探针。
+- ImagePullBackOff：看镜像地址、tag、仓库凭据、网络连通。
+- OOMKilled：看内存 limit、峰值、重启次数和近期流量。
+- Probe Failed：看探针路径、超时、启动时间、依赖服务状态。
+
+边界：
+- 只读取平台接口返回的集群与日志事实。
+- 不直接执行扩缩容、删除 Pod、重启工作负载、修改配置等写操作。
+- 写操作只能形成建议或待确认动作。""",
         'allowed_role_codes': [],
     },
     {
-        'name': '容器只读取证',
-        'slug': 'container-readonly-evidence',
-        'description': '容器环境只能通过平台内接口读取。',
+        'name': '容器只读取证护栏',
+        'slug': 'sx-container-readonly-guard',
+        'category': '安全护栏',
+        'description': '限定容器和 K8s 场景只能通过平台后端接口取证，写操作必须走确认流。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
-        'content': '容器环境 MCP 只能调用平台后端接口获取 K8s/Docker 快照、Pod、工作负载和集群摘要，不允许直连集群、Docker daemon 或主机执行操作。',
+        'applicable_actions': ['k8s.diagnose', 'self_heal.recommend', 'deploy.failure_diagnose'],
+        'examples': ['能不能直接重启这个 Pod', '帮我扩容 Deployment', '删除异常 Pod 是否安全'],
+        'builtin_tools': ['query_k8s_cluster_summary', 'query_k8s_resources', 'query_container_assets'],
+        'recommended_tools': ['generate_host_task'],
+        'max_iterations': 0,
+        'risk_level': AIOpsSkill.RISK_DRAFT,
+        'output_contract': {
+            'sections': ['安全边界', '可执行前置条件', '确认项'],
+            'blocks': ['approval_form', 'risk_notice'],
+        },
+        'content': """安全边界：
+- assistant 不能直连集群、Docker daemon 或主机执行命令。
+- 查询类问题只能调用平台后端只读工具。
+- 重启、扩缩容、删除、修改配置、执行脚本都属于高风险动作，必须生成待确认动作。
+
+输出要求：
+- 对用户提出的写操作，先说明风险和需要确认的目标范围。
+- 必须列出目标集群、命名空间、资源类型、资源名、影响范围和回滚方式。
+- 没有 dry-run 或审批信息时，不允许建议直接执行。""",
         'allowed_role_codes': [],
     },
     {
-        'name': '事件辅助定位',
-        'slug': 'event-center-supporting-evidence',
-        'description': '事件中心用于辅助定位近期动作和复盘证据。',
+        'name': '事件时间线关联',
+        'slug': 'sx-event-timeline-correlation',
+        'category': '变更关联',
+        'description': '将事件墙、工单、发布、告警和知识图谱关系组织成可解释时间线。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
-        'content': '事件中心不作为主分析入口；仅在告警、系统态势或问题指向发布、变更、任务、工单、操作、失败记录时作为辅助证据。',
+        'applicable_actions': ['change.correlation', 'alert.root_cause', 'runbook.generate'],
+        'examples': ['今天有哪些事件和告警时间接近', '把故障前后的操作整理成时间线', '找出最近发布相关事件'],
+        'builtin_tools': ['query_event_wall', 'query_recent_changes', 'query_knowledge_graph'],
+        'recommended_tools': ['query_alerts', 'query_logs'],
+        'max_iterations': 3,
+        'risk_level': AIOpsSkill.RISK_READ_ONLY,
+        'output_contract': {
+            'sections': ['时间线', '关键事件', '关联判断'],
+            'blocks': ['evidence_timeline', 'change_candidate'],
+        },
+        'content': """适用场景：
+- 事件、发布、工单、操作记录与告警或故障的时间线关联。
+
+要求：
+- 时间线按发生时间排序，标明来源、动作、对象和结果。
+- 只把事件作为辅助证据，不能仅凭事件存在就断定根因。
+- 与知识图谱无依赖关系的事件要标为弱关联。
+- 如果事件时间晚于故障发生，要优先判断它可能是处置动作而非原因。""",
         'allowed_role_codes': [],
+    },
+    {
+        'name': '自愈风险护栏',
+        'slug': 'sx-self-heal-risk-guard',
+        'category': '自愈安全',
+        'description': '约束自愈推荐必须先评估风险、生成 dry-run 和待确认动作。',
+        'source_type': AIOpsSkill.SOURCE_INLINE,
+        'applicable_actions': ['self_heal.recommend'],
+        'examples': ['推荐一个自愈方案', '这个故障适合自动恢复吗', '是否可以执行巡检脚本'],
+        'builtin_tools': ['query_alerts', 'query_logs', 'query_traces', 'generate_host_task', 'query_knowledge_graph'],
+        'recommended_tools': ['query_recent_changes'],
+        'max_iterations': 6,
+        'risk_level': AIOpsSkill.RISK_DRAFT,
+        'output_contract': {
+            'sections': ['推荐结论', '适用条件', '风险', '确认项', '回滚'],
+            'blocks': ['self_heal_recommendation', 'approval_form', 'risk_notice'],
+        },
+        'content': """自愈原则：
+- 默认只推荐，不默认执行。
+- 必须基于告警、日志、链路、变更、知识图谱和历史处置证据。
+- 必须输出适用条件、不适用条件、风险等级、影响范围和回滚方案。
+- 必须生成待确认 marker 或任务草稿，不能声称已经执行脚本。
+
+确认前置：
+- 目标环境、服务、资源范围明确。
+- 具备权限和审批人。
+- 有 dry-run 或等价验证结果。
+- 有失败回滚和停止条件。""",
+        'allowed_role_codes': [],
+    },
+    {
+        'name': '任务模板选择',
+        'slug': 'sx-task-template-selection',
+        'category': '任务中心',
+        'description': '约束 assistant 如何根据目标资源、环境和风险选择任务中心模板。',
+        'source_type': AIOpsSkill.SOURCE_INLINE,
+        'applicable_actions': ['self_heal.recommend', 'runbook.generate'],
+        'examples': ['给生产环境生成巡检任务', '选择 Redis 检查模板', '帮我安排基础健康检查'],
+        'builtin_tools': ['query_task_resources', 'generate_host_task', 'query_knowledge_graph'],
+        'recommended_tools': ['query_alerts'],
+        'max_iterations': 3,
+        'risk_level': AIOpsSkill.RISK_DRAFT,
+        'output_contract': {
+            'sections': ['资源范围', '模板选择', '执行策略', '确认项'],
+            'blocks': ['approval_form', 'risk_notice'],
+        },
+        'content': """任务生成要求：
+- 先通过知识图谱和任务资源底座确定环境、系统、服务和资源范围。
+- 任务模板必须匹配资源类型和风险场景，不能为未知目标生成执行任务。
+- 输出要包含任务名称、目标资源数量、执行方式、执行策略、风险和确认项。
+- 未确认前只能是草稿或待确认动作。""",
+        'allowed_role_codes': [],
+    },
+    {
+        'name': '回滚策略',
+        'slug': 'sx-rollback-strategy',
+        'category': '发布回滚',
+        'description': '规范发布回滚和变更撤销建议的前置验证、影响范围和失败处理。',
+        'source_type': AIOpsSkill.SOURCE_INLINE,
+        'applicable_actions': ['self_heal.recommend', 'change.correlation', 'deploy.failure_diagnose'],
+        'examples': ['这次发布是否需要回滚', '给出回滚前检查项', '回滚失败怎么处理'],
+        'builtin_tools': ['query_recent_changes', 'query_event_wall', 'query_knowledge_graph'],
+        'recommended_tools': ['query_alerts', 'query_logs', 'query_traces'],
+        'max_iterations': 4,
+        'risk_level': AIOpsSkill.RISK_DRAFT,
+        'output_contract': {
+            'sections': ['回滚依据', '前置检查', '执行步骤', '验证方式', '失败处理'],
+            'blocks': ['rollback_plan', 'approval_form', 'risk_notice'],
+        },
+        'content': """回滚建议要求：
+- 回滚必须基于明确变更候选、故障影响和验证证据。
+- 必须说明回滚目标版本、影响服务、预期影响、验证方式和停止条件。
+- 如果证据不足，只能建议先验证，不能直接建议回滚。
+- 高风险回滚必须走审批、dry-run 或演练确认。""",
+        'allowed_role_codes': [],
+    },
+]
+
+BUILTIN_ACTION_REGISTRY = [
+    {
+        'code': 'alert.root_cause',
+        'display_name': '告警根因分析',
+        'category': '故障排障',
+        'description': '结合告警、知识图谱、日志、链路和变更定位故障根因。',
+        'risk_level': 'read_only',
+        'agent_mode': 'react',
+        'required_context': ['environment', 'alert', 'service'],
+        'allowed_tools': [
+            'query_alerts',
+            'query_alert_root_cause',
+            'query_logs',
+            'query_traces',
+            'query_recent_changes',
+            'query_knowledge_graph',
+        ],
+        'skills': [
+            'sx-alert-evidence-checklist',
+            'sx-k8s-alert-troubleshooting',
+            'sx-log-pattern-analysis',
+            'sx-change-impact-analysis',
+            'answer-formatter',
+        ],
+        'preflight_required': False,
+        'preflight_fields': [
+            {'name': 'environment', 'label': '环境', 'required': True},
+            {'name': 'alert_id', 'label': '告警 ID', 'required': False},
+            {'name': 'service', 'label': '服务', 'required': False},
+            {'name': 'time_window', 'label': '时间窗口', 'required': False},
+        ],
+        'output_blocks': ['incident_card', 'evidence_timeline', 'query_suggestion', 'risk_notice'],
+        'rbac_permissions': ['aiops.chat.view', 'aiops.chat.analyze'],
+        'suggested_questions': [
+            '电商测试环境当前未确认的严重告警有哪些？',
+            '分析下电商测试环境订单服务最近一小时有什么异常',
+        ],
+    },
+    {
+        'code': 'change.correlation',
+        'display_name': '变更关联分析',
+        'category': '变更分析',
+        'description': '对发布、变更、工单和事件进行时间线关联，找出异常触发点。',
+        'risk_level': 'read_only',
+        'agent_mode': 'react',
+        'required_context': ['environment'],
+        'allowed_tools': [
+            'query_recent_changes',
+            'query_workorders',
+            'query_event_wall',
+            'query_knowledge_graph',
+        ],
+        'skills': [
+            'sx-change-impact-analysis',
+            'sx-event-timeline-correlation',
+            'answer-formatter',
+        ],
+        'preflight_required': False,
+        'preflight_fields': [
+            {'name': 'environment', 'label': '环境', 'required': True},
+            {'name': 'time_window', 'label': '时间窗口', 'required': False},
+            {'name': 'system_name', 'label': '系统', 'required': False},
+        ],
+        'output_blocks': ['change_candidate', 'evidence_timeline', 'risk_notice'],
+        'rbac_permissions': ['aiops.chat.view', 'aiops.chat.analyze'],
+        'suggested_questions': [
+            '最近有哪些变更可能影响生产环境订单系统？',
+            '今天有哪些发布和告警时间上接近？',
+        ],
+    },
+    {
+        'code': 'log.query_generate',
+        'display_name': '日志查询生成',
+        'category': '查询生成',
+        'description': '根据问题生成可执行的日志查询语句和过滤条件。',
+        'risk_level': 'draft',
+        'agent_mode': 'direct',
+        'required_context': ['environment', 'service'],
+        'allowed_tools': [
+            'query_logs',
+            'query_knowledge_graph',
+        ],
+        'skills': [
+            'sx-log-query-guide',
+            'sx-log-field-dictionary',
+            'answer-formatter',
+        ],
+        'preflight_required': False,
+        'preflight_fields': [
+            {'name': 'environment', 'label': '环境', 'required': True},
+            {'name': 'service', 'label': '服务', 'required': False},
+            {'name': 'time_window', 'label': '时间窗口', 'required': False},
+            {'name': 'log_level', 'label': '日志级别', 'required': False},
+        ],
+        'output_blocks': ['query_suggestion', 'tool_trace', 'risk_notice'],
+        'rbac_permissions': ['aiops.chat.view', 'aiops.chat.analyze'],
+        'suggested_questions': [
+            '帮我生成电商测试环境订单服务的错误日志查询。',
+            '查询最近 30 分钟登录失败相关日志。',
+        ],
+    },
+    {
+        'code': 'k8s.diagnose',
+        'display_name': 'K8s 诊断',
+        'category': 'K8s 诊断',
+        'description': '围绕集群、命名空间、Pod、事件和容器日志定位 Kubernetes 异常。',
+        'risk_level': 'read_only',
+        'agent_mode': 'react',
+        'required_context': ['cluster'],
+        'allowed_tools': [
+            'query_k8s_cluster_summary',
+            'query_k8s_resources',
+            'query_container_assets',
+            'query_logs',
+            'query_knowledge_graph',
+        ],
+        'skills': [
+            'sx-k8s-troubleshooting',
+            'sx-container-readonly-guard',
+            'answer-formatter',
+        ],
+        'preflight_required': False,
+        'preflight_fields': [
+            {'name': 'cluster_name', 'label': '集群', 'required': True},
+            {'name': 'namespace', 'label': '命名空间', 'required': False},
+            {'name': 'workload', 'label': '工作负载', 'required': False},
+            {'name': 'pod', 'label': 'Pod', 'required': False},
+        ],
+        'output_blocks': ['k8s_action', 'evidence_timeline', 'query_suggestion'],
+        'rbac_permissions': ['aiops.chat.view', 'aiops.chat.analyze'],
+        'suggested_questions': [
+            '分析下电商测试环境 k8s 集群的异常工作负载。',
+            '这个命名空间里有哪些 Pod 异常？',
+        ],
+    },
+    {
+        'code': 'self_heal.recommend',
+        'display_name': '自愈推荐',
+        'category': '自愈推荐',
+        'description': '基于历史处置和平台事实给出自愈候选、风险、dry-run 和确认流。',
+        'risk_level': 'draft',
+        'agent_mode': 'plan_react',
+        'required_context': ['environment', 'incident'],
+        'allowed_tools': [
+            'query_alerts',
+            'query_logs',
+            'query_traces',
+            'query_knowledge_graph',
+            'generate_host_task',
+        ],
+        'skills': [
+            'sx-self-heal-risk-guard',
+            'sx-task-template-selection',
+            'sx-rollback-strategy',
+            'answer-formatter',
+        ],
+        'preflight_required': True,
+        'preflight_fields': [
+            {'name': 'environment', 'label': '环境', 'required': True},
+            {'name': 'service', 'label': '服务', 'required': False},
+            {'name': 'risk_scope', 'label': '影响范围', 'required': False},
+            {'name': 'approval_person', 'label': '确认人', 'required': False},
+        ],
+        'output_blocks': ['self_heal_recommendation', 'approval_form', 'risk_notice'],
+        'rbac_permissions': ['aiops.chat.view', 'aiops.chat.analyze', 'aiops.task.generate'],
+        'suggested_questions': [
+            '给我推荐一套针对订单系统告警的自愈方案。',
+            '当前这类故障适合先做哪个自愈脚本？',
+        ],
+    },
+    {
+        'code': 'metric.query_generate',
+        'display_name': '指标查询生成',
+        'category': '查询生成',
+        'description': '根据服务、指标目标和时间窗口生成 PromQL 或面板查询建议。',
+        'risk_level': 'draft',
+        'agent_mode': 'direct',
+        'required_context': ['environment', 'service'],
+        'allowed_tools': [
+            'query_grafana_promql',
+            'query_dashboard_panel_data',
+            'query_system_posture',
+            'query_knowledge_graph',
+        ],
+        'skills': [
+            'sx-alert-evidence-checklist',
+            'answer-formatter',
+        ],
+        'preflight_required': False,
+        'preflight_fields': [
+            {'name': 'environment', 'label': '环境', 'required': True},
+            {'name': 'service', 'label': '服务', 'required': False},
+            {'name': 'metric', 'label': '指标', 'required': False},
+            {'name': 'time_window', 'label': '时间窗口', 'required': False},
+        ],
+        'output_blocks': ['query_suggestion', 'chart_query', 'tool_trace', 'risk_notice'],
+        'rbac_permissions': ['aiops.chat.view', 'aiops.chat.analyze'],
+        'suggested_questions': [
+            '帮我生成订单服务 QPS 和错误率的指标查询。',
+            '生成查看最近一小时接口 P95 延迟的 PromQL。',
+        ],
+    },
+    {
+        'code': 'deploy.failure_diagnose',
+        'display_name': '发布失败诊断',
+        'category': '发布诊断',
+        'description': '结合发布记录、事件、K8s 状态、日志和知识图谱定位发布失败原因。',
+        'risk_level': 'read_only',
+        'agent_mode': 'plan_react',
+        'required_context': ['environment', 'deployment', 'service'],
+        'allowed_tools': [
+            'query_recent_changes',
+            'query_event_wall',
+            'query_k8s_resources',
+            'query_logs',
+            'query_alerts',
+            'query_knowledge_graph',
+        ],
+        'skills': [
+            'sx-change-impact-analysis',
+            'sx-k8s-troubleshooting',
+            'sx-log-pattern-analysis',
+            'sx-rollback-strategy',
+            'answer-formatter',
+        ],
+        'preflight_required': False,
+        'preflight_fields': [
+            {'name': 'environment', 'label': '环境', 'required': True},
+            {'name': 'deployment', 'label': '发布单', 'required': False},
+            {'name': 'service', 'label': '服务', 'required': False},
+            {'name': 'time_window', 'label': '时间窗口', 'required': False},
+        ],
+        'output_blocks': ['change_candidate', 'rollback_plan', 'evidence_timeline', 'risk_notice'],
+        'rbac_permissions': ['aiops.chat.view', 'aiops.chat.analyze'],
+        'suggested_questions': [
+            '分析这次订单服务发布失败的可能原因。',
+            '最近一次发布失败是否和 K8s 事件或日志异常相关？',
+        ],
+    },
+    {
+        'code': 'slo.analysis',
+        'display_name': 'SLO/服务健康分析',
+        'category': '服务健康',
+        'description': '围绕可用性、错误率、延迟和关键告警分析服务健康与 SLO 风险。',
+        'risk_level': 'read_only',
+        'agent_mode': 'react',
+        'required_context': ['environment', 'service'],
+        'allowed_tools': [
+            'query_system_posture',
+            'query_alerts',
+            'query_grafana_promql',
+            'query_dashboard_panel_data',
+            'query_traces',
+            'query_knowledge_graph',
+        ],
+        'skills': [
+            'sx-alert-evidence-checklist',
+            'sx-log-pattern-analysis',
+            'answer-formatter',
+        ],
+        'preflight_required': False,
+        'preflight_fields': [
+            {'name': 'environment', 'label': '环境', 'required': True},
+            {'name': 'service', 'label': '服务', 'required': True},
+            {'name': 'time_window', 'label': '时间窗口', 'required': False},
+            {'name': 'slo_target', 'label': 'SLO 目标', 'required': False},
+        ],
+        'output_blocks': ['incident_card', 'chart_query', 'evidence_timeline', 'risk_notice'],
+        'rbac_permissions': ['aiops.chat.view', 'aiops.chat.analyze'],
+        'suggested_questions': [
+            '分析订单服务最近一小时的 SLO 风险。',
+            '当前服务健康度下降主要受哪些指标影响？',
+        ],
+    },
+    {
+        'code': 'notification.policy_suggest',
+        'display_name': '通知和升级策略建议',
+        'category': '通知策略',
+        'description': '根据告警等级、影响范围和团队关系生成通知、升级与值班策略草案。',
+        'risk_level': 'draft',
+        'agent_mode': 'direct',
+        'required_context': ['environment', 'alert', 'team'],
+        'allowed_tools': [
+            'query_alerts',
+            'query_event_wall',
+            'query_knowledge_graph',
+        ],
+        'skills': [
+            'sx-alert-evidence-checklist',
+            'answer-formatter',
+        ],
+        'preflight_required': True,
+        'preflight_fields': [
+            {'name': 'environment', 'label': '环境', 'required': True},
+            {'name': 'alert_level', 'label': '告警等级', 'required': False},
+            {'name': 'team', 'label': '团队', 'required': False},
+            {'name': 'escalation_window', 'label': '升级窗口', 'required': False},
+        ],
+        'output_blocks': ['approval_form', 'risk_notice', 'tool_trace'],
+        'rbac_permissions': ['aiops.chat.view', 'aiops.chat.analyze'],
+        'suggested_questions': [
+            '给生产严重告警设计一套通知和升级策略。',
+            '这个服务的告警应该通知哪些角色并如何升级？',
+        ],
+    },
+    {
+        'code': 'runbook.generate',
+        'display_name': 'Runbook 生成',
+        'category': '知识沉淀',
+        'description': '把告警、日志、链路、事件和处置过程整理成可复用 Runbook 草案。',
+        'risk_level': 'draft',
+        'agent_mode': 'direct',
+        'required_context': ['environment', 'incident'],
+        'allowed_tools': [
+            'query_alerts',
+            'query_logs',
+            'query_traces',
+            'query_recent_changes',
+            'query_event_wall',
+            'query_knowledge_graph',
+            'query_task_resources',
+        ],
+        'skills': [
+            'sx-alert-evidence-checklist',
+            'sx-change-impact-analysis',
+            'sx-event-timeline-correlation',
+            'sx-task-template-selection',
+            'answer-formatter',
+        ],
+        'preflight_required': False,
+        'preflight_fields': [
+            {'name': 'environment', 'label': '环境', 'required': True},
+            {'name': 'incident', 'label': '故障事件', 'required': False},
+            {'name': 'service', 'label': '服务', 'required': False},
+            {'name': 'time_window', 'label': '时间窗口', 'required': False},
+        ],
+        'output_blocks': ['tool_trace', 'evidence_timeline', 'risk_notice'],
+        'rbac_permissions': ['aiops.chat.view', 'aiops.chat.analyze'],
+        'suggested_questions': [
+            '基于这次故障生成一个 Runbook 草案。',
+            '把订单服务 5xx 告警的排障流程沉淀成 Runbook。',
+        ],
     },
 ]
 
@@ -611,6 +1276,379 @@ def list_model_provider_presets():
     return MODEL_PROVIDER_PRESETS
 
 
+ACTION_RISK_LEVEL_LABELS = {
+    'read_only': '只读',
+    'draft': '草稿',
+    'write': '写入',
+    'execute': '执行',
+}
+
+ACTION_AGENT_MODE_LABELS = {
+    'direct': 'Direct',
+    'react': 'ReAct',
+    'plan_react': 'Plan+ReAct',
+}
+
+
+def _action_registry_permission_summary(definition):
+    permissions = definition.get('rbac_permissions') or []
+    return '、'.join(permissions) if permissions else '无需额外权限'
+
+
+def _build_action_registry_item(definition, user=None):
+    item = copy.deepcopy(definition)
+    permissions = item.get('rbac_permissions') or []
+    available = True
+    if user and permissions:
+        available = user_has_permissions(user, permissions)
+    item['available'] = available
+    item['available_display'] = '可用' if available else '受限'
+    item['available_reason'] = '' if available else f"缺少权限：{_action_registry_permission_summary(item)}"
+    item['category'] = str(item.get('category') or '通用').strip()
+    item['risk_level_display'] = ACTION_RISK_LEVEL_LABELS.get(item.get('risk_level'), item.get('risk_level') or '未知')
+    item['agent_mode_display'] = ACTION_AGENT_MODE_LABELS.get(item.get('agent_mode'), item.get('agent_mode') or '未知')
+    item['permission_summary'] = _action_registry_permission_summary(item)
+    item['required_context'] = [str(value or '').strip() for value in (item.get('required_context') or []) if str(value or '').strip()]
+    item['allowed_tools'] = [str(value or '').strip() for value in (item.get('allowed_tools') or []) if str(value or '').strip()]
+    item['skills'] = [str(value or '').strip() for value in (item.get('skills') or []) if str(value or '').strip()]
+    item['output_blocks'] = [str(value or '').strip() for value in (item.get('output_blocks') or []) if str(value or '').strip()]
+    item['preflight_fields'] = [
+        {
+            'name': str(field.get('name') or '').strip(),
+            'label': str(field.get('label') or '').strip(),
+            'required': bool(field.get('required')),
+        }
+        for field in (item.get('preflight_fields') or [])
+        if str(field.get('name') or '').strip() or str(field.get('label') or '').strip()
+    ]
+    item['suggested_questions'] = [str(value or '').strip() for value in (item.get('suggested_questions') or []) if str(value or '').strip()]
+    if not item.get('available') and not item['available_reason']:
+        item['available_reason'] = '权限受限'
+    return item
+
+
+def list_action_registry(user=None, include_unavailable=True):
+    registry = [_build_action_registry_item(definition, user=user) for definition in BUILTIN_ACTION_REGISTRY]
+    if include_unavailable:
+        return registry
+    return [item for item in registry if item.get('available')]
+
+
+def build_action_registry_summary(actions=None):
+    actions = list(actions or [])
+    return {
+        'total': len(actions),
+        'available': sum(1 for item in actions if item.get('available')),
+        'read_only': sum(1 for item in actions if item.get('risk_level') == 'read_only'),
+        'draft': sum(1 for item in actions if item.get('risk_level') == 'draft'),
+        'write': sum(1 for item in actions if item.get('risk_level') == 'write'),
+        'execute': sum(1 for item in actions if item.get('risk_level') == 'execute'),
+        'preflight_required': sum(1 for item in actions if item.get('preflight_required')),
+    }
+
+
+ACTION_ROUTE_PRIORITY = [
+    'self_heal.recommend',
+    'k8s.diagnose',
+    'log.query_generate',
+    'change.correlation',
+    'alert.root_cause',
+]
+
+
+def _action_registry_definition_map(user=None, include_unavailable=False):
+    return {item['code']: item for item in list_action_registry(user=user, include_unavailable=include_unavailable)}
+
+
+def _action_registry_item_by_code(code, user=None, include_unavailable=False):
+    return _action_registry_definition_map(user=user, include_unavailable=include_unavailable).get(code)
+
+
+def _question_contains_any(question, keywords):
+    text = str(question or '').lower()
+    return any(keyword in text for keyword in keywords if keyword)
+
+
+def _action_question_matches(action_code, question, analysis_scope=None):
+    text = str(question or '').strip()
+    lowered = text.lower()
+    if not text:
+        return False
+    if action_code == 'alert.root_cause':
+        has_root_cause_intent = _question_contains_any(lowered, ['根因', '原因', '为什么', '可能原因', '定位', '最新', '最近一条', '最后一条', '这条'])
+        has_service_scope = bool(_action_detected_service(question, analysis_scope=analysis_scope))
+        return (
+            _question_contains_any(lowered, ['告警', 'alert'])
+            and (
+                has_root_cause_intent
+                or (has_service_scope and _question_contains_any(lowered, ['排查', '分析', '定位', '异常']))
+            )
+        )
+    if action_code == 'change.correlation':
+        return (
+            _question_contains_any(lowered, ['变更', '发布', '工单', '部署', '回滚', '上线', 'deploy', 'deployment'])
+            and _question_contains_any(lowered, ['关联', '影响', '导致', '相关', '异常', '问题', '原因', '排查'])
+        )
+    if action_code == 'log.query_generate':
+        return (
+            _question_contains_any(lowered, ['日志', 'log', 'logs', 'loki', 'elk', 'sls'])
+            and _question_contains_any(lowered, ['生成', '查询', '语句', '条件', '过滤', '分析', '检索'])
+        )
+    if action_code == 'k8s.diagnose':
+        return (
+            _question_contains_any(lowered, ['k8s', 'kubernetes', 'pod', 'pods', 'namespace', '命名空间', '集群', 'deployment', 'statefulset', 'daemonset', 'workload', 'workloads', '容器'])
+            and _question_contains_any(lowered, ['诊断', '排查', '分析', '根因', '原因', '为什么'])
+        )
+    if action_code == 'self_heal.recommend':
+        return (
+            _question_contains_any(lowered, ['自愈', '修复', '处置', '脚本', '方案', '建议', '推荐'])
+            and _question_contains_any(lowered, ['推荐', '方案', '脚本', '处置', '建议', '确认'])
+        )
+    return False
+
+
+def _select_action_for_question(question, user=None, analysis_scope=None):
+    registry = _action_registry_definition_map(user=user, include_unavailable=False)
+    for action_code in ACTION_ROUTE_PRIORITY:
+        action = registry.get(action_code)
+        if action and _action_question_matches(action_code, question, analysis_scope=analysis_scope):
+            return action
+    return None
+
+
+def _build_action_approval_block(action, *, summary, items=None, metrics=None, actions=None, status='preflight', status_display='待补充', block_id_suffix='preflight'):
+    block = {
+        'id': f"action-{action.get('code')}-{block_id_suffix}",
+        'type': 'approval_form',
+        'title': f"{action.get('display_name') or action.get('code') or '动作'}",
+        'summary': summary,
+        'status': status,
+        'status_display': status_display,
+        'risk_level': action.get('risk_level') or 'read_only',
+        'metrics': list(metrics or []),
+        'items': _normalize_response_block_items(items or [], limit=6),
+        'actions': [item for item in (actions or []) if item],
+    }
+    return block
+
+
+def _attach_selected_action_metadata(result, action, *, extra_metadata=None, extra_blocks=None):
+    if not action or not isinstance(result, dict):
+        return result
+    metadata = dict(result.get('metadata') or {})
+    metadata['selected_action'] = {
+        'code': action.get('code'),
+        'display_name': action.get('display_name'),
+        'risk_level': action.get('risk_level'),
+        'risk_level_display': action.get('risk_level_display'),
+        'agent_mode': action.get('agent_mode'),
+        'agent_mode_display': action.get('agent_mode_display'),
+        'preflight_required': bool(action.get('preflight_required')),
+        'allowed_tools': list(action.get('allowed_tools') or []),
+        'skills': list(action.get('skills') or []),
+        'output_blocks': list(action.get('output_blocks') or []),
+    }
+    if extra_metadata:
+        metadata.update(extra_metadata)
+    if extra_blocks:
+        response_blocks = list(metadata.get('response_blocks') or [])
+        for block in extra_blocks:
+            response_blocks = _replace_response_block(response_blocks, block)
+        metadata['response_blocks'] = response_blocks
+    return {**result, 'metadata': metadata}
+
+
+def _build_action_preflight_result(action, knowledge_environment=None, analysis_scope=None, missing_fields=None, summary='', suggestions=None, current_question=''):
+    missing_fields = list(missing_fields or [])
+    suggestions = [str(item or '').strip() for item in (suggestions or []) if str(item or '').strip()]
+    if not summary:
+        summary = '请先补充所需上下文后再继续。'
+    metrics = [
+        {'label': '缺失项', 'value': f'{len(missing_fields)} 项' if missing_fields else '0 项'},
+        {'label': '动作模式', 'value': action.get('agent_mode_display') or action.get('agent_mode') or '--'},
+        {'label': '风险等级', 'value': action.get('risk_level_display') or action.get('risk_level') or '--'},
+    ]
+    items = []
+    for field in missing_fields:
+        if not isinstance(field, dict):
+            field = {'label': str(field or '').strip(), 'detail': ''}
+        label = str(field.get('label') or field.get('name') or '上下文').strip() or '上下文'
+        detail = str(field.get('detail') or field.get('value') or '').strip()
+        value = str(field.get('value') or field.get('suggestion') or '').strip()
+        text = str(field.get('text') or '').strip()
+        if not text:
+            text = f'{label}：{detail or value or "请补充"}'
+        items.append({
+            'label': label,
+            'value': value or detail or '--',
+            'detail': detail or value or '请补充后继续。',
+            'text': text,
+        })
+    if not items and suggestions:
+        items = [{'label': '继续提示', 'value': suggestion, 'detail': suggestion, 'text': suggestion} for suggestion in suggestions[:4]]
+    if not items:
+        items = [{'label': '补充提示', 'value': summary, 'detail': summary, 'text': summary}]
+    actions = []
+    for suggestion in suggestions[:4]:
+        actions.append({'type': 'reuse', 'label': suggestion[:18] or '继续', 'value': suggestion})
+    if not actions:
+        actions.append({'type': 'copy', 'label': '复制提示', 'value': summary})
+    block = _build_action_approval_block(
+        action,
+        summary=summary,
+        items=items,
+        metrics=metrics,
+        actions=actions,
+        status='needs_info',
+        status_display='待补充',
+    )
+    content = summary
+    if current_question:
+        content = f'{summary}\n\n{current_question}'
+    result = {
+        'content': content,
+        'citations': [{'title': 'AIOps 知识图谱', 'path': '/aiops/knowledge'}],
+        'tool_calls': [],
+        'message_type': AIOpsChatMessage.TYPE_TEXT,
+        'pending_action_draft': None,
+        'metadata': {
+            'execution_mode': 'action_preflight',
+            'current_environment': knowledge_environment.get('name') if knowledge_environment else '',
+            'analysis_scope': analysis_scope or {},
+            'action_preflight': True,
+            'missing_context': missing_fields,
+            'response_blocks': [block],
+        },
+    }
+    return _attach_selected_action_metadata(result, action)
+
+
+ACTION_REQUIRED_CONTEXT_LABELS = {
+    'environment': '环境',
+    'service': '服务/应用',
+    'cluster': 'K8s 集群',
+    'alert': '告警',
+    'incident': '故障/告警上下文',
+}
+
+
+def _action_context_text(question, knowledge_environment=None):
+    text = str(question or '')
+    if knowledge_environment:
+        candidates = [knowledge_environment.get('name'), *(knowledge_environment.get('aliases') or [])]
+        for candidate in candidates:
+            candidate = str(candidate or '').strip()
+            if candidate:
+                text = text.replace(candidate, ' ')
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _action_detected_service(question, knowledge_environment=None, analysis_scope=None):
+    scoped_text = _action_context_text(question, knowledge_environment)
+    candidates = _service_candidates_from_text(
+        scoped_text,
+        analysis_scope=analysis_scope,
+        knowledge_environment=knowledge_environment,
+    )
+    if candidates:
+        return candidates[0]
+    service = _detect_log_service(scoped_text, service_options=(analysis_scope or {}).get('services') or [])
+    return service or ''
+
+
+def _action_has_alert_context(question):
+    if _extract_alert_fingerprint(question) or _extract_alert_id(question):
+        return True
+    return _question_contains_any(question, ['告警', 'alert', 'alerts', '最新告警', '最近一条告警'])
+
+
+def _action_has_incident_context(question, knowledge_environment=None, analysis_scope=None):
+    if _action_has_alert_context(question):
+        return True
+    if _action_detected_service(question, knowledge_environment=knowledge_environment, analysis_scope=analysis_scope):
+        return True
+    return _question_contains_any(question, [
+        '异常', '故障', '事故', '问题', '失败', '错误', '超时', '熔断', '不可用',
+        'incident', 'error', 'errors', 'failed', 'failure', 'timeout', '5xx',
+    ])
+
+
+def _build_action_missing_context_field(context_name, detail='', suggestion=''):
+    label = ACTION_REQUIRED_CONTEXT_LABELS.get(context_name, context_name or '上下文')
+    return {
+        'name': context_name,
+        'label': label,
+        'detail': detail or f'请补充{label}。',
+        'suggestion': suggestion,
+    }
+
+
+def _missing_action_context_fields(action, question, knowledge_environment=None, analysis_scope=None):
+    action_code = action.get('code') if action else ''
+    missing = []
+
+    if not (knowledge_environment and knowledge_environment.get('name')):
+        missing.append(_build_action_missing_context_field('environment', '需要先确认唯一知识图谱环境。'))
+
+    if action_code == 'log.query_generate' and not _action_detected_service(question, knowledge_environment, analysis_scope):
+        missing.append(_build_action_missing_context_field(
+            'service',
+            '日志查询生成需要明确服务、应用或资源对象。',
+            '例如：帮我生成电商测试环境订单服务最近 30 分钟 ERROR 日志查询。',
+        ))
+    elif action_code == 'self_heal.recommend' and not _action_has_incident_context(question, knowledge_environment, analysis_scope):
+        missing.append(_build_action_missing_context_field(
+            'incident',
+            '自愈推荐需要先明确告警、服务、异常现象或影响范围。',
+            '例如：给电商测试环境订单服务 5xx 告警推荐自愈方案。',
+        ))
+    elif action_code == 'k8s.diagnose':
+        has_cluster_scope = bool((analysis_scope or {}).get('k8s_cluster_ids')) or _question_contains_any(
+            question,
+            ['k8s', 'kubernetes', 'pod', 'pods', '集群', '命名空间', 'namespace', '工作负载'],
+        )
+        if not has_cluster_scope:
+            missing.append(_build_action_missing_context_field(
+                'cluster',
+                'K8s 诊断需要明确集群、命名空间或工作负载范围。',
+                '例如：分析电商测试环境 k8s 集群 production 命名空间异常工作负载。',
+            ))
+
+    return missing
+
+
+def _action_preflight_suggestions(action, missing_fields, knowledge_environment=None):
+    env_name = (knowledge_environment or {}).get('name') or '目标环境'
+    suggestions = []
+    missing_names = {item.get('name') for item in missing_fields or []}
+    if 'service' in missing_names:
+        suggestions.append(f'帮我生成{env_name}订单服务最近 30 分钟 ERROR 日志查询。')
+    if 'incident' in missing_names:
+        suggestions.append(f'给{env_name}订单服务最近告警推荐一套自愈方案。')
+    if 'cluster' in missing_names:
+        suggestions.append(f'分析{env_name} k8s 集群 production 命名空间异常工作负载。')
+    suggestions.extend(action.get('suggested_questions') or [])
+    return list(dict.fromkeys([item for item in suggestions if item]))[:4]
+
+
+def _skills_for_action(active_skills, action):
+    skill_slugs = set(action.get('skills') or [])
+    action_code = action.get('code')
+    selected = []
+    formatter_skill = None
+    for skill in active_skills or []:
+        skill_slug = getattr(skill, 'slug', '')
+        if skill_slug == ANSWER_FORMATTER_SKILL_SLUG:
+            formatter_skill = skill
+            continue
+        applicable_actions = set(getattr(skill, 'applicable_actions', None) or [])
+        if skill_slug in skill_slugs or (action_code and action_code in applicable_actions):
+            selected.append(skill)
+    if formatter_skill:
+        selected.append(formatter_skill)
+    return selected or active_skills
+
+
 def _normalize_json_id_list(values):
     normalized = []
     for value in values or []:
@@ -625,7 +1663,7 @@ def _ensure_builtin_runtime_assets(config):
     builtin_mcp_ids = []
     builtin_skill_ids = []
     configured_mcp_ids = set(_normalize_json_id_list(config.enabled_mcp_server_ids))
-    deprecated_builtin_mcp_names = {
+    deprecated_builtin_mcp_names = set(DEPRECATED_BUILTIN_MCP_SERVER_NAMES) | {
         item['name']
         for item in BUILTIN_MCP_SERVERS
         if set(item.get('tool_whitelist') or []) & {'query_workorders'}
@@ -684,6 +1722,14 @@ def _ensure_builtin_runtime_assets(config):
             defaults={
                 'name': definition['name'],
                 'description': definition['description'],
+                'category': definition.get('category', ''),
+                'applicable_actions': definition.get('applicable_actions', []),
+                'examples': definition.get('examples', []),
+                'builtin_tools': definition.get('builtin_tools', []),
+                'recommended_tools': definition.get('recommended_tools', []),
+                'max_iterations': definition.get('max_iterations', 0),
+                'risk_level': definition.get('risk_level', AIOpsSkill.RISK_READ_ONLY),
+                'output_contract': definition.get('output_contract', {}),
                 'source_type': definition['source_type'],
                 'content': definition['content'],
                 'allowed_role_codes': definition['allowed_role_codes'],
@@ -707,6 +1753,20 @@ def _ensure_builtin_runtime_assets(config):
         if skill.description != definition['description']:
             skill.description = definition['description']
             changed_fields.append('description')
+        for field, default_value in [
+            ('category', ''),
+            ('applicable_actions', []),
+            ('examples', []),
+            ('builtin_tools', []),
+            ('recommended_tools', []),
+            ('max_iterations', 0),
+            ('risk_level', AIOpsSkill.RISK_READ_ONLY),
+            ('output_contract', {}),
+        ]:
+            next_value = definition.get(field, default_value)
+            if getattr(skill, field) != next_value:
+                setattr(skill, field, next_value)
+                changed_fields.append(field)
         if changed_fields:
             skill.save(update_fields=changed_fields)
         builtin_skill_ids.append(skill.id)
@@ -835,7 +1895,7 @@ def get_active_provider(config=None):
 
 def _get_selected_mcp_servers(config):
     selected_ids = _normalize_json_id_list(config.enabled_mcp_server_ids)
-    queryset = AIOpsMCPServer.objects.filter(is_enabled=True)
+    queryset = AIOpsMCPServer.objects.filter(is_enabled=True).exclude(name__in=DEPRECATED_BUILTIN_MCP_SERVER_NAMES)
     if selected_ids:
         queryset = queryset.filter(id__in=selected_ids)
     return list(queryset.order_by('is_builtin', 'id'))
@@ -1007,10 +2067,14 @@ def bootstrap_payload_for_user(user):
     provider = get_active_provider(config)
     selected_mcp_servers = _get_selected_mcp_servers(config)
     selected_skills = _get_selected_skills(config, user=user)
+    action_registry = list_action_registry(user=user, include_unavailable=False)
+    all_action_registry = list_action_registry(user=user, include_unavailable=True)
     return {
         'enabled': config.is_enabled and user_has_permissions(user, ['aiops.chat.view']),
         'welcome_message': config.welcome_message,
         'suggested_questions': config.suggested_questions or DEFAULT_SUGGESTED_QUESTIONS,
+        'action_registry': action_registry,
+        'action_registry_summary': build_action_registry_summary(all_action_registry),
         'permissions': {
             'chat': user_has_permissions(user, ['aiops.chat.view']),
             'analyze': user_has_permissions(user, ['aiops.chat.analyze']),
@@ -1045,6 +2109,14 @@ def bootstrap_payload_for_user(user):
                 'name': item.name,
                 'slug': item.slug,
                 'description': item.description,
+                'category': item.category,
+                'applicable_actions': item.applicable_actions,
+                'examples': item.examples,
+                'builtin_tools': item.builtin_tools,
+                'recommended_tools': item.recommended_tools,
+                'max_iterations': item.max_iterations,
+                'risk_level': item.risk_level,
+                'output_contract': item.output_contract,
                 'is_builtin': item.is_builtin,
             }
             for item in selected_skills
@@ -1888,6 +2960,16 @@ def _querydict_for_environment(environment_name):
     params = QueryDict('', mutable=True)
     if environment_name:
         params.setlist('environment', [environment_name])
+    return params
+
+
+def _querydict_for_knowledge_graph(environment_name='', system_name='', service=''):
+    params = _querydict_for_environment(environment_name)
+    if system_name:
+        params.setlist('system', [system_name])
+        params.setlist('business_line', [system_name])
+    if service:
+        params.setlist('service', [service])
     return params
 
 
@@ -3966,6 +5048,11 @@ def _build_direct_log_result(log_result, question, knowledge_environment, analys
     }
     if formatter_error:
         metadata['formatter_error'] = formatter_error
+    metadata['response_blocks'] = _build_response_blocks(
+        sections=sections,
+        tool_names=['query_logs'],
+        collected_tool_outputs=collected_tool_outputs,
+    )
     return {
         'content': content,
         'citations': citations,
@@ -4097,6 +5184,11 @@ def _build_direct_tool_result(
     }
     if formatter_error:
         metadata['formatter_error'] = formatter_error
+    metadata['response_blocks'] = _build_response_blocks(
+        sections=tool_result.get('sections', []),
+        tool_names=[tool_name],
+        collected_tool_outputs=collected_tool_outputs,
+    )
     metadata.update(extra_metadata or {})
     return {
         'content': final_content,
@@ -4298,6 +5390,12 @@ def _build_evidence_bundle_result(
     }
     if formatter_error:
         metadata['formatter_error'] = formatter_error
+    metadata['response_blocks'] = _build_response_blocks(
+        sections=sections,
+        tool_names=tool_names,
+        collected_tool_outputs=collected_tool_outputs,
+        pending_action_draft=pending_action_draft,
+    )
     metadata.update(extra_metadata or {})
     return {
         'content': _ensure_followup_line(_normalize_formatter_output(final_content), citations),
@@ -4532,6 +5630,295 @@ def _run_task_generation_evidence(session, user_message, user, question, scoped_
     )
 
 
+def _run_change_correlation_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
+    emit(
+        step={'title': '变更关联分析', 'detail': '先读取变更、工单、事件和知识图谱关系，再判断时间线是否对齐。', 'status': PROCESSING_STATUS_COMPLETED},
+        text='正在收集变更关联证据',
+    )
+    sections, citations, tool_names, collected = [], [], [], []
+    service_candidates = _service_candidates_from_text(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
+    service = _match_service_from_options(' '.join(service_candidates), (analysis_scope or {}).get('services') or []) or (service_candidates[0] if service_candidates else '')
+    system_name = _extract_system_name(scoped_question) or ((analysis_scope or {}).get('systems') or [''])[0]
+    correlation_query = ' '.join(item for item in [
+        knowledge_environment.get('name'),
+        system_name,
+        service,
+        scoped_question,
+    ] if item).strip()
+    _run_scoped_tool(
+        session,
+        user_message,
+        user,
+        collected,
+        sections,
+        citations,
+        tool_names,
+        'query_knowledge_graph',
+        {
+            'query': correlation_query,
+            'environment': knowledge_environment.get('name'),
+            'system_name': system_name,
+            'service': service,
+            'limit': 8,
+        },
+        emit=emit,
+    )
+    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_recent_changes', {'limit': 6}, emit=emit)
+    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_workorders', {'query': correlation_query, 'status': 'all', 'limit': 6}, emit=emit)
+    _run_scoped_tool(
+        session,
+        user_message,
+        user,
+        collected,
+        sections,
+        citations,
+        tool_names,
+        'query_event_wall',
+        {'query': correlation_query, 'date_filter': 'today' if any(keyword in question for keyword in ['今天', '今日', '当天', 'today']) else '', 'limit': 6},
+        emit=emit,
+    )
+    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', {'query': correlation_query, 'status': Alert.STATUS_ACTIVE, 'limit': 6}, emit=emit)
+    if correlation_query:
+        sections.insert(0, {
+            'title': '变更关联',
+            'items': [
+                f'环境：{knowledge_environment.get("name") or "-"}',
+                f'系统：{system_name or "-"}',
+                f'服务：{service or "-"}',
+                f'分析范围：{correlation_query}',
+            ],
+        })
+    sections.insert(1, {
+        'title': '风险提示',
+        'items': [
+            '先核对最近发布、工单和事件时间线是否落在同一窗口。',
+            '如果关联证据不足，再补查日志和链路。',
+        ],
+    })
+    result = _build_evidence_bundle_result(
+        question=question,
+        scoped_question=scoped_question,
+        knowledge_environment=knowledge_environment,
+        analysis_scope=analysis_scope,
+        provider=provider,
+        active_skills=active_skills,
+        sections=sections,
+        citations=citations,
+        tool_names=tool_names,
+        collected_tool_outputs=collected,
+        execution_mode='deterministic_change_correlation',
+        extra_metadata={'system_name': system_name, 'service': service, 'correlation_query': correlation_query},
+    )
+    return _attach_selected_action_metadata(result, action)
+
+
+def _run_self_heal_recommendation_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
+    emit(
+        step={'title': '自愈推荐', 'detail': '先收集告警、日志、链路、变更和知识图谱证据，再给出只读推荐。', 'status': PROCESSING_STATUS_COMPLETED},
+        text='正在生成自愈推荐',
+    )
+    sections, citations, tool_names, collected = [], [], [], []
+    service_candidates = _service_candidates_from_text(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
+    service = _match_service_from_options(' '.join(service_candidates), (analysis_scope or {}).get('services') or []) or (service_candidates[0] if service_candidates else '')
+    system_name = _extract_system_name(scoped_question) or ((analysis_scope or {}).get('systems') or [''])[0]
+    recommendation_scope = ' '.join(item for item in [
+        knowledge_environment.get('name'),
+        system_name,
+        service,
+        scoped_question,
+    ] if item).strip()
+    alert_query = recommendation_scope or scoped_question
+    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', {'query': alert_query, 'status': Alert.STATUS_ACTIVE, 'limit': 8}, emit=emit)
+    _run_scoped_tool(
+        session,
+        user_message,
+        user,
+        collected,
+        sections,
+        citations,
+        tool_names,
+        'query_knowledge_graph',
+        {
+            'query': recommendation_scope,
+            'environment': knowledge_environment.get('name'),
+            'system_name': system_name,
+            'service': service,
+            'limit': 8,
+        },
+        emit=emit,
+    )
+    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_recent_changes', {'limit': 6}, emit=emit)
+    _run_scoped_tool(
+        session,
+        user_message,
+        user,
+        collected,
+        sections,
+        citations,
+        tool_names,
+        'query_logs',
+        {
+            'query': recommendation_scope,
+            'service': service,
+            'levels': ['warning', 'error'],
+            'duration_minutes': 60,
+            'limit': 8,
+        },
+        emit=emit,
+    )
+    _run_scoped_tool(
+        session,
+        user_message,
+        user,
+        collected,
+        sections,
+        citations,
+        tool_names,
+        'query_traces',
+        {
+            'query': service or recommendation_scope,
+            'errors_only': True,
+            'duration_minutes': 60,
+            'limit': 8,
+        },
+        emit=emit,
+    )
+    sections.insert(0, {
+        'title': '自愈推荐',
+        'items': [
+            f'环境：{knowledge_environment.get("name") or "-"}',
+            f'优先围绕：{service or system_name or knowledge_environment.get("name") or "-"}',
+            '先做只读验证和 dry-run，再决定是否进入执行草案。',
+            '如果需要执行，请先确认影响范围、审批人和执行窗口。',
+        ],
+    })
+    sections.insert(1, {
+        'title': '风险提示',
+        'items': [
+            '自愈只给推荐，不直接执行高风险动作。',
+            '任何执行类动作都应先补充范围与审批信息。',
+        ],
+    })
+    result = _build_evidence_bundle_result(
+        question=question,
+        scoped_question=scoped_question,
+        knowledge_environment=knowledge_environment,
+        analysis_scope=analysis_scope,
+        provider=provider,
+        active_skills=active_skills,
+        sections=sections,
+        citations=citations,
+        tool_names=tool_names,
+        collected_tool_outputs=collected,
+        execution_mode='deterministic_self_heal_recommendation',
+        extra_metadata={'system_name': system_name, 'service': service, 'recommendation_scope': recommendation_scope},
+    )
+    approval_block = _build_action_approval_block(
+        action,
+        summary='当前已给出自愈推荐，请先确认影响范围、审批人和执行窗口，再继续推进。',
+        items=[
+            {'label': '影响范围', 'value': service or system_name or knowledge_environment.get('name') or '-', 'detail': '请确认本次自愈建议覆盖的环境、系统或服务。', 'text': f'影响范围：{service or system_name or knowledge_environment.get("name") or "-"}'},
+            {'label': '确认信息', 'value': '审批人 / 执行窗口', 'detail': '如需进入执行草案，请补充审批人和允许执行的时间窗口。', 'text': '确认信息：审批人 / 执行窗口'},
+            {'label': '下一步', 'value': '确认后继续生成执行草案', 'detail': '当前阶段只推荐，不直接执行。', 'text': '下一步：确认后继续生成执行草案'},
+        ],
+        metrics=[
+            {'label': '推荐项', 'value': f'{len(sections[0]["items"]) if sections else 0} 条'},
+            {'label': '动作模式', 'value': action.get('agent_mode_display') or action.get('agent_mode') or '--'},
+            {'label': '风险等级', 'value': action.get('risk_level_display') or action.get('risk_level') or '--'},
+        ],
+        actions=[
+            {'type': 'reuse', 'label': '补充影响范围', 'value': f'请补充{knowledge_environment.get("name") or "当前"}环境的影响范围、审批人和执行窗口。'},
+            {'type': 'reuse', 'label': '继续生成草案', 'value': f'在确认{knowledge_environment.get("name") or "当前"}环境影响范围后，继续生成自愈执行草案。'},
+        ],
+        status='waiting_confirmation',
+        status_display='待确认',
+        block_id_suffix='confirmation',
+    )
+    return _attach_selected_action_metadata(result, action, extra_blocks=[approval_block])
+
+
+def _run_action_root_cause(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
+    if _is_direct_alert_analysis_question(question):
+        emit(
+            step={
+                'title': '告警根因直接分析',
+                'detail': '命中告警指纹、告警 ID 或最新告警原因类问题，直接查询告警中心并关联环境证据。',
+                'status': PROCESSING_STATUS_COMPLETED,
+            },
+            text='正在直接分析告警根因',
+        )
+        root_cause_tool_result = _run_tool_call(
+            session,
+            user_message,
+            user,
+            'query_alert_root_cause',
+            {
+                'query': scoped_question,
+                'fingerprint': _extract_alert_fingerprint(question),
+                'alert_id': _extract_alert_id(question),
+                'latest': any(keyword in str(question or '').lower() for keyword in ['最新', '最后一条', '最近一条', 'latest', 'last']),
+                'limit': 6,
+            },
+            registry_entry=_platform_tool_registry_entry('query_alert_root_cause'),
+        )
+        root_cause_result = root_cause_tool_result.get('tool_output') or {}
+        result = _build_direct_tool_result(
+            'query_alert_root_cause',
+            {
+                **root_cause_result,
+                'sections': root_cause_tool_result.get('sections', []),
+                'citations': root_cause_tool_result.get('citations', []),
+            },
+            scoped_question,
+            knowledge_environment,
+            analysis_scope,
+            'direct_alert_root_cause_fastpath',
+            extra_metadata={
+                'alert_fingerprint': (root_cause_result.get('summary') or {}).get('fingerprint') or _extract_alert_fingerprint(question),
+                'alert_id': (root_cause_result.get('summary') or {}).get('alert_id') or _extract_alert_id(question),
+            },
+            provider=provider,
+            active_skills=active_skills,
+            prefer_llm=bool(provider),
+        )
+        return _attach_selected_action_metadata(result, action, extra_metadata={'action_route': 'direct_alert_root_cause'})
+    if _is_latest_alert_root_cause_question(question) or _extract_alert_fingerprint(question) or _extract_alert_id(question):
+        result = _run_latest_alert_rca_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit)
+        return _attach_selected_action_metadata(result, action, extra_metadata={'action_route': 'latest_alert_root_cause'})
+    result = _run_service_anomaly_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit)
+    return _attach_selected_action_metadata(result, action, extra_metadata={'action_route': 'service_anomaly_evidence'})
+
+
+def _run_action_log_query(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
+    parameter_provider = provider if _provider_is_ready(provider) else None
+    log_arguments = _direct_log_query_arguments(question, scoped_question, analysis_scope=analysis_scope, provider=parameter_provider)
+    result = _direct_tool_fastpath(
+        session,
+        user_message,
+        user,
+        tool_name='query_logs',
+        arguments=log_arguments,
+        question=question,
+        scoped_question=scoped_question,
+        knowledge_environment=knowledge_environment,
+        analysis_scope=analysis_scope,
+        execution_mode='direct_logs_fastpath',
+        provider=parameter_provider,
+        active_skills=active_skills,
+        emit=emit,
+        step_title='日志查询生成',
+        step_detail='动作路由已选择日志查询生成，直接调用平台日志接口并整理查询语句。',
+        step_text='正在生成日志查询',
+        extra_metadata={'log_query': log_arguments},
+    )
+    return _attach_selected_action_metadata(result, action)
+
+
+def _run_action_k8s_diagnose(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
+    result = _run_k8s_analysis_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit)
+    return _attach_selected_action_metadata(result, action, extra_metadata={'action_route': 'deterministic_k8s_rca'})
+
+
 def query_traces(session, user_message, user, query='', errors_only=False, limit=6, duration_minutes=60):
     started_at = time.time()
     knowledge_environment = _resolve_knowledge_environment_for_query(query)
@@ -4678,6 +6065,127 @@ def query_host_tasks(session, user_message, user, query='', status='', limit=6):
     summary = {'count': len(tasks)}
     _finish_tool_invocation(invocation, summary, started_at, success=True)
     return {'summary': summary, 'sections': sections, 'citations': [{'title': '任务中心', 'path': '/tasks'}], 'tasks': tasks}
+
+
+def query_knowledge_graph(session, user_message, user, query='', environment='', system_name='', service='', limit=8):
+    started_at = time.time()
+    query = str(query or '').strip()
+    environment = str(environment or '').strip() or _extract_environment(query)
+    system_name = str(system_name or '').strip() or _extract_system_name(query)
+    service = str(service or '').strip()
+    try:
+        limit = max(1, min(int(limit or 8), 20))
+    except (TypeError, ValueError):
+        limit = 8
+    invocation = _create_tool_invocation(
+        session,
+        user_message,
+        'query_knowledge_graph',
+        {
+            'query': query,
+            'environment': environment,
+            'system_name': system_name,
+            'service': service,
+            'limit': limit,
+        },
+    )
+    if not user_has_permissions(user, ['aiops.knowledge.view']):
+        _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
+        return {
+            'summary': {'count': 0, 'detail': 'missing_permission'},
+            'sections': [],
+            'citations': [{'title': 'AIOps 知识图谱', 'path': '/aiops/knowledge'}],
+            'nodes': [],
+            'edges': [],
+        }
+
+    params = _querydict_for_knowledge_graph(environment, system_name, service)
+    graph = build_knowledge_graph(params)
+    nodes = graph.get('nodes') or []
+    edges = graph.get('edges') or []
+    node_map = {node.get('id'): node for node in nodes if isinstance(node, dict)}
+
+    def node_label(node):
+        details = []
+        for key in ['kind', 'environment', 'system_name', 'service', 'status']:
+            value = node.get(key)
+            if value:
+                details.append(str(value))
+        label = node.get('label') or node.get('name') or node.get('id')
+        return f"{label}（{' / '.join(details)}）" if details else str(label or '-')
+
+    def edge_label(edge):
+        source = node_map.get(edge.get('source'), {})
+        target = node_map.get(edge.get('target'), {})
+        source_label = source.get('label') or source.get('name') or edge.get('source')
+        target_label = target.get('label') or target.get('name') or edge.get('target')
+        relation = edge.get('label') or edge.get('relation') or '关联'
+        return f'{source_label} --{relation}--> {target_label}'
+
+    preview_nodes = nodes[: limit * 2]
+    preview_edges = edges[: limit * 2]
+    graph_summary = graph.get('summary') or {}
+    summary = {
+        **graph_summary,
+        'environment': environment,
+        'system_name': system_name,
+        'service': service,
+        'preview_node_count': len(preview_nodes),
+        'preview_edge_count': len(preview_edges),
+    }
+    sections = [{
+        'title': '知识图谱概览',
+        'items': [
+            f"节点：{graph_summary.get('node_count', len(nodes))}",
+            f"关系：{graph_summary.get('edge_count', len(edges))}",
+            f"服务：{graph_summary.get('service_count', 0)}",
+            f"运行组件：{graph_summary.get('runtime_component_count', 0)}",
+        ],
+    }]
+    if environment or system_name or service:
+        sections.append({
+            'title': '查询范围',
+            'items': [
+                f"环境：{environment or '全部'}",
+                f"系统：{system_name or '全部'}",
+                f"服务：{service or '全部'}",
+            ],
+        })
+    if preview_nodes:
+        sections.append({'title': '关键节点', 'items': [node_label(node) for node in preview_nodes]})
+    if preview_edges:
+        sections.append({'title': '关键关系', 'items': [edge_label(edge) for edge in preview_edges]})
+
+    result = {
+        'summary': summary,
+        'sections': sections,
+        'citations': [{'title': 'AIOps 知识图谱', 'path': '/aiops/knowledge'}],
+        'nodes': [
+            {
+                'id': node.get('id'),
+                'label': node.get('label'),
+                'kind': node.get('kind'),
+                'environment': node.get('environment', ''),
+                'status': node.get('status', ''),
+                'route': node.get('route', ''),
+            }
+            for node in preview_nodes
+        ],
+        'edges': [
+            {
+                'source': edge.get('source'),
+                'target': edge.get('target'),
+                'relation': edge.get('relation'),
+                'label': edge.get('label'),
+                'weight': edge.get('weight'),
+            }
+            for edge in preview_edges
+        ],
+        'filters': graph.get('filters') or {},
+        'relation_legend': graph.get('relation_legend') or [],
+    }
+    _finish_tool_invocation(invocation, summary, started_at, success=True)
+    return result
 
 
 def query_cmdb_items(session, user_message, user, query='', environment='', limit=6):
@@ -5275,6 +6783,238 @@ def _extract_analysis_subject(question=''):
     return ''
 
 
+def _compact_block_text(value, max_length=220):
+    text = re.sub(r'\s+', ' ', str(value or '').strip())
+    if not text:
+        return ''
+    if len(text) > max_length:
+        return f'{text[:max_length].rstrip()}...'
+    return text
+
+
+def _normalize_response_block_item(item, max_length=220):
+    if isinstance(item, dict):
+        text = _compact_block_text(
+            item.get('text')
+            or item.get('title')
+            or item.get('label')
+            or item.get('name')
+            or item.get('message')
+            or item.get('value'),
+            max_length=max_length,
+        )
+        if not text:
+            return None
+        payload = {'text': text}
+        for field in ['label', 'value', 'detail', 'status', 'level', 'source', 'timestamp', 'name', 'path', 'query']:
+            value = item.get(field)
+            if value not in (None, '', [], {}):
+                payload[field] = value
+        return payload
+    text = _compact_block_text(item, max_length=max_length)
+    return {'text': text} if text else None
+
+
+def _normalize_response_block_items(items, limit=8, max_length=220):
+    normalized = []
+    for item in items or []:
+        payload = _normalize_response_block_item(item, max_length=max_length)
+        if not payload:
+            continue
+        normalized.append(payload)
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
+def _response_block_type_for_section(title, index=0):
+    title = str(title or '')
+    if any(keyword in title for keyword in ['待确认', '证据不足', '风险', '异常', '失败', '错误']):
+        return 'risk_notice'
+    if any(keyword in title for keyword in ['建议', '下一步', '查询语句', '查询建议', 'PromQL', 'SQL', 'LogQL']):
+        return 'query_suggestion'
+    if any(keyword in title for keyword in ['回滚']):
+        return 'rollback_plan'
+    if any(keyword in title for keyword in ['自愈']):
+        return 'self_heal_recommendation'
+    if any(keyword in title for keyword in ['发布', '变更']):
+        return 'change_candidate'
+    if any(keyword in title for keyword in ['K8s', 'k8s', 'Pod', 'pod', '集群', '工作负载', '容器']):
+        return 'k8s_action'
+    if any(keyword in title for keyword in ['日志', '链路', 'Trace', 'trace', '告警', '证据', '明细', '事实', '样本', '事件', '关系', '节点']):
+        return 'evidence_timeline'
+    return 'incident_card' if index == 0 else 'evidence_timeline'
+
+
+def _block_copy_text(title, items):
+    lines = [_compact_block_text(title, max_length=120)]
+    lines.extend(item.get('text') for item in items or [] if item.get('text'))
+    return '\n'.join(item for item in lines if item)
+
+
+def _build_section_response_blocks(sections):
+    blocks = []
+    for index, section in enumerate(sections or []):
+        if not isinstance(section, dict):
+            continue
+        title = _compact_block_text(section.get('title') or f'结构化结果 {index + 1}', max_length=80)
+        items = _normalize_response_block_items(section.get('items') or [], limit=8)
+        if not title and not items:
+            continue
+        block_type = _response_block_type_for_section(title, index=index)
+        copy_text = _block_copy_text(title, items)
+        block = {
+            'id': f'section-{index + 1}',
+            'type': block_type,
+            'title': title,
+            'summary': items[0]['text'] if items else '',
+            'items': items,
+            'item_count': len(section.get('items') or []),
+            'actions': [{'type': 'copy', 'label': '复制内容', 'value': copy_text}] if copy_text else [],
+        }
+        if len(section.get('items') or []) > len(items):
+            block['truncated_count'] = len(section.get('items') or []) - len(items)
+        blocks.append(block)
+    return blocks
+
+
+def _summarize_response_block_tool_output(tool_name, tool_output):
+    if not isinstance(tool_output, dict):
+        return '调用完成'
+    if tool_output.get('error'):
+        return _compact_block_text(tool_output.get('error'), max_length=160)
+    summary = tool_output.get('summary') or {}
+    if summary.get('error'):
+        return _compact_block_text(summary.get('error'), max_length=160)
+    if tool_name == 'query_knowledge_graph':
+        node_count = summary.get('preview_node_count', summary.get('node_count', 0))
+        edge_count = summary.get('preview_edge_count', summary.get('edge_count', 0))
+        return f'返回 {node_count} 个节点、{edge_count} 条关系'
+    if tool_name == 'query_alerts':
+        count = summary.get('count', len(tool_output.get('alerts') or []))
+        return f'返回 {count} 条告警'
+    if tool_name == 'query_alert_root_cause':
+        alert = tool_output.get('alert') or {}
+        return f"分析告警：{alert.get('title') or summary.get('alert_id') or '未定位到告警'}"
+    if tool_name == 'query_logs':
+        count = summary.get('count', len(tool_output.get('logs') or []))
+        service = summary.get('service') or ''
+        return f"返回 {count} 条日志" + (f'，服务 {service}' if service else '')
+    if tool_name in {'query_k8s_cluster_summary', 'query_k8s_resources'}:
+        cluster_name = summary.get('cluster_name') or summary.get('cluster') or ''
+        abnormal_count = summary.get('pods_abnormal') or summary.get('workloads_degraded') or summary.get('count')
+        if abnormal_count not in (None, ''):
+            return f"K8s 查询完成，异常/降级 {abnormal_count} 项" + (f'，集群 {cluster_name}' if cluster_name else '')
+        return 'K8s 查询完成' + (f'，集群 {cluster_name}' if cluster_name else '')
+    if tool_name == 'query_task_resources':
+        return f"返回 {summary.get('count', len(tool_output.get('resources') or []))} 个资源"
+    if tool_name in {'query_events', 'query_event_wall', 'query_recent_changes'}:
+        return f"返回 {summary.get('count', len(tool_output.get('events') or []))} 条事件/变更"
+    if tool_name == 'query_traces':
+        return f"返回 {summary.get('match_count', len(tool_output.get('traces') or []))} 条 Trace"
+    if tool_name in {'query_grafana_promql', 'query_dashboard_panel_data'}:
+        return f"返回 {summary.get('series_count', summary.get('count', 0))} 条指标序列"
+    if summary.get('count') not in (None, ''):
+        return f"返回 {summary.get('count')} 条结果"
+    return '调用完成'
+
+
+def _build_tool_trace_response_block(tool_names, collected_tool_outputs):
+    tool_names = _dedupe_tool_names(tool_names)
+    if not tool_names:
+        return None
+    output_by_name = {}
+    for item in collected_tool_outputs or []:
+        name = item.get('tool_name')
+        if name and name not in output_by_name:
+            output_by_name[name] = item.get('tool_output') or {}
+    items = []
+    for name in tool_names:
+        output = output_by_name.get(name) or {}
+        failed = isinstance(output, dict) and (output.get('error') or (output.get('summary') or {}).get('error'))
+        items.append({
+            'name': name,
+            'text': name,
+            'detail': _summarize_response_block_tool_output(name, output),
+            'status': 'failed' if failed else 'success',
+        })
+    return {
+        'id': 'tool-trace',
+        'type': 'tool_trace',
+        'title': '工具调用追踪',
+        'summary': f'已调用 {len(items)} 个受控工具获取平台事实。',
+        'items': items,
+        'item_count': len(items),
+        'actions': [{
+            'type': 'copy',
+            'label': '复制追踪',
+            'value': '\n'.join(f"{item['name']}：{item['detail']}" for item in items),
+        }],
+    }
+
+
+def _build_pending_action_response_block(draft, pending_action=None, disabled=False):
+    if not draft:
+        return None
+    status = pending_action.status if pending_action else ('disabled' if disabled else 'draft')
+    status_display = pending_action.get_status_display() if pending_action else ('已关闭' if disabled else '待确认')
+    metrics = [
+        {'label': '目标主机', 'value': f"{draft.get('host_count') or 0} 台"},
+        {'label': '执行方式', 'value': draft.get('execution_mode') or '--'},
+        {'label': '执行策略', 'value': draft.get('execution_strategy') or '--'},
+        {'label': '超时', 'value': f"{draft.get('timeout_seconds') or '--'}s"},
+    ]
+    actions = []
+    if pending_action and pending_action.status == AIOpsPendingAction.STATUS_PENDING:
+        actions = [
+            {'type': 'confirm', 'label': '确认载入', 'pending_action_id': pending_action.id},
+            {'type': 'cancel', 'label': '取消', 'pending_action_id': pending_action.id},
+        ]
+    elif pending_action and (pending_action.result_payload or {}).get('task_id'):
+        actions = [{'type': 'open_task_center', 'label': '查看任务中心'}]
+    elif pending_action and (pending_action.result_payload or {}).get('draft_ready'):
+        actions = [{'type': 'open_task_center', 'label': '前往任务中心'}]
+    return {
+        'id': 'pending-action',
+        'type': 'approval_form',
+        'title': pending_action.title if pending_action else draft.get('name') or '待确认动作',
+        'summary': '确认后将载入任务中心草稿，可编辑后再执行。' if not disabled else '管理员已关闭动作执行，当前只保留分析和任务草稿能力。',
+        'status': status,
+        'status_display': status_display,
+        'risk_level': pending_action.risk_level if pending_action else draft.get('risk_level') or AIOpsPendingAction.RISK_LOW,
+        'metrics': metrics,
+        'items': _normalize_response_block_items([
+            {'label': item['label'], 'value': item['value'], 'text': f"{item['label']}：{item['value']}"}
+            for item in metrics
+        ], limit=4),
+        'actions': actions,
+    }
+
+
+def _replace_response_block(blocks, next_block):
+    if not next_block:
+        return blocks or []
+    key = next_block.get('id') or next_block.get('type')
+    next_blocks = [
+        block for block in (blocks or [])
+        if (block.get('id') or block.get('type')) != key
+    ]
+    next_blocks.append(next_block)
+    return next_blocks
+
+
+def _build_response_blocks(sections=None, tool_names=None, collected_tool_outputs=None, pending_action_draft=None):
+    blocks = []
+    trace_block = _build_tool_trace_response_block(tool_names, collected_tool_outputs)
+    if trace_block:
+        blocks.append(trace_block)
+    blocks.extend(_build_section_response_blocks(sections or []))
+    pending_block = _build_pending_action_response_block(pending_action_draft)
+    if pending_block:
+        blocks.append(pending_block)
+    return blocks[:8]
+
+
 def _collect_alert_context(collected_tool_outputs, sections):
     entries = []
     sources = Counter()
@@ -5768,7 +7508,15 @@ def _build_formatter_fact_digest(collected_tool_outputs, citations=None, pending
 
 
 def _build_answer_formatter_messages(question, draft_content, sections, citations, tool_calls, pending_action_draft, message_type, formatter_skill, active_skills, collected_tool_outputs=None, attempt=1, previous_issue='', reference_answer=''):
-    skill_lines = [f"- {skill.name}：{skill.content}" for skill in active_skills or []]
+    skill_lines = [
+        (
+            f"- {skill.name}（{skill.category or '未分类'}）：{skill.description}\n"
+            f"  适用 Action：{'、'.join(skill.applicable_actions or []) or '通用'}\n"
+            f"  推荐工具：{'、'.join((skill.recommended_tools or []) + (skill.builtin_tools or [])) or '按 Action 工具白名单'}\n"
+            f"  内容：{skill.content}"
+        )
+        for skill in active_skills or []
+    ]
     profile = _detect_formatter_profile(question, pending_action_draft, message_type, collected_tool_outputs=collected_tool_outputs)
     facts = {
         'question': question or '',
@@ -7799,7 +9547,24 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
             diagnostic_lines.append(f"- {item.get('name')}：不可用，原因：{item.get('message') or '连接失败'}")
         elif item.get('status') == 'connected' and item.get('server_type') != AIOpsMCPServer.SERVER_PLATFORM_BUILTIN:
             diagnostic_lines.append(f"- {item.get('name')}：已连接，发现 {item.get('tool_count') or 0} 个外部工具")
-    skill_lines = [f"- {skill.name}：{skill.content}" for skill in active_skills]
+    skill_lines = [
+        (
+            f"- {skill.name}（{skill.category or '未分类'}）：{skill.description}\n"
+            f"  适用 Action：{'、'.join(skill.applicable_actions or []) or '通用'}\n"
+            f"  推荐工具：{'、'.join((skill.recommended_tools or []) + (skill.builtin_tools or [])) or '按 Action 工具白名单'}\n"
+            f"  内容：{skill.content}"
+        )
+        for skill in active_skills
+    ]
+    action_lines = [
+        (
+            f"- {action['code']}（{action['display_name']}）：{action['description']}；"
+            f"模式={action['agent_mode_display']}；风险={action['risk_level_display']}；"
+            f"工具：{'、'.join(action.get('allowed_tools') or [])}；"
+            f"输出：{'、'.join(action.get('output_blocks') or [])}"
+        )
+        for action in list_action_registry(user=user, include_unavailable=False)
+    ]
     permission_lines = [
         f"- 可聊天：{'是' if user_has_permissions(user, ['aiops.chat.view']) else '否'}",
         f"- 可分析：{'是' if user_has_permissions(user, ['aiops.chat.analyze']) else '否'}",
@@ -7820,6 +9585,8 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         '\n'.join(diagnostic_lines) if diagnostic_lines else '- 当前无外部 MCP 诊断信息',
         '启用 Skill：',
         '\n'.join(skill_lines) if skill_lines else '- 当前无启用 Skill',
+        '可用 Action Registry：',
+        '\n'.join(action_lines) if action_lines else '- 当前无可用 action',
         '当前用户权限：',
         '\n'.join(permission_lines),
         '运行约束：',
@@ -7834,7 +9601,7 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         '- “链路追踪里的服务 xxx 最近有没有异常 / trace 中服务 xxx 是否有错误” => 必须优先调用 query_traces，query 只传服务名，errors_only=true。',
         '- “最近交易系统生产有哪些工单” => 调用 query_workorders，并把系统、环境信息体现在参数中。',
         '- “生产环境有哪些离线主机/某环境全部主机” => 优先调用 query_task_resources；query_hosts 仅作为旧工具名兼容。',
-        '- “数据平台生产环境月成本多少” => 调用 query_cost_report，并设置 system_name=数据平台、environment=prod。',
+        '- “某环境的系统、服务、依赖、上下游或资源关联是什么” => 调用 query_knowledge_graph，并设置 environment、system_name 或 service。',
         '- “app-prod-k8s集群有没有异常的pod” => 调用 query_k8s_cluster_summary，并传 cluster_name=app-prod-k8s。',
         '- “生成一份 Redis 巡检任务” => 调用 generate_host_task，而不是只做查询。',
     ]
@@ -7853,12 +9620,10 @@ def _build_history_messages(session, config):
 
 
 def _tool_allowed(user, tool_name):
-    if tool_name == 'query_cmdb_items':
-        return user_has_permissions(user, ['cmdb.ci.view'])
+    if tool_name == 'query_knowledge_graph':
+        return user_has_permissions(user, ['aiops.knowledge.view'])
     if tool_name == 'query_hosts':
         return user_has_permissions(user, ['ops.host.view'])
-    if tool_name == 'query_cost_report':
-        return user_has_permissions(user, ['cmdb.ci.view'])
     if tool_name == 'query_observability':
         return any([
             user_has_permissions(user, ['ops.alert.view']),
@@ -7881,14 +9646,6 @@ def _tool_allowed(user, tool_name):
         return user_has_permissions(user, ['ops.k8s.view'])
     if tool_name == 'query_k8s_resources':
         return user_has_permissions(user, ['ops.k8s.view'])
-    if tool_name == 'query_resources':
-        return any([
-            user_has_permissions(user, ['ops.host.view']),
-            user_has_permissions(user, ['cmdb.ci.view']),
-            user_has_permissions(user, ['ops.k8s.view']),
-            user_has_permissions(user, ['ops.docker.view']),
-            user_has_permissions(user, ['ops.log.datasource.view']),
-        ])
     if tool_name == 'query_alerts':
         return user_has_permissions(user, ['ops.alert.view'])
     if tool_name == 'query_alert_root_cause':
@@ -7926,17 +9683,22 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
                 tool_names.append(tool_name)
 
     catalog = {
-        'query_cmdb_items': {
-            'description': '查询平台 CMDB 配置项。',
-            'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'environment': {'type': 'string', 'enum': ['prod', 'test', 'dev']}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
+        'query_knowledge_graph': {
+            'description': '查询 AIOps 知识图谱中的环境关联、系统拓扑、服务依赖、上下游和资源关系。用户问某环境有哪些系统/服务/依赖/关联关系时优先使用。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'query': {'type': 'string'},
+                    'environment': {'type': 'string', 'description': '知识图谱环境名称或别名，例如 电商测试环境/生产环境/prod'},
+                    'system_name': {'type': 'string', 'description': '系统或业务域名称'},
+                    'service': {'type': 'string', 'description': '服务、应用或容器名'},
+                    'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+                },
+            },
         },
         'query_hosts': {
             'description': '兼容旧工具名：查询资源底座中的主机资源。用户问主机/服务器/离线主机时优先使用 query_task_resources；只有模型已选择旧 query_hosts 时才调用本工具。',
             'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'environment': {'type': 'string', 'enum': ['prod', 'test', 'dev']}, 'status': {'type': 'string', 'enum': ['online', 'offline']}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
-        },
-        'query_cost_report': {
-            'description': '查询 CMDB 成本分析，适合“数据平台生产环境月成本多少”这类问题。',
-            'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'environment': {'type': 'string', 'enum': ['prod', 'test', 'dev']}, 'system_name': {'type': 'string'}, 'month': {'type': 'string', 'description': 'YYYY-MM'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
         },
         'query_observability': {
             'description': '查询可观测性信息，包括告警、日志、链路与最近变更。',
@@ -7979,10 +9741,6 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
         'query_k8s_resources': {
             'description': '查询 K8s 资源列表。用户明确问 Deployment、Service、Node、StatefulSet、DaemonSet、Job、CronJob、Ingress、PVC、ConfigMap、Secret 时必须使用本工具，不要用 Pod 摘要代替。',
             'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'resource_type': {'type': 'string', 'enum': ['deployments', 'services', 'nodes', 'statefulsets', 'daemonsets', 'jobs', 'cronjobs', 'ingresses', 'pvcs', 'configmaps', 'secrets', 'workloads']}, 'cluster_name': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20}}},
-        },
-        'query_resources': {
-            'description': '查询平台资源，包括资源底座、CMDB、IaC 与日志数据源。若用户明确问主机/服务器/离线主机、成本、K8s 异常 Pod，优先改用 query_task_resources、query_cost_report、query_k8s_cluster_summary。',
-            'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'environment': {'type': 'string', 'enum': ['prod', 'test', 'dev']}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
         },
         'query_alerts': {
             'description': '查询告警中心中的告警。注意：如果用户明确提到“链路追踪、Trace、调用链、tracing 里的服务”，不要使用本工具，必须改用 query_traces。',
@@ -8360,6 +10118,7 @@ def _scope_tool_arguments(session, tool_name, arguments):
     if not environment_name:
         return scoped
     scoped_tools = {
+        'query_knowledge_graph',
         'query_alerts',
         'query_alert_root_cause',
         'query_system_posture',
@@ -8416,15 +10175,20 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
                 'message_type': AIOpsChatMessage.TYPE_TEXT,
             }
 
-    if tool_name == 'query_cmdb_items':
-        result = query_cmdb_items(session, user_message, user, query=arguments.get('query', ''), environment=arguments.get('environment', ''), limit=arguments.get('limit') or 6)
-        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_TEXT}
+    if tool_name == 'query_knowledge_graph':
+        result = query_knowledge_graph(
+            session,
+            user_message,
+            user,
+            query=arguments.get('query', ''),
+            environment=arguments.get('environment', ''),
+            system_name=arguments.get('system_name', '') or arguments.get('business_line', ''),
+            service=arguments.get('service', ''),
+            limit=arguments.get('limit') or 8,
+        )
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
     if tool_name == 'query_hosts':
         result = query_hosts(session, user_message, user, query=arguments.get('query', ''), environment=arguments.get('environment', ''), status=arguments.get('status', ''), limit=arguments.get('limit') or 6)
-        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_TEXT}
-    if tool_name == 'query_cost_report':
-        system_name = arguments.get('system_name', '') or arguments.get('business_line', '')
-        result = query_cost_report(session, user_message, user, query=arguments.get('query', ''), environment=arguments.get('environment', ''), business_line=system_name, month=arguments.get('month', ''), limit=arguments.get('limit') or 5)
         return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_TEXT}
     if tool_name == 'query_observability':
         result = query_observability(session, user_message, user, query=arguments.get('query', ''), limit=arguments.get('limit') or 6)
@@ -8475,9 +10239,6 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
             limit=arguments.get('limit') or 8,
         )
         return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
-    if tool_name == 'query_resources':
-        result = query_resources(session, user_message, user, query=arguments.get('query', ''), environment=arguments.get('environment', ''), limit=arguments.get('limit') or 6)
-        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_TEXT}
     if tool_name == 'query_alerts':
         result = query_alerts(
             session,
@@ -8619,6 +10380,82 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
     raise ValueError(f'Unsupported tool: {tool_name}')
 
 
+def _run_selected_action(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
+    action_skills = _skills_for_action(active_skills, action)
+    action_code = action.get('code')
+    if action_code == 'alert.root_cause':
+        return _run_action_root_cause(
+            session,
+            user_message,
+            user,
+            question,
+            scoped_question,
+            knowledge_environment,
+            analysis_scope,
+            provider,
+            action_skills,
+            action,
+            emit,
+        )
+    if action_code == 'change.correlation':
+        return _run_change_correlation_evidence(
+            session,
+            user_message,
+            user,
+            question,
+            scoped_question,
+            knowledge_environment,
+            analysis_scope,
+            provider,
+            action_skills,
+            action,
+            emit,
+        )
+    if action_code == 'log.query_generate':
+        return _run_action_log_query(
+            session,
+            user_message,
+            user,
+            question,
+            scoped_question,
+            knowledge_environment,
+            analysis_scope,
+            provider,
+            action_skills,
+            action,
+            emit,
+        )
+    if action_code == 'k8s.diagnose':
+        return _run_action_k8s_diagnose(
+            session,
+            user_message,
+            user,
+            question,
+            scoped_question,
+            knowledge_environment,
+            analysis_scope,
+            provider,
+            action_skills,
+            action,
+            emit,
+        )
+    if action_code == 'self_heal.recommend':
+        return _run_self_heal_recommendation_evidence(
+            session,
+            user_message,
+            user,
+            question,
+            scoped_question,
+            knowledge_environment,
+            analysis_scope,
+            provider,
+            action_skills,
+            action,
+            emit,
+        )
+    return None
+
+
 def _dispatch_with_tool_runtime(session, user_message, user, question, progress_callback=None):
     emit = progress_callback or (lambda **kwargs: None)
     config = get_agent_config()
@@ -8658,6 +10495,42 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     scoped_question = f"{knowledge_environment.get('name')} {question}".strip()
     provider_ready = _provider_is_ready(provider)
     formatter_provider = provider if provider_ready else None
+    selected_action = _select_action_for_question(question, user=user, analysis_scope=analysis_scope)
+    if selected_action:
+        emit(
+            step={
+                'title': 'Action Router',
+                'detail': f"已命中动作 {selected_action.get('display_name') or selected_action.get('code')}。",
+                'status': PROCESSING_STATUS_COMPLETED,
+            },
+            text=f"已识别动作：{selected_action.get('code')}",
+        )
+        missing_fields = _missing_action_context_fields(selected_action, question, knowledge_environment=knowledge_environment, analysis_scope=analysis_scope)
+        if missing_fields:
+            return _build_action_preflight_result(
+                selected_action,
+                knowledge_environment=knowledge_environment,
+                analysis_scope=analysis_scope,
+                missing_fields=missing_fields,
+                summary=f"已识别为 {selected_action.get('display_name') or selected_action.get('code')}，请先补齐必要上下文后再继续。",
+                suggestions=_action_preflight_suggestions(selected_action, missing_fields, knowledge_environment=knowledge_environment),
+                current_question=question,
+            )
+        routed_result = _run_selected_action(
+            session,
+            user_message,
+            user,
+            question,
+            scoped_question,
+            knowledge_environment,
+            analysis_scope,
+            formatter_provider,
+            active_skills,
+            selected_action,
+            emit,
+        )
+        if routed_result:
+            return routed_result
     if _is_direct_alert_analysis_question(question):
         emit(
             step={
@@ -9361,6 +11234,7 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
     assistant_message.refresh_from_db()
     final_content = result.get('content', '')
     merged_metadata = {**(assistant_message.metadata or {}), **(result.get('metadata') or {})}
+    response_blocks = list(merged_metadata.get('response_blocks') or [])
     pending_action = None
     draft = result.get('pending_action_draft')
 
@@ -9390,13 +11264,25 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
         else:
             pending_action = create_pending_task_action_from_draft(session, assistant_message, draft)
             merged_metadata['pending_action_id'] = pending_action.id
+        pending_block = _build_pending_action_response_block(
+            draft,
+            pending_action=pending_action,
+            disabled=not config.allow_action_execution,
+        )
+        if pending_block:
+            response_blocks = _replace_response_block(response_blocks, pending_block)
 
     payload = {
         'content': final_content,
         'message_type': result.get('message_type') or AIOpsChatMessage.TYPE_TEXT,
         'citations': result.get('citations') or [],
         'tool_calls': result.get('tool_calls') or [],
-        'metadata': {**merged_metadata, 'processing_status': PROCESSING_STATUS_COMPLETED, 'processing_text': '\u5206\u6790\u5b8c\u6210'},
+        'metadata': {
+            **merged_metadata,
+            'response_blocks': response_blocks,
+            'processing_status': PROCESSING_STATUS_COMPLETED,
+            'processing_text': '\u5206\u6790\u5b8c\u6210',
+        },
     }
 
     if enable_stream:

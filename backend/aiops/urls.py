@@ -17,6 +17,7 @@ router.register('admin/audit/actions', views.AIOpsPendingActionViewSet, basename
 urlpatterns = [
     path('bootstrap/', views.bootstrap, name='aiops-bootstrap'),
     path('knowledge-graph/', views.knowledge_graph, name='aiops-knowledge-graph'),
+    path('admin/actions/', views.action_registry, name='aiops-action-registry'),
     path('admin/config/', views.agent_config_view, name='aiops-agent-config'),
     path('admin/providers/presets/', views.model_provider_presets, name='aiops-provider-presets-explicit'),
     path('admin/audit/overview/', views.audit_overview, name='aiops-audit-overview'),

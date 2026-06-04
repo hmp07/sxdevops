@@ -140,14 +140,32 @@ class AIOpsMCPServer(models.Model):
 class AIOpsSkill(models.Model):
     SOURCE_INLINE = 'inline'
     SOURCE_LOCAL = 'local'
+    RISK_READ_ONLY = 'read_only'
+    RISK_DRAFT = 'draft'
+    RISK_WRITE = 'write'
+    RISK_EXECUTE = 'execute'
     SOURCE_CHOICES = [
         (SOURCE_INLINE, '平台内置'),
         (SOURCE_LOCAL, '本地文件'),
+    ]
+    RISK_CHOICES = [
+        (RISK_READ_ONLY, '只读'),
+        (RISK_DRAFT, '草稿'),
+        (RISK_WRITE, '写入'),
+        (RISK_EXECUTE, '执行'),
     ]
 
     name = models.CharField('名称', max_length=128, unique=True)
     slug = models.SlugField('标识', max_length=128, unique=True)
     description = models.CharField('描述', max_length=255, blank=True, default='')
+    category = models.CharField('分类', max_length=64, blank=True, default='')
+    applicable_actions = models.JSONField('适用 Action', default=list, blank=True)
+    examples = models.JSONField('示例问题', default=list, blank=True)
+    builtin_tools = models.JSONField('内置工具', default=list, blank=True)
+    recommended_tools = models.JSONField('推荐工具', default=list, blank=True)
+    max_iterations = models.PositiveIntegerField('最大轮次', default=0)
+    risk_level = models.CharField('风险等级', max_length=16, choices=RISK_CHOICES, default=RISK_READ_ONLY)
+    output_contract = models.JSONField('输出约束', default=dict, blank=True)
     source_type = models.CharField('来源类型', max_length=16, choices=SOURCE_CHOICES, default=SOURCE_INLINE)
     content = models.TextField('内容', blank=True, default='')
     allowed_role_codes = models.JSONField('允许角色', default=list, blank=True)

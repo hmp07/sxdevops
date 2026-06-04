@@ -30,6 +30,11 @@
             <span class="tab-label"><el-icon><Tools /></el-icon>Skill</span>
           </template>
         </el-tab-pane>
+        <el-tab-pane name="actions">
+          <template #label>
+            <span class="tab-label"><el-icon><Promotion /></el-icon>Action</span>
+          </template>
+        </el-tab-pane>
         <el-tab-pane name="im">
           <template #label>
             <span class="tab-label"><el-icon><Message /></el-icon>IM 接入</span>
@@ -213,34 +218,161 @@
       <template v-else-if="activeTab === 'skills'">
         <div class="section-toolbar">
           <div class="toolbar-head">
-            <span class="toolbar-title">Skill</span>
-            <span class="toolbar-desc">管理内置与本地 Skill 的启用和内容</span>
+            <span class="toolbar-title">Skill 知识包</span>
+            <span class="toolbar-desc">按问题分类管理内置与自定义 Skill，沉淀 SOP、证据清单和输出约束</span>
           </div>
           <el-button size="small" type="primary" @click="openSkillDialog()">新增 Skill</el-button>
         </div>
-        <el-table :data="skills" stripe class="console-table">
-          <el-table-column prop="name" label="名称" min-width="150" />
-          <el-table-column prop="slug" label="标识" width="140" />
-          <el-table-column label="类型" width="110">
-            <template #default="{ row }">
-              <el-tag size="small" effect="plain" :class="['type-tag', `type-tag--${getSkillTypeClass(row)}`]">
-                {{ formatSkillType(row) }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="description" label="描述" min-width="240" />
-          <el-table-column label="启用" width="100">
-            <template #default="{ row }">
-              <el-tag size="small" :type="row.is_enabled ? 'success' : 'info'">{{ row.is_enabled ? '是' : '否' }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="180" fixed="right">
-            <template #default="{ row }">
-              <el-button link type="primary" @click="openSkillDialog(row)">编辑</el-button>
-              <el-button link type="danger" :disabled="row.is_builtin" @click="handleDeleteSkill(row)">删除</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
+        <div class="skill-summary-row">
+          <div class="skill-summary-item">
+            <span>知识包</span>
+            <strong>{{ skillOverview.total }}</strong>
+          </div>
+          <div class="skill-summary-item">
+            <span>内置</span>
+            <strong>{{ skillOverview.builtin }}</strong>
+          </div>
+          <div class="skill-summary-item">
+            <span>自定义</span>
+            <strong>{{ skillOverview.custom }}</strong>
+          </div>
+          <div class="skill-summary-item">
+            <span>启用</span>
+            <strong>{{ skillOverview.enabled }}</strong>
+          </div>
+        </div>
+        <div class="skill-library">
+          <div v-for="group in skillGroups" :key="group.category" class="skill-group">
+            <div class="skill-group-head">
+              <div class="toolbar-head">
+                <span class="skill-group-title">{{ group.category }}</span>
+                <span class="toolbar-desc">{{ group.items.length }} 个 Skill</span>
+              </div>
+            </div>
+            <div class="skill-package-list">
+              <div v-for="skill in group.items" :key="skill.id || skill.slug" class="skill-package-row">
+                <div class="skill-package-main">
+                  <div class="skill-package-title-row">
+                    <span class="skill-package-name">{{ skill.name }}</span>
+                    <el-tag size="small" effect="plain" :class="['type-tag', `type-tag--${getSkillTypeClass(skill)}`]">
+                      {{ formatSkillType(skill) }}
+                    </el-tag>
+                    <el-tag size="small" :type="skillRiskTagType(skill.risk_level)" effect="plain">
+                      {{ formatSkillRiskLabel(skill.risk_level) }}
+                    </el-tag>
+                    <el-tag size="small" :type="skill.is_enabled ? 'success' : 'info'" effect="plain">
+                      {{ skill.is_enabled ? '启用' : '停用' }}
+                    </el-tag>
+                  </div>
+                  <div class="skill-package-desc">{{ skill.description || '暂无描述' }}</div>
+                  <div class="skill-package-tags">
+                    <el-tag v-for="action in skill.applicable_actions || []" :key="`${skill.slug}-${action}`" size="small" effect="plain">
+                      {{ formatActionName(action) }}
+                    </el-tag>
+                    <span v-if="!(skill.applicable_actions || []).length" class="muted-text">未绑定 Action</span>
+                  </div>
+                </div>
+                <div class="skill-package-side">
+                  <div class="skill-package-stat">
+                    <span>工具</span>
+                    <strong>{{ skillToolCount(skill) }}</strong>
+                  </div>
+                  <div class="skill-package-stat">
+                    <span>示例</span>
+                    <strong>{{ (skill.examples || []).length }}</strong>
+                  </div>
+                  <div class="table-actions">
+                    <el-button link type="primary" @click="openSkillDialog(skill)">编辑</el-button>
+                    <el-button link type="danger" :disabled="skill.is_builtin" @click="handleDeleteSkill(skill)">删除</el-button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <template v-else-if="activeTab === 'actions'">
+        <div class="section-toolbar">
+          <div class="toolbar-head">
+            <span class="toolbar-title">Action Registry</span>
+            <span class="toolbar-desc">按场景拆分的智能助手任务定义、工具白名单和预检查要求</span>
+          </div>
+          <span class="audit-hint">已内置 10 个 P0 action</span>
+        </div>
+        <div class="action-summary-row">
+          <div class="action-summary-item">
+            <span>动作总数</span>
+            <strong>{{ actionOverview.total }}</strong>
+          </div>
+          <div class="action-summary-item">
+            <span>可用动作</span>
+            <strong>{{ actionOverview.available }}</strong>
+          </div>
+          <div class="action-summary-item">
+            <span>待预检</span>
+            <strong>{{ actionOverview.preflight }}</strong>
+          </div>
+          <div class="action-summary-item">
+            <span>分组</span>
+            <strong>{{ actionGroups.length }}</strong>
+          </div>
+        </div>
+        <div class="action-library">
+          <div v-for="group in actionGroups" :key="group.category" class="action-group">
+            <div class="action-group-head">
+              <div class="toolbar-head">
+                <span class="action-group-title">{{ group.category }}</span>
+                <span class="toolbar-desc">{{ group.items.length }} 个 Action</span>
+              </div>
+            </div>
+            <div class="action-package-list">
+              <div v-for="action in group.items" :key="action.code" class="action-package-row">
+                <div class="action-package-main">
+                  <div class="action-package-title-row">
+                    <span class="action-package-name">{{ action.display_name || action.code }}</span>
+                    <span class="action-package-code">{{ action.code }}</span>
+                    <el-tag size="small" effect="plain" :type="actionModeTagType(action.agent_mode)">
+                      {{ formatActionMode(action.agent_mode) }}
+                    </el-tag>
+                    <el-tag size="small" effect="plain" :type="actionRiskTagType(action.risk_level)">
+                      {{ actionRiskLabel(action.risk_level) }}
+                    </el-tag>
+                    <el-tag size="small" effect="plain" :type="action.preflight_required ? 'warning' : 'success'">
+                      {{ action.preflight_required ? '需预检' : '免预检' }}
+                    </el-tag>
+                    <el-tooltip :content="action.available_reason || 'action 可用'" placement="top" :disabled="action.available !== false">
+                      <el-tag size="small" effect="plain" :type="actionAvailabilityTagType(action.available)">
+                        {{ actionAvailabilityLabel(action.available) }}
+                      </el-tag>
+                    </el-tooltip>
+                  </div>
+                  <div class="action-package-desc">{{ action.description || '暂无描述' }}</div>
+                  <div class="action-package-tags">
+                    <el-tag v-for="context in action.required_context || []" :key="`${action.code}-ctx-${context}`" size="small" effect="plain">
+                      上下文：{{ context }}
+                    </el-tag>
+                    <span v-if="!(action.required_context || []).length" class="muted-text">未要求前置上下文</span>
+                  </div>
+                </div>
+                <div class="action-package-side">
+                  <div class="action-package-stat">
+                    <span>工具</span>
+                    <strong>{{ actionToolCount(action) }}</strong>
+                  </div>
+                  <div class="action-package-stat">
+                    <span>Skill</span>
+                    <strong>{{ actionSkillCount(action) }}</strong>
+                  </div>
+                  <div class="action-package-stat">
+                    <span>输出</span>
+                    <strong>{{ (action.output_blocks || []).length }}</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </template>
 
       <template v-else>
@@ -469,25 +601,77 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="skillDialogVisible" :title="skillForm.id ? '编辑 Skill' : '新增 Skill'" width="760px" destroy-on-close append-to-body>
+    <el-dialog v-model="skillDialogVisible" :title="skillForm.id ? '编辑 Skill' : '新增 Skill'" width="880px" destroy-on-close append-to-body>
       <div v-if="skillForm.id" class="skill-detail-card">
         <div class="skill-detail-title">Skill 详情</div>
         <div class="skill-detail-meta">
           <span>名称：{{ skillForm.name || '--' }}</span>
           <span>标识：{{ skillForm.slug || '--' }}</span>
           <span>类型：{{ formatSkillType(skillForm) }}</span>
+          <span>分类：{{ skillForm.category || '未分类' }}</span>
         </div>
         <div class="skill-detail-desc">{{ skillForm.description || '暂无描述' }}</div>
       </div>
       <el-form :model="skillForm" label-width="102px">
         <div class="dialog-grid">
           <el-form-item label="名称"><el-input v-model="skillForm.name" /></el-form-item>
-          <el-form-item label="标识"><el-input v-model="skillForm.slug" /></el-form-item>
+          <el-form-item label="标识"><el-input v-model="skillForm.slug" :disabled="skillForm.is_builtin" /></el-form-item>
         </div>
-        <el-form-item label="来源"><el-select v-model="skillForm.source_type" style="width:100%"><el-option label="平台内置" value="inline" /><el-option label="本地文件" value="local" /></el-select></el-form-item>
+        <div class="dialog-grid">
+          <el-form-item label="来源">
+            <el-select v-model="skillForm.source_type" :disabled="skillForm.is_builtin" style="width:100%">
+              <el-option label="平台内置" value="inline" />
+              <el-option label="本地文件" value="local" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="分类">
+            <el-select v-model="skillForm.category" filterable allow-create default-first-option style="width:100%">
+              <el-option v-for="item in skillCategoryOptions" :key="item" :label="item" :value="item" />
+            </el-select>
+          </el-form-item>
+        </div>
         <el-form-item label="描述"><el-input v-model="skillForm.description" /></el-form-item>
+        <el-form-item label="适用 Action">
+          <el-select v-model="skillForm.applicable_actions" multiple filterable collapse-tags collapse-tags-tooltip style="width:100%">
+            <el-option
+              v-for="action in actionRegistry"
+              :key="action.code"
+              :label="`${action.display_name || action.code}（${action.code}）`"
+              :value="action.code"
+            />
+          </el-select>
+        </el-form-item>
+        <div class="dialog-grid">
+          <el-form-item label="风险等级">
+            <el-select v-model="skillForm.risk_level" style="width:100%">
+              <el-option label="只读" value="read_only" />
+              <el-option label="草稿" value="draft" />
+              <el-option label="写入" value="write" />
+              <el-option label="执行" value="execute" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="最大轮次">
+            <el-input-number v-model="skillForm.max_iterations" :min="0" :max="20" style="width:100%" />
+          </el-form-item>
+        </div>
+        <el-form-item label="示例问题">
+          <el-select v-model="skillForm.examples" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" />
+        </el-form-item>
+        <el-form-item label="内置工具">
+          <el-select v-model="skillForm.builtin_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%">
+            <el-option v-for="tool in skillToolOptions" :key="`builtin-${tool}`" :label="tool" :value="tool" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="推荐工具">
+          <el-select v-model="skillForm.recommended_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%">
+            <el-option v-for="tool in skillToolOptions" :key="`recommend-${tool}`" :label="tool" :value="tool" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="允许角色"><el-select v-model="skillForm.allowed_role_codes" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
-        <el-form-item label="内容"><el-input v-model="skillForm.content" type="textarea" :rows="8" /></el-form-item>
+        <el-form-item label="输出约束">
+          <el-input v-model="skillForm.output_contract_text" type="textarea" :rows="4" placeholder='例如：{"sections":["结论","依据"],"blocks":["risk_notice"]}' />
+        </el-form-item>
+        <el-form-item label="内容"><el-input v-model="skillForm.content" type="textarea" :rows="10" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="skillForm.is_enabled" /></el-form-item>
       </el-form>
       <template #footer>
@@ -527,7 +711,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ChatDotSquare, Connection, Cpu, Message, Setting, Tickets, Tools } from '@element-plus/icons-vue'
+import { ChatDotSquare, Connection, Cpu, Message, Promotion, Setting, Tickets, Tools } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import {
@@ -547,6 +731,7 @@ import {
   getAIOpsAuditOverview,
   getAIOpsAuditSessions,
   getAIOpsAuditToolInvocations,
+  getAIOpsActions,
   getAIOpsConfig,
   getAIOpsProviderPresets,
   getAIOpsMcpServers,
@@ -571,6 +756,8 @@ const providers = ref([])
 const providerPresets = ref([])
 const mcpServers = ref([])
 const skills = ref([])
+const actionRegistry = ref([])
+const actionRegistrySummary = ref({})
 const auditOverview = ref({})
 const auditSessions = ref([])
 const auditTools = ref([])
@@ -647,6 +834,64 @@ const mcpTimeoutSeconds = computed({
   get: () => Number(mcpAuthConfig.value.timeout_seconds || 20),
   set: (value) => updateMcpAuthConfig({ timeout_seconds: Number(value || 20) }),
 })
+const skillOverview = computed(() => ({
+  total: skills.value.length,
+  builtin: skills.value.filter(item => item.is_builtin).length,
+  custom: skills.value.filter(item => !item.is_builtin).length,
+  enabled: skills.value.filter(item => item.is_enabled).length,
+}))
+const skillGroups = computed(() => {
+  const groups = new Map()
+  skills.value.forEach((skill) => {
+    const category = skill.category || '未分类'
+    if (!groups.has(category)) groups.set(category, { category, items: [] })
+    groups.get(category).items.push(skill)
+  })
+  return Array.from(groups.values())
+    .map(group => ({
+      ...group,
+      items: group.items.slice().sort((a, b) => Number(b.is_builtin) - Number(a.is_builtin) || String(a.name).localeCompare(String(b.name), 'zh-CN')),
+    }))
+    .sort((a, b) => a.category.localeCompare(b.category, 'zh-CN'))
+})
+const actionOverview = computed(() => ({
+  total: Number(actionRegistrySummary.value.total ?? actionRegistry.value.length) || 0,
+  available: Number(
+    actionRegistrySummary.value.available
+      ?? actionRegistry.value.filter(item => item.available !== false).length,
+  ) || 0,
+  preflight: Number(actionRegistrySummary.value.preflight_required ?? 0) || 0,
+  execute: Number(actionRegistrySummary.value.execute ?? 0) || 0,
+}))
+const actionGroups = computed(() => {
+  const groups = new Map()
+  actionRegistry.value.forEach((action) => {
+    const category = action.category || '通用'
+    if (!groups.has(category)) groups.set(category, { category, items: [] })
+    groups.get(category).items.push(action)
+  })
+  return Array.from(groups.values())
+    .map(group => ({
+      ...group,
+      items: group.items
+        .slice()
+        .sort((a, b) => String(a.display_name || a.code).localeCompare(String(b.display_name || b.code), 'zh-CN')),
+    }))
+    .sort((a, b) => a.category.localeCompare(b.category, 'zh-CN'))
+})
+const skillCategoryOptions = computed(() => {
+  const categories = new Set(['告警排障', '变更关联', '日志查询', 'K8s 诊断', '自愈安全', '任务中心', '发布回滚', '回答规范'])
+  skills.value.forEach(item => {
+    if (item.category) categories.add(item.category)
+  })
+  return Array.from(categories)
+})
+const skillToolOptions = computed(() => {
+  const tools = new Set()
+  mcpServers.value.forEach(server => (server.tool_whitelist || []).forEach(tool => tools.add(tool)))
+  actionRegistry.value.forEach(action => (action.allowed_tools || []).forEach(tool => tools.add(tool)))
+  return Array.from(tools).sort()
+})
 
 function formatMcpType(serverType) {
   if (serverType === 'platform_builtin') return '平台内置'
@@ -685,8 +930,9 @@ function formatMcpToolSchema(row = {}) {
 }
 
 function formatSkillSource(row = {}) {
-  if (row.is_builtin || row.source_type === 'inline') return '平台内置'
-  return '本地文件'
+  if (row.is_builtin) return '平台内置'
+  if (row.source_type === 'local') return '本地文件'
+  return '自定义'
 }
 
 function formatSkillType(row = {}) {
@@ -694,12 +940,87 @@ function formatSkillType(row = {}) {
 }
 
 function getSkillTypeClass(row = {}) {
-  return row.is_builtin || row.source_type === 'inline' ? 'platform_builtin' : 'local'
+  if (row.is_builtin) return 'platform_builtin'
+  return row.source_type === 'local' ? 'local' : 'custom'
+}
+
+function formatSkillRiskLabel(risk) {
+  if (risk === 'read_only') return '只读'
+  if (risk === 'draft') return '草稿'
+  if (risk === 'write') return '写入'
+  if (risk === 'execute') return '执行'
+  return risk || '只读'
+}
+
+function skillRiskTagType(risk) {
+  if (risk === 'read_only') return 'info'
+  if (risk === 'draft') return 'warning'
+  if (risk === 'write') return 'warning'
+  if (risk === 'execute') return 'danger'
+  return 'info'
+}
+
+function skillToolCount(skill = {}) {
+  return new Set([...(skill.builtin_tools || []), ...(skill.recommended_tools || [])]).size
+}
+
+function actionToolCount(action = {}) {
+  return new Set(action.allowed_tools || []).size
+}
+
+function actionSkillCount(action = {}) {
+  return new Set(action.skills || []).size
+}
+
+function formatActionName(code) {
+  const action = actionRegistry.value.find(item => item.code === code)
+  return action?.display_name || code
 }
 
 function formatEnabledTools(tools) {
   if (!Array.isArray(tools) || !tools.length) return '--'
   return tools.join('、')
+}
+
+function formatActionList(items) {
+  if (!Array.isArray(items) || !items.length) return '--'
+  return items.join('、')
+}
+
+function formatActionMode(mode) {
+  if (mode === 'direct') return 'Direct'
+  if (mode === 'react') return 'ReAct'
+  if (mode === 'plan_react') return 'Plan+ReAct'
+  return mode || '--'
+}
+
+function actionModeTagType(mode) {
+  if (mode === 'direct') return 'info'
+  if (mode === 'plan_react') return 'warning'
+  return 'success'
+}
+
+function actionRiskLabel(risk) {
+  if (risk === 'read_only') return '只读'
+  if (risk === 'draft') return '草稿'
+  if (risk === 'write') return '写入'
+  if (risk === 'execute') return '执行'
+  return risk || '--'
+}
+
+function actionRiskTagType(risk) {
+  if (risk === 'read_only') return 'info'
+  if (risk === 'draft') return 'warning'
+  if (risk === 'execute') return 'danger'
+  return 'warning'
+}
+
+function actionAvailabilityLabel(available) {
+  return available === false ? '受限' : '可用'
+}
+
+function actionAvailabilityTagType(available) {
+  return available === false ? 'warning' : 'success'
 }
 
 function formatProviderModelLabel(item = {}) {
@@ -791,8 +1112,18 @@ function resetSkillForm() {
     slug: '',
     source_type: 'inline',
     description: '',
+    category: '',
+    applicable_actions: [],
+    examples: [],
+    builtin_tools: [],
+    recommended_tools: [],
+    max_iterations: 0,
+    risk_level: 'read_only',
+    output_contract: {},
+    output_contract_text: '{}',
     content: '',
     allowed_role_codes: [],
+    is_builtin: false,
     is_enabled: true,
   })
 }
@@ -817,12 +1148,13 @@ function applyConfig(payload = {}) {
 async function loadAll() {
   loading.page = true
   try {
-    const [config, providerData, presetData, mcpData, skillData, auditData] = await Promise.all([
+    const [config, providerData, presetData, mcpData, skillData, actionData, auditData] = await Promise.all([
       getAIOpsConfig(),
       getAIOpsProviders(),
       getAIOpsProviderPresets(),
       getAIOpsMcpServers(),
       getAIOpsSkills(),
+      getAIOpsActions(),
       getAIOpsAuditOverview(),
     ])
     applyConfig(config)
@@ -830,6 +1162,8 @@ async function loadAll() {
     providerPresets.value = presetData?.presets || []
     mcpServers.value = mcpData || []
     skills.value = skillData || []
+    actionRegistry.value = actionData?.actions || []
+    actionRegistrySummary.value = actionData?.summary || {}
     auditOverview.value = auditData || {}
     await Promise.all([
       loadAuditSessions(auditSessionPagination.page),
@@ -1033,15 +1367,51 @@ async function handleDeleteMcp(row) {
 
 function openSkillDialog(row) {
   resetSkillForm()
-  if (row) Object.assign(skillForm, row)
+  if (row) {
+    Object.assign(skillForm, {
+      ...row,
+      applicable_actions: Array.isArray(row.applicable_actions) ? [...row.applicable_actions] : [],
+      examples: Array.isArray(row.examples) ? [...row.examples] : [],
+      builtin_tools: Array.isArray(row.builtin_tools) ? [...row.builtin_tools] : [],
+      recommended_tools: Array.isArray(row.recommended_tools) ? [...row.recommended_tools] : [],
+      allowed_role_codes: Array.isArray(row.allowed_role_codes) ? [...row.allowed_role_codes] : [],
+      output_contract: row.output_contract && typeof row.output_contract === 'object' ? row.output_contract : {},
+      output_contract_text: JSON.stringify(row.output_contract && typeof row.output_contract === 'object' ? row.output_contract : {}, null, 2),
+    })
+  }
   skillDialogVisible.value = true
 }
 
 async function saveSkill() {
   saving.skill = true
   try {
-    if (skillForm.id) await updateAIOpsSkill(skillForm.id, { ...skillForm })
-    else await createAIOpsSkill({ ...skillForm })
+    let outputContract = {}
+    try {
+      const rawContract = String(skillForm.output_contract_text || '').trim()
+      outputContract = rawContract ? JSON.parse(rawContract) : {}
+    } catch (error) {
+      ElMessage.error('输出约束必须是合法 JSON 对象')
+      return
+    }
+    if (!outputContract || Array.isArray(outputContract) || typeof outputContract !== 'object') {
+      ElMessage.error('输出约束必须是 JSON 对象')
+      return
+    }
+    const payload = {
+      ...skillForm,
+      output_contract: outputContract,
+      applicable_actions: skillForm.applicable_actions || [],
+      examples: skillForm.examples || [],
+      builtin_tools: skillForm.builtin_tools || [],
+      recommended_tools: skillForm.recommended_tools || [],
+      allowed_role_codes: skillForm.allowed_role_codes || [],
+      max_iterations: Number(skillForm.max_iterations || 0),
+    }
+    delete payload.output_contract_text
+    delete payload.id
+    delete payload.is_builtin
+    if (skillForm.id) await updateAIOpsSkill(skillForm.id, payload)
+    else await createAIOpsSkill(payload)
     skillDialogVisible.value = false
     ElMessage.success('Skill 已保存')
     await loadAll()
@@ -1612,6 +1982,289 @@ onMounted(async () => {
   line-height: 1.8;
 }
 
+.skill-summary-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.skill-summary-item {
+  min-height: 58px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.skill-summary-item span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.skill-summary-item strong {
+  color: #0f172a;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.skill-library {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skill-group {
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.skill-group-head {
+  padding: 10px 12px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.skill-group-title {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.skill-package-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.skill-package-row {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+}
+
+.skill-package-row + .skill-package-row {
+  border-top: 1px solid #edf2f7;
+}
+
+.skill-package-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.skill-package-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.skill-package-name {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.skill-package-desc {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.skill-package-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.skill-package-side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.skill-package-stat {
+  width: 48px;
+  min-height: 46px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.skill-package-stat span {
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.skill-package-stat strong {
+  color: #0f172a;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.action-summary-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.action-summary-item {
+  min-height: 58px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.action-summary-item span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.action-summary-item strong {
+  color: #0f172a;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.action-library {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.action-group {
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.action-group-head {
+  padding: 10px 12px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.action-group-title {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.action-package-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.action-package-row {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+}
+
+.action-package-row + .action-package-row {
+  border-top: 1px solid #edf2f7;
+}
+
+.action-package-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.action-package-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.action-package-name {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.action-package-code {
+  color: #64748b;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.action-package-desc {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.action-package-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.action-package-side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.action-package-stat {
+  width: 48px;
+  min-height: 46px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.action-package-stat span {
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.action-package-stat strong {
+  color: #0f172a;
+  font-size: 16px;
+  line-height: 1;
+}
+
 .skill-detail-card {
   margin-bottom: 16px;
   padding: 12px 14px;
@@ -1668,14 +2321,44 @@ onMounted(async () => {
   background: #f5f3ff;
 }
 
+.type-tag--custom {
+  color: #0f766e;
+  border-color: #99f6e4;
+  background: #f0fdfa;
+}
+
 @media (max-width: 960px) {
   .audit-grid,
+  .skill-summary-row,
+  .action-summary-row,
   .dialog-grid {
     grid-template-columns: 1fr;
   }
 
   .config-grid {
     flex-direction: column;
+  }
+
+  .skill-package-row,
+  .skill-package-side,
+  .action-package-row,
+  .action-package-side {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .skill-package-side,
+  .action-package-side {
+    gap: 8px;
+  }
+
+  .skill-package-stat,
+  .action-package-stat {
+    width: 100%;
+    min-height: 42px;
+    flex-direction: row;
+    justify-content: space-between;
+    padding: 0 12px;
   }
 }
 
