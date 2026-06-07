@@ -500,6 +500,9 @@ class AIOpsExternalTask(models.Model):
     status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_QUEUED)
     input_payload = models.JSONField('输入参数', default=dict, blank=True)
     plan_steps = models.JSONField('计划步骤', default=list, blank=True)
+    orchestration_state = models.JSONField('编排状态', default=dict, blank=True)
+    agent_results = models.JSONField('Agent 结果', default=list, blank=True)
+    react_trace = models.JSONField('ReAct 轨迹', default=list, blank=True)
     result_payload = models.JSONField('结果', default=dict, blank=True)
     error_message = models.CharField('错误信息', max_length=255, blank=True, default='')
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='aiops_external_tasks', verbose_name='创建人')
@@ -532,13 +535,17 @@ class AIOpsRunbook(models.Model):
     environment = models.CharField('环境', max_length=128, blank=True, default='')
     service = models.CharField('服务', max_length=128, blank=True, default='')
     status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_DRAFT)
+    version = models.PositiveIntegerField('当前版本', default=1)
     content = models.TextField('内容', blank=True, default='')
     evidence = models.JSONField('证据', default=list, blank=True)
     tags = models.JSONField('标签', default=list, blank=True)
+    source_refs = models.JSONField('引用来源', default=list, blank=True)
     source_task = models.ForeignKey(AIOpsExternalTask, on_delete=models.SET_NULL, null=True, blank=True, related_name='runbooks', verbose_name='来源任务')
     source_session = models.ForeignKey(AIOpsChatSession, on_delete=models.SET_NULL, null=True, blank=True, related_name='runbooks', verbose_name='来源会话')
     created_by = models.CharField('创建人', max_length=64, blank=True, default='')
     updated_by = models.CharField('更新人', max_length=64, blank=True, default='')
+    published_at = models.DateTimeField('发布时间', null=True, blank=True)
+    archived_at = models.DateTimeField('归档时间', null=True, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -546,6 +553,69 @@ class AIOpsRunbook(models.Model):
         ordering = ['-updated_at', '-id']
         verbose_name = 'AIOps Runbook'
         verbose_name_plural = 'AIOps Runbook'
+
+    def __str__(self):
+        return self.title
+
+
+class AIOpsRunbookVersion(models.Model):
+    runbook = models.ForeignKey(AIOpsRunbook, on_delete=models.CASCADE, related_name='versions', verbose_name='Runbook')
+    version = models.PositiveIntegerField('版本号')
+    status = models.CharField('状态', max_length=16, choices=AIOpsRunbook.STATUS_CHOICES, default=AIOpsRunbook.STATUS_DRAFT)
+    title = models.CharField('标题', max_length=160)
+    content = models.TextField('内容', blank=True, default='')
+    evidence = models.JSONField('证据', default=list, blank=True)
+    tags = models.JSONField('标签', default=list, blank=True)
+    source_refs = models.JSONField('引用来源', default=list, blank=True)
+    change_note = models.CharField('变更说明', max_length=255, blank=True, default='')
+    created_by = models.CharField('创建人', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        ordering = ['-version', '-id']
+        constraints = [
+            models.UniqueConstraint(fields=['runbook', 'version'], name='aiops_runbook_version_uniq'),
+        ]
+        verbose_name = 'AIOps Runbook 版本'
+        verbose_name_plural = 'AIOps Runbook 版本'
+
+    def __str__(self):
+        return f'{self.runbook_id} / v{self.version}'
+
+
+class AIOpsReviewKnowledge(models.Model):
+    SOURCE_SESSION = 'session'
+    SOURCE_TASK = 'task'
+    SOURCE_RUNBOOK = 'runbook'
+    SOURCE_MANUAL = 'manual'
+    SOURCE_CHOICES = [
+        (SOURCE_SESSION, '会话'),
+        (SOURCE_TASK, '协同任务'),
+        (SOURCE_RUNBOOK, 'Runbook'),
+        (SOURCE_MANUAL, '手动'),
+    ]
+
+    slug = models.SlugField('标识', max_length=160, unique=True)
+    title = models.CharField('标题', max_length=160)
+    summary = models.TextField('复盘摘要', blank=True, default='')
+    environment = models.CharField('环境', max_length=128, blank=True, default='')
+    service = models.CharField('服务', max_length=128, blank=True, default='')
+    source_type = models.CharField('来源类型', max_length=16, choices=SOURCE_CHOICES, default=SOURCE_MANUAL)
+    evidence = models.JSONField('证据', default=list, blank=True)
+    tags = models.JSONField('标签', default=list, blank=True)
+    source_refs = models.JSONField('引用来源', default=list, blank=True)
+    source_session = models.ForeignKey(AIOpsChatSession, on_delete=models.SET_NULL, null=True, blank=True, related_name='review_knowledge_items', verbose_name='来源会话')
+    source_task = models.ForeignKey(AIOpsExternalTask, on_delete=models.SET_NULL, null=True, blank=True, related_name='review_knowledge_items', verbose_name='来源任务')
+    source_runbook = models.ForeignKey(AIOpsRunbook, on_delete=models.SET_NULL, null=True, blank=True, related_name='review_knowledge_items', verbose_name='来源 Runbook')
+    created_by = models.CharField('创建人', max_length=64, blank=True, default='')
+    updated_by = models.CharField('更新人', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at', '-id']
+        verbose_name = 'AIOps 复盘知识'
+        verbose_name_plural = 'AIOps 复盘知识'
 
     def __str__(self):
         return self.title

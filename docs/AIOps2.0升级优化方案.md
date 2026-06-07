@@ -327,7 +327,7 @@ A2A 方向在产品界面上命名为“协同任务 / Runbook”，避免把协
 | 状态 | 任务 | 当前落地说明 |
 | --- | --- | --- |
 | 已完成 | Skill 市场和团队自定义 Skill | 已支持内置 Skill 市场、团队克隆、自定义 Skill、适用 Action、工具依赖、风险等级和输出约束。 |
-| 部分完成 | MCP 接入与对外暴露 | 已支持外部 MCP Server 配置、健康检查和工具发现；sxdevops 作为 MCP Server 对外暴露平台工具仍需单独实现。 |
+| 已完成初版 | MCP 接入与对外暴露 | 已支持外部 MCP Server 配置、健康检查和工具发现；2.1 新增 sxdevops 对外 MCP Server，只暴露只读平台工具，并接入统一 Token 鉴权、RBAC、限流和事件审计。 |
 | 已完成 | preflight 表单 | 已提供 `POST /api/aiops/admin/actions/preflight/`，可按 Action 返回缺参、风险、权限和 `approval_form` 合同。 |
 | 已完成 | AI 执行审计 | 已覆盖会话、工具调用、待确认动作、模型调用、协同任务和 Runbook 的审计数据。 |
 | 已完成 | 工具调用追踪详情 | 已有工具调用列表、详情展开、单条/批量删除和失败信息展示。 |
@@ -340,10 +340,10 @@ A2A 方向在产品界面上命名为“协同任务 / Runbook”，避免把协
 | 状态 | 任务 | 当前落地说明 |
 | --- | --- | --- |
 | 已完成初版 | A2A | 后端已新增 `AIOpsExternalTask` 和 `/api/aiops/a2a/tasks/`，前端以“外部协同任务”展示，支持创建任务草案、查看状态和取消。 |
-| 未开始 | 多 Agent 编排 | 目前仍是单 Agent 内核和 Action 模式选择，尚未实现多 Agent 角色拆分、任务派发和结果合并。 |
-| 部分完成 | Plan + ReAct 深度排障 | Action 已具备 `agent_mode` 和计划步骤字段，协同任务会生成计划草案；完整 Plan + ReAct 多轮深度排障仍需继续实现。 |
-| 已完成初版 | 自动生成 Runbook | 后端已新增 `AIOpsRunbook` 和 `/api/aiops/runbooks/draft/`，前端以“Runbook 手册”展示，支持生成草案、列表和删除。 |
-| 未开始 | 自动沉淀复盘知识 | 尚未把事故会话、工具证据、协同任务结果自动归档为复盘知识；当前只支持手动生成 Runbook 草案。 |
+| 已完成初版 | 多 Agent 编排 | 2.1 已拆出诊断 Agent、证据 Agent、变更 Agent、Runbook Agent，并在协同任务中记录 Agent 分工、结果和合并规则。 |
+| 已完成初版 | Plan + ReAct 深度排障 | 2.1 已支持计划、执行、观察、修正、终止条件和用户中断，协同任务可运行或中断并保留 `react_trace`。 |
+| 已完成增强 | 自动生成 Runbook | 后端已新增 `AIOpsRunbook` 和 `/api/aiops/runbooks/draft/`；2.1 补齐从事故会话生成、发布、归档、版本历史和引用来源。 |
+| 已完成初版 | 自动沉淀复盘知识 | 2.1 新增 `AIOpsReviewKnowledge`，支持从事故会话、协同任务和 Runbook 自动沉淀并检索复盘知识。 |
 
 ## 12. 当前接口与数据模型清单
 
@@ -351,8 +351,10 @@ A2A 方向在产品界面上命名为“协同任务 / Runbook”，避免把协
 
 - `AIOpsModelProvider`：新增 `input_token_price_per_1m`、`output_token_price_per_1m`，用于模型成本估算。
 - `AIOpsModelInvocation`：记录模型调用、Token、模型、用途、耗时、错误和估算成本。
-- `AIOpsExternalTask`：记录外部系统或 Agent 提交的协同任务草案。
-- `AIOpsRunbook`：记录 Runbook 手册草案和后续发布/归档状态。
+- `AIOpsExternalTask`：记录外部系统或 Agent 提交的协同任务草案，2.1 新增 `orchestration_state`、`agent_results` 和 `react_trace`。
+- `AIOpsRunbook`：记录 Runbook 手册草案、发布/归档状态、版本号和引用来源。
+- `AIOpsRunbookVersion`：记录 Runbook 每次发布/归档快照、变更说明、证据和来源引用。
+- `AIOpsReviewKnowledge`：记录由事故会话、协同任务和 Runbook 自动沉淀的可检索复盘知识。
 
 ### 新增和关键接口
 
@@ -361,17 +363,33 @@ A2A 方向在产品界面上命名为“协同任务 / Runbook”，避免把协
 - `POST /api/aiops/admin/actions/preflight/`：获取 Action 预检和确认表单合同。
 - `GET /api/aiops/admin/audit/model-invocations/`：查看模型调用审计。
 - `GET /api/aiops/admin/audit/costs/`：查看模型成本和工具调用概览，兼容无尾斜杠。
+- `GET /api/aiops/mcp/manifest/`：查看 sxdevops 对外 MCP Server 清单、鉴权和限流信息。
+- `GET /api/aiops/mcp/tools/`：查看对外 MCP 只读工具列表。
+- `POST /api/aiops/mcp/rpc/`：以 JSON-RPC 方式执行 `initialize`、`tools/list` 和 `tools/call`。
+- `POST /api/aiops/mcp/call/`：直接调用单个对外 MCP 只读工具。
 - `GET/POST /api/aiops/a2a/tasks/`：查看或创建外部协同任务草案。
+- `POST /api/aiops/a2a/tasks/{public_id}/run/`：运行多 Agent Plan + ReAct 编排。
+- `POST /api/aiops/a2a/tasks/{public_id}/interrupt/`：中断多 Agent Plan + ReAct 编排。
 - `POST /api/aiops/a2a/tasks/{public_id}/cancel/`：取消协同任务。
 - `GET /api/aiops/runbooks/`：查看 Runbook 手册。
 - `POST /api/aiops/runbooks/draft/`：生成 Runbook 手册草案。
+- `POST /api/aiops/runbooks/from-session/`：从事故会话一键生成 Runbook 草案。
+- `POST /api/aiops/runbooks/{id}/publish/`：发布 Runbook 并自动沉淀复盘知识。
+- `POST /api/aiops/runbooks/{id}/archive/`：归档 Runbook 并生成版本快照。
+- `GET /api/aiops/runbooks/{id}/versions/`：查看 Runbook 版本历史。
+- `GET/POST /api/aiops/review-knowledge/`：查看或维护复盘知识。
+- `POST /api/aiops/review-knowledge/auto-ingest/`：从会话、协同任务或 Runbook 自动沉淀复盘知识。
 
 ### 权限补充
 
 - `aiops.a2a.view`：查看协同任务。
 - `aiops.a2a.invoke`：创建或取消协同任务。
+- `aiops.mcp.view`：查看 sxdevops 对外 MCP Server 工具清单。
+- `aiops.mcp.invoke`：调用 sxdevops 对外 MCP 只读工具。
 - `aiops.runbook.view`：查看 Runbook 手册。
 - `aiops.runbook.manage`：生成、更新或删除 Runbook 手册。
+- `aiops.review.view`：查看自动沉淀的复盘知识。
+- `aiops.review.manage`：自动沉淀、编辑或删除复盘知识。
 
 ## 13. 运行与迁移注意事项
 
@@ -408,13 +426,15 @@ npm run build
 
 ## 14. 后续待办
 
-后续优先补齐以下缺口：
+2.1 已补齐以下缺口：
 
 - sxdevops 作为 MCP Server 对外暴露只读平台工具，并接入统一鉴权、限流和审计。
 - 多 Agent 编排：拆出诊断 Agent、证据 Agent、变更 Agent、Runbook Agent，并定义结果合并规则。
 - 完整 Plan + ReAct 深度排障：支持计划、执行、观察、修正、终止条件和用户中断。
 - Runbook 发布、归档、版本历史、引用来源和从事故会话一键生成。
 - 自动复盘知识沉淀：把会话、工具证据、协同任务和 Runbook 关联成可检索知识。
+
+后续可继续增强真实执行器、跨系统回调和长任务恢复体验，但 2.0 文档中的上述待办已经具备可运行的后端合同、管理页入口和测试覆盖。
 
 ## 15. 结论
 

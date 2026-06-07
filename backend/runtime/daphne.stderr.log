@@ -1,0 +1,16 @@
+2026-05-21 21:37:51,720 INFO     observability history scheduler thread started
+2026-05-21 21:37:52,018 INFO     observability history scheduler loop started
+2026-05-21 21:37:52,968 INFO     Starting server at tcp:port=8000:interface=0.0.0.0
+2026-05-21 21:37:52,969 INFO     HTTP/2 support not enabled (install the http2 and tls Twisted extras)
+2026-05-21 21:37:52,969 INFO     Configuring endpoint tcp:port=8000:interface=0.0.0.0
+2026-05-21 21:37:52,970 INFO     Listening on TCP address 0.0.0.0:8000
+Unauthorized: /api/deployments/
+2026-05-21 21:51:23,473 WARNING  Unauthorized: /api/deployments/
+Unauthorized: /api/cmdb/resource-requests/
+2026-05-21 21:51:23,486 WARNING  Unauthorized: /api/cmdb/resource-requests/
+Unauthorized: /api/events/analysis_wall/
+2026-05-21 21:51:23,486 WARNING  Unauthorized: /api/events/analysis_wall/
+Unauthorized: /api/transaction-tickets/
+2026-05-21 21:51:23,486 WARNING  Unauthorized: /api/transaction-tickets/
+Unauthorized: /api/dashboard/stats/
+2026-05-21 21:51:23,487 WARNING  Unauthorized: /api/dashboard/stats/

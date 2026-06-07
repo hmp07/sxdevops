@@ -26,7 +26,9 @@ from .models import (
     AIOpsModelInvocation,
     AIOpsModelProvider,
     AIOpsPendingAction,
+    AIOpsReviewKnowledge,
     AIOpsRunbook,
+    AIOpsRunbookVersion,
     AIOpsSkill,
     AIOpsToolInvocation,
 )
@@ -561,6 +563,41 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(cancel_response.status_code, 200)
         self.assertEqual(cancel_response.data['status'], AIOpsExternalTask.STATUS_CANCELED)
 
+    def test_a2a_task_can_run_multi_agent_plan_react_and_interrupt(self):
+        get_agent_config()
+
+        response = self.client.post('/api/aiops/a2a/tasks/', {
+            'source_agent': 'external-orchestrator',
+            'title': '订单服务自愈预案',
+            'action_code': 'self_heal.recommend',
+            'input_payload': {'environment': 'prod', 'service': 'order-service', 'incident': '5xx error'},
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.data['orchestration_state']['agents'])
+        self.assertTrue(response.data['agent_results'])
+        self.assertTrue(any(item['phase'] == 'plan' for item in response.data['react_trace']))
+
+        run_response = self.client.post(f"/api/aiops/a2a/tasks/{response.data['public_id']}/run/", {}, format='json')
+
+        self.assertEqual(run_response.status_code, 200)
+        self.assertEqual(run_response.data['status'], AIOpsExternalTask.STATUS_COMPLETED)
+        self.assertEqual(run_response.data['result_payload']['mode'], 'multi_agent_orchestration')
+        self.assertTrue(all(step['status'] == 'completed' for step in run_response.data['plan_steps']))
+        self.assertTrue(any(item['phase'] == 'terminate' and item['status'] == 'completed' for item in run_response.data['react_trace']))
+
+        interrupt_source = self.client.post('/api/aiops/a2a/tasks/', {
+            'source_agent': 'external-orchestrator',
+            'title': '发布失败诊断',
+            'action_code': 'deploy.failure_diagnose',
+            'input_payload': {'environment': 'prod', 'service': 'order-service'},
+        }, format='json')
+        interrupt_response = self.client.post(f"/api/aiops/a2a/tasks/{interrupt_source.data['public_id']}/interrupt/", {}, format='json')
+
+        self.assertEqual(interrupt_response.status_code, 200)
+        self.assertEqual(interrupt_response.data['status'], AIOpsExternalTask.STATUS_CANCELED)
+        self.assertTrue(any(item['phase'] == 'terminate' and item['status'] == 'interrupted' for item in interrupt_response.data['react_trace']))
+
     def test_runbook_draft_endpoint_creates_draft(self):
         response = self.client.post('/api/aiops/runbooks/draft/', {
             'title': '订单服务 5xx 排障',
@@ -573,6 +610,147 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.data['status'], AIOpsRunbook.STATUS_DRAFT)
         self.assertEqual(response.data['service'], 'order-service')
         self.assertTrue(AIOpsRunbook.objects.filter(slug=response.data['slug']).exists())
+
+    def test_runbook_publish_archive_versions_and_auto_review_knowledge(self):
+        response = self.client.post('/api/aiops/runbooks/draft/', {
+            'title': '订单服务 5xx 排障',
+            'environment': 'prod',
+            'service': 'order-service',
+            'content': '# 订单服务 5xx 排障\n\n## 证据\n- error rate high',
+            'source_refs': [{'type': 'alert', 'id': 'A-1'}],
+            'tags': ['5xx'],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        publish_response = self.client.post(f"/api/aiops/runbooks/{response.data['id']}/publish/", {
+            'change_note': '首次发布',
+        }, format='json')
+
+        self.assertEqual(publish_response.status_code, 200)
+        self.assertEqual(publish_response.data['status'], AIOpsRunbook.STATUS_PUBLISHED)
+        self.assertEqual(publish_response.data['version'], 1)
+        self.assertEqual(AIOpsRunbookVersion.objects.filter(runbook_id=response.data['id']).count(), 1)
+        self.assertTrue(AIOpsReviewKnowledge.objects.filter(source_runbook_id=response.data['id']).exists())
+
+        versions_response = self.client.get(f"/api/aiops/runbooks/{response.data['id']}/versions/")
+        self.assertEqual(versions_response.status_code, 200)
+        self.assertEqual(versions_response.data[0]['change_note'], '首次发布')
+
+        archive_response = self.client.post(f"/api/aiops/runbooks/{response.data['id']}/archive/", {
+            'change_note': '事故关闭后归档',
+        }, format='json')
+
+        self.assertEqual(archive_response.status_code, 200)
+        self.assertEqual(archive_response.data['status'], AIOpsRunbook.STATUS_ARCHIVED)
+        self.assertEqual(archive_response.data['version'], 2)
+        self.assertEqual(AIOpsRunbookVersion.objects.filter(runbook_id=response.data['id']).count(), 2)
+
+    def test_runbook_from_session_and_review_knowledge_auto_ingest_are_searchable(self):
+        session = AIOpsChatSession.objects.create(
+            user=self.user,
+            title='订单服务事故会话',
+            context={'environment': 'prod', 'service': 'order-service'},
+        )
+        AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_USER, content='订单服务 5xx 异常')
+        AIOpsToolInvocation.objects.create(
+            session=session,
+            tool_name='query_alerts',
+            status=AIOpsToolInvocation.STATUS_SUCCESS,
+            response_summary={'count': 1, 'service': 'order-service'},
+        )
+
+        runbook_response = self.client.post('/api/aiops/runbooks/from-session/', {
+            'source_session': session.id,
+            'title': '订单服务事故 Runbook',
+        }, format='json')
+
+        self.assertEqual(runbook_response.status_code, 201)
+        self.assertEqual(runbook_response.data['source_session'], session.id)
+        self.assertTrue(runbook_response.data['evidence'])
+        self.assertTrue(any(ref['type'] == 'chat_session' for ref in runbook_response.data['source_refs']))
+
+        knowledge_response = self.client.post('/api/aiops/review-knowledge/auto-ingest/', {
+            'source_session': session.id,
+            'title': '订单服务 5xx 复盘知识',
+        }, format='json')
+
+        self.assertEqual(knowledge_response.status_code, 201)
+        self.assertEqual(knowledge_response.data['source_type'], AIOpsReviewKnowledge.SOURCE_SESSION)
+
+        search_response = self.client.get('/api/aiops/review-knowledge/', {'q': '订单服务'})
+        self.assertEqual(search_response.status_code, 200)
+        self.assertGreaterEqual(search_response.data['count'], 1)
+        self.assertTrue(any(item['title'] == '订单服务 5xx 复盘知识' for item in search_response.data['results']))
+
+    def test_platform_mcp_server_lists_and_calls_read_only_tool_with_audit(self):
+        Deployment.objects.create(
+            app_name='order-service',
+            environment='prod',
+            version='v2.1.0',
+            image='registry.demo.local/order-service:v2.1.0',
+            business_line='交易系统',
+            status='success',
+            submitter='ops',
+        )
+
+        manifest_response = self.client.get('/api/aiops/mcp/manifest/')
+        self.assertEqual(manifest_response.status_code, 200)
+        self.assertTrue(all(tool['annotations']['readOnlyHint'] for tool in manifest_response.data['tools']))
+
+        list_response = self.client.post('/api/aiops/mcp/rpc/', {
+            'jsonrpc': '2.0',
+            'id': 1,
+            'method': 'tools/list',
+        }, format='json')
+        self.assertEqual(list_response.status_code, 200)
+        self.assertTrue(any(item['name'] == 'sxdevops.query_recent_changes' for item in list_response.data['result']['tools']))
+
+        call_response = self.client.post('/api/aiops/mcp/rpc/', {
+            'jsonrpc': '2.0',
+            'id': 2,
+            'method': 'tools/call',
+            'params': {
+                'name': 'sxdevops.query_recent_changes',
+                'arguments': {'limit': 1},
+            },
+        }, format='json')
+
+        self.assertEqual(call_response.status_code, 200)
+        self.assertEqual(call_response.data['result']['tool']['name'], 'sxdevops.query_recent_changes')
+        self.assertFalse(call_response.data['result']['isError'])
+        self.assertTrue(AIOpsToolInvocation.objects.filter(tool_name='query_recent_changes').exists())
+        self.assertTrue(EventRecord.objects.filter(action='call_platform_mcp_tool').exists())
+
+    def test_platform_mcp_invoke_requires_permission(self):
+        readonly_user = User.objects.create_user(username='readonly_aiops', password='Passw0rd!123')
+        readonly_user.rbac_roles.add(Role.objects.get(code='read-only'))
+        readonly_token = Token.objects.create(user=readonly_user)
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Token {readonly_token.key}')
+
+        response = client.post('/api/aiops/mcp/call/', {
+            'name': 'sxdevops.query_recent_changes',
+            'arguments': {'limit': 1},
+        }, format='json')
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_platform_mcp_server_rate_limits_tool_calls(self):
+        cache.clear()
+
+        with mock.patch('aiops.services.PLATFORM_MCP_RATE_LIMIT_PER_MINUTE', 1):
+            first_response = self.client.post('/api/aiops/mcp/call/', {
+                'name': 'sxdevops.query_recent_changes',
+                'arguments': {'limit': 1},
+            }, format='json')
+            second_response = self.client.post('/api/aiops/mcp/call/', {
+                'name': 'sxdevops.query_recent_changes',
+                'arguments': {'limit': 1},
+            }, format='json')
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 400)
+        self.assertIn('频繁', second_response.data['detail'])
 
     def test_agent_config_repairs_unscoped_default_alert_question(self):
         config = get_agent_config()

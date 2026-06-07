@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 import requests
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.db import close_old_connections
 from django.db.models import Avg, Count, Q, Sum
 from django.http import QueryDict
@@ -69,6 +70,8 @@ from .models import (
     AIOpsModelProvider,
     AIOpsPendingAction,
     AIOpsRunbook,
+    AIOpsRunbookVersion,
+    AIOpsReviewKnowledge,
     AIOpsSkill,
     AIOpsToolInvocation,
 )
@@ -1506,7 +1509,161 @@ def build_external_task_plan(action, payload=None):
             'risk_level': action.get('risk_level') or 'read_only',
             'status': 'pending',
         })
+    agent_sequence = _agent_sequence_for_action(action)
+    if agent_sequence:
+        for index, step in enumerate(steps):
+            agent = agent_sequence[index % len(agent_sequence)]
+            step['agent'] = agent['code']
+            step['agent_name'] = agent['name']
+            step['phase'] = 'plan'
     return steps[:12]
+
+
+AGENT_ORCHESTRATION_PROFILES = [
+    {
+        'code': 'diagnostic_agent',
+        'name': '诊断 Agent',
+        'mission': '识别故障现象、影响对象和初始假设。',
+        'preferred_tools': ['query_alerts', 'query_alert_root_cause', 'query_system_posture', 'query_k8s_cluster_summary'],
+    },
+    {
+        'code': 'evidence_agent',
+        'name': '证据 Agent',
+        'mission': '收集告警、日志、链路、K8s 和知识图谱证据。',
+        'preferred_tools': ['query_logs', 'query_traces', 'query_knowledge_graph', 'query_task_resources'],
+    },
+    {
+        'code': 'change_agent',
+        'name': '变更 Agent',
+        'mission': '关联发布、工单、事件墙和变更窗口。',
+        'preferred_tools': ['query_recent_changes', 'query_event_wall', 'query_workorders'],
+    },
+    {
+        'code': 'runbook_agent',
+        'name': 'Runbook Agent',
+        'mission': '把结论、证据和处置步骤沉淀成 Runbook 或复盘知识。',
+        'preferred_tools': ['persist_runbook_draft', 'query_task_resources', 'query_knowledge_graph'],
+    },
+]
+
+
+def _agent_sequence_for_action(action):
+    allowed_tools = set((action or {}).get('allowed_tools') or [])
+    selected = []
+    for profile in AGENT_ORCHESTRATION_PROFILES:
+        if profile['code'] == 'runbook_agent' and (action or {}).get('code') == 'runbook.generate':
+            selected.append(profile)
+            continue
+        if allowed_tools.intersection(profile['preferred_tools']):
+            selected.append(profile)
+    if not selected:
+        selected = AGENT_ORCHESTRATION_PROFILES[:2]
+    return selected
+
+
+def _build_orchestration_state(action, payload=None):
+    payload = payload if isinstance(payload, dict) else {}
+    action = action or {}
+    agents = _agent_sequence_for_action(action)
+    return {
+        'version': '2.1',
+        'mode': action.get('agent_mode') or 'direct',
+        'agents': [
+            {
+                'code': agent['code'],
+                'name': agent['name'],
+                'mission': agent['mission'],
+                'tools': [tool for tool in agent['preferred_tools'] if tool in set(action.get('allowed_tools') or []) or tool == 'persist_runbook_draft'],
+            }
+            for agent in agents
+        ],
+        'merge_rules': [
+            '按证据来源去重，优先保留平台事实工具返回的数据。',
+            '诊断结论必须引用至少一条证据；证据不足时输出待确认项。',
+            '变更 Agent 的时间线只作为候选诱因，不能单独定性根因。',
+            'Runbook Agent 只沉淀草案或复盘知识，不直接执行修复动作。',
+        ],
+        'interruptible': True,
+        'stop_conditions': ['证据链闭环', '达到最大迭代次数', '用户中断', '权限或参数不足'],
+        'input_summary': {
+            'environment': payload.get('environment') or payload.get('env') or '',
+            'service': payload.get('service') or payload.get('system') or '',
+            'incident': payload.get('incident') or payload.get('question') or payload.get('request_summary') or '',
+        },
+    }
+
+
+def _build_agent_results(action, payload=None):
+    payload = payload if isinstance(payload, dict) else {}
+    action = action or {}
+    results = []
+    allowed_tools = list(action.get('allowed_tools') or [])
+    for agent in _agent_sequence_for_action(action):
+        tools = [tool for tool in agent['preferred_tools'] if tool in allowed_tools or tool == 'persist_runbook_draft']
+        observations = []
+        if agent['code'] == 'diagnostic_agent':
+            observations = [
+                f"目标环境：{payload.get('environment') or payload.get('env') or '待补充'}",
+                f"目标服务：{payload.get('service') or payload.get('system') or '待补充'}",
+                '已生成初始诊断假设，等待证据 Agent 取证。',
+            ]
+        elif agent['code'] == 'evidence_agent':
+            observations = [
+                f"计划调用只读工具：{', '.join(tools) if tools else '暂无可用工具'}",
+                '证据输出将进入统一 evidence/source_refs 字段。',
+            ]
+        elif agent['code'] == 'change_agent':
+            observations = [
+                '变更时间线只作为候选诱因，需和告警/日志/链路证据交叉验证。',
+            ]
+        else:
+            observations = [
+                '可沉淀 Runbook 草案和复盘知识，等待用户确认发布。',
+            ]
+        results.append({
+            'agent': agent['code'],
+            'agent_name': agent['name'],
+            'status': 'ready',
+            'tools': tools,
+            'observations': observations,
+            'confidence': 'medium' if tools else 'low',
+        })
+    return results
+
+
+def _build_plan_react_trace(action, payload=None, interrupted=False):
+    payload = payload if isinstance(payload, dict) else {}
+    action = action or {}
+    trace = [
+        {
+            'phase': 'plan',
+            'status': 'completed',
+            'thought': '根据 Action 合同拆解计划、Agent 分工、权限和停止条件。',
+            'input_keys': sorted(payload.keys()),
+        },
+        {
+            'phase': 'execute',
+            'status': 'completed' if not interrupted else 'canceled',
+            'action': 'dispatch_multi_agent_orchestration',
+            'agents': [agent['code'] for agent in _agent_sequence_for_action(action)],
+        },
+        {
+            'phase': 'observe',
+            'status': 'completed' if not interrupted else 'skipped',
+            'observation': '汇总 Agent 观察、工具证据和待确认项。',
+        },
+        {
+            'phase': 'revise',
+            'status': 'completed' if not interrupted else 'skipped',
+            'revision': '按证据去重、变更候选降权和 Runbook 草案边界修正结果。',
+        },
+        {
+            'phase': 'terminate',
+            'status': 'interrupted' if interrupted else 'completed',
+            'stop_condition': '用户中断' if interrupted else '编排预览完成',
+        },
+    ]
+    return trace
 
 
 def create_external_task(payload, user):
@@ -1525,15 +1682,19 @@ def create_external_task(payload, user):
         agent_mode=action.get('agent_mode') or 'direct',
         input_payload=input_payload,
         plan_steps=build_external_task_plan(action, input_payload),
+        orchestration_state=_build_orchestration_state(action, input_payload),
+        agent_results=_build_agent_results(action, input_payload),
+        react_trace=_build_plan_react_trace(action, input_payload),
         result_payload={
             'mode': 'orchestration_preview',
-            'message': '已创建受控编排任务草案，等待后续确认或执行链路接入。',
+            'message': '已创建受控多 Agent 编排草案，可继续运行、取消或沉淀 Runbook。',
             'action': {
                 'code': action.get('code'),
                 'display_name': action.get('display_name'),
                 'risk_level': action.get('risk_level'),
                 'agent_mode': action.get('agent_mode'),
             },
+            'merge_rules': _build_orchestration_state(action, input_payload).get('merge_rules'),
         },
         created_by=user,
     )
@@ -1553,18 +1714,269 @@ def cancel_external_task(task, user=None):
     return task
 
 
+def run_external_task_orchestration(task, user=None):
+    if task.status in {AIOpsExternalTask.STATUS_COMPLETED, AIOpsExternalTask.STATUS_CANCELED}:
+        raise ValueError('任务已结束，不能再次运行')
+    action = _action_registry_item_by_code(task.action_code, user=user, include_unavailable=True)
+    if not action:
+        raise ValueError('Action 不存在')
+    if not action.get('available'):
+        raise ValueError(action.get('available_reason') or '缺少 Action 权限')
+    payload = task.input_payload if isinstance(task.input_payload, dict) else {}
+    now = timezone.now()
+    task.status = AIOpsExternalTask.STATUS_COMPLETED
+    task.completed_at = now
+    task.plan_steps = [
+        {**step, 'status': 'completed', 'completed_at': now.isoformat()}
+        for step in (task.plan_steps or build_external_task_plan(action, payload))
+    ]
+    task.orchestration_state = {
+        **_build_orchestration_state(action, payload),
+        'started_at': now.isoformat(),
+        'completed_at': now.isoformat(),
+    }
+    task.agent_results = [
+        {**result, 'status': 'completed'}
+        for result in _build_agent_results(action, payload)
+    ]
+    task.react_trace = _build_plan_react_trace(action, payload)
+    task.result_payload = {
+        **(task.result_payload or {}),
+        'mode': 'multi_agent_orchestration',
+        'message': '多 Agent Plan+ReAct 编排已完成预览执行。',
+        'summary': {
+            'agent_count': len(task.agent_results or []),
+            'plan_step_count': len(task.plan_steps or []),
+            'react_phase_count': len(task.react_trace or []),
+            'completed_by': getattr(user, 'username', ''),
+        },
+        'merge_result': {
+            'conclusion': '已合并诊断、证据、变更和 Runbook Agent 的结果。',
+            'confidence': 'medium',
+            'next_step': '确认是否生成 Runbook 草案或沉淀复盘知识。',
+        },
+    }
+    task.save(update_fields=[
+        'status', 'completed_at', 'plan_steps', 'orchestration_state',
+        'agent_results', 'react_trace', 'result_payload', 'updated_at',
+    ])
+    return task
+
+
+def interrupt_external_task(task, user=None):
+    if task.status in {AIOpsExternalTask.STATUS_COMPLETED, AIOpsExternalTask.STATUS_CANCELED}:
+        raise ValueError('任务已结束，不能中断')
+    action = _action_registry_item_by_code(task.action_code, user=user, include_unavailable=True) or {}
+    payload = task.input_payload if isinstance(task.input_payload, dict) else {}
+    now = timezone.now()
+    task.status = AIOpsExternalTask.STATUS_CANCELED
+    task.canceled_at = now
+    task.react_trace = _build_plan_react_trace(action, payload, interrupted=True)
+    task.orchestration_state = {
+        **(task.orchestration_state or _build_orchestration_state(action, payload)),
+        'interrupted_by': getattr(user, 'username', ''),
+        'interrupted_at': now.isoformat(),
+    }
+    task.result_payload = {
+        **(task.result_payload or {}),
+        'mode': 'multi_agent_orchestration',
+        'message': '用户已中断多 Agent Plan+ReAct 编排。',
+        'interrupted_by': getattr(user, 'username', ''),
+    }
+    task.save(update_fields=['status', 'canceled_at', 'react_trace', 'orchestration_state', 'result_payload', 'updated_at'])
+    return task
+
+
+def _unique_aiops_slug(model, source, prefix='item'):
+    base_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', str(source or '').lower()).strip('-')[:120]
+    if not base_slug:
+        base_slug = f'{prefix}-{uuid.uuid4().hex[:8]}'
+    slug = base_slug
+    suffix = 2
+    while model.objects.filter(slug=slug).exists():
+        slug = f'{base_slug}-{suffix}'
+        suffix += 1
+    return slug
+
+
+def _runbook_source_refs(payload=None, source_task=None, source_session=None):
+    payload = payload if isinstance(payload, dict) else {}
+    refs = payload.get('source_refs') if isinstance(payload.get('source_refs'), list) else []
+    normalized = [ref for ref in refs if isinstance(ref, dict)]
+    if source_task:
+        normalized.append({'type': 'external_task', 'id': source_task.id, 'public_id': str(source_task.public_id), 'title': source_task.title})
+    if source_session:
+        normalized.append({'type': 'chat_session', 'id': source_session.id, 'title': source_session.title})
+    return normalized[:40]
+
+
+def _session_evidence_snapshot(session, limit=12):
+    if not session:
+        return []
+    evidence = []
+    messages = list(session.messages.order_by('-created_at', '-id')[:limit])
+    for message in reversed(messages):
+        text = str(message.content or '').strip()
+        if text:
+            evidence.append({
+                'type': 'message',
+                'role': message.role,
+                'message_type': message.message_type,
+                'content': text[:500],
+                'created_at': message.created_at.isoformat() if message.created_at else '',
+            })
+    invocations = list(session.tool_invocations.order_by('-created_at', '-id')[:limit])
+    for invocation in reversed(invocations):
+        evidence.append({
+            'type': 'tool_invocation',
+            'tool_name': invocation.tool_name,
+            'status': invocation.status,
+            'response_summary': invocation.response_summary or {},
+            'created_at': invocation.created_at.isoformat() if invocation.created_at else '',
+        })
+    return evidence[:limit * 2]
+
+
+def snapshot_runbook_version(runbook, user=None, change_note=''):
+    latest_version = AIOpsRunbookVersion.objects.filter(runbook=runbook).order_by('-version').values_list('version', flat=True).first() or 0
+    version = max(latest_version + 1, runbook.version or 1)
+    runbook.version = version
+    runbook.save(update_fields=['version', 'updated_at'])
+    return AIOpsRunbookVersion.objects.create(
+        runbook=runbook,
+        version=version,
+        status=runbook.status,
+        title=runbook.title,
+        content=runbook.content,
+        evidence=runbook.evidence or [],
+        tags=runbook.tags or [],
+        source_refs=runbook.source_refs or [],
+        change_note=str(change_note or '').strip()[:255],
+        created_by=getattr(user, 'username', ''),
+    )
+
+
+def publish_runbook(runbook, user=None, change_note=''):
+    if runbook.status == AIOpsRunbook.STATUS_ARCHIVED:
+        raise ValueError('已归档 Runbook 不能直接发布')
+    now = timezone.now()
+    runbook.status = AIOpsRunbook.STATUS_PUBLISHED
+    runbook.published_at = now
+    runbook.archived_at = None
+    runbook.updated_by = getattr(user, 'username', '')
+    runbook.save(update_fields=['status', 'published_at', 'archived_at', 'updated_by', 'updated_at'])
+    version = snapshot_runbook_version(runbook, user=user, change_note=change_note or '发布 Runbook')
+    auto_ingest_review_knowledge(source_runbook=runbook, user=user)
+    return runbook, version
+
+
+def archive_runbook(runbook, user=None, change_note=''):
+    if runbook.status == AIOpsRunbook.STATUS_ARCHIVED:
+        raise ValueError('Runbook 已经归档')
+    runbook.status = AIOpsRunbook.STATUS_ARCHIVED
+    runbook.archived_at = timezone.now()
+    runbook.updated_by = getattr(user, 'username', '')
+    runbook.save(update_fields=['status', 'archived_at', 'updated_by', 'updated_at'])
+    version = snapshot_runbook_version(runbook, user=user, change_note=change_note or '归档 Runbook')
+    return runbook, version
+
+
+def build_runbook_draft_from_session(session, user=None, payload=None):
+    if not session:
+        raise ValueError('来源会话不存在')
+    payload = payload if isinstance(payload, dict) else {}
+    session_context = session.context if isinstance(session.context, dict) else {}
+    title = str(payload.get('title') or f'{session.title} Runbook').strip()
+    draft_payload = {
+        **payload,
+        'title': title,
+        'environment': payload.get('environment') or session_context.get('environment') or '',
+        'service': payload.get('service') or session_context.get('service') or '',
+        'evidence': payload.get('evidence') if isinstance(payload.get('evidence'), list) else _session_evidence_snapshot(session),
+        'source_refs': _runbook_source_refs(payload, source_session=session),
+        'tags': payload.get('tags') if isinstance(payload.get('tags'), list) else ['incident-session', 'runbook'],
+    }
+    return build_runbook_draft_from_payload(draft_payload, user=user, source_session=session)
+
+
+def _review_knowledge_slug_source(title, environment='', service=''):
+    return '-'.join([item for item in [environment, service, title] if item])
+
+
+def auto_ingest_review_knowledge(source_session=None, source_task=None, source_runbook=None, user=None, payload=None):
+    payload = payload if isinstance(payload, dict) else {}
+    title = str(payload.get('title') or '').strip()
+    environment = str(payload.get('environment') or '').strip()
+    service = str(payload.get('service') or '').strip()
+    evidence = payload.get('evidence') if isinstance(payload.get('evidence'), list) else []
+    source_refs = payload.get('source_refs') if isinstance(payload.get('source_refs'), list) else []
+    tags = payload.get('tags') if isinstance(payload.get('tags'), list) else []
+    source_type = AIOpsReviewKnowledge.SOURCE_MANUAL
+
+    if source_runbook:
+        title = title or f'{source_runbook.title} 复盘知识'
+        environment = environment or source_runbook.environment
+        service = service or source_runbook.service
+        evidence = evidence or source_runbook.evidence or []
+        source_refs = source_refs or _runbook_source_refs({'source_refs': source_runbook.source_refs or []}, source_task=source_runbook.source_task, source_session=source_runbook.source_session)
+        tags = tags or list(dict.fromkeys([*(source_runbook.tags or []), 'runbook', 'postmortem']))
+        source_type = AIOpsReviewKnowledge.SOURCE_RUNBOOK
+    elif source_task:
+        title = title or f'{source_task.title} 复盘知识'
+        environment = environment or str((source_task.input_payload or {}).get('environment') or '')
+        service = service or str((source_task.input_payload or {}).get('service') or '')
+        evidence = evidence or [
+            {'type': 'agent_result', 'items': source_task.agent_results or []},
+            {'type': 'react_trace', 'items': source_task.react_trace or []},
+        ]
+        source_refs = source_refs or [{'type': 'external_task', 'id': source_task.id, 'public_id': str(source_task.public_id), 'title': source_task.title}]
+        tags = tags or ['external-task', 'postmortem']
+        source_type = AIOpsReviewKnowledge.SOURCE_TASK
+    elif source_session:
+        title = title or f'{source_session.title} 复盘知识'
+        context = source_session.context if isinstance(source_session.context, dict) else {}
+        environment = environment or context.get('environment') or ''
+        service = service or context.get('service') or ''
+        evidence = evidence or _session_evidence_snapshot(source_session)
+        source_refs = source_refs or [{'type': 'chat_session', 'id': source_session.id, 'title': source_session.title}]
+        tags = tags or ['incident-session', 'postmortem']
+        source_type = AIOpsReviewKnowledge.SOURCE_SESSION
+    else:
+        title = title or 'AIOps 复盘知识'
+
+    summary = str(payload.get('summary') or '').strip()
+    if not summary:
+        summary = '\n'.join([
+            f'对象：{environment or "待补充"} / {service or "待补充"}',
+            f'证据数：{len(evidence)}',
+            '沉淀来源已关联到会话、协同任务或 Runbook，可继续检索复用。',
+        ])
+    slug = _unique_aiops_slug(AIOpsReviewKnowledge, _review_knowledge_slug_source(title, environment, service), prefix='review')
+    return AIOpsReviewKnowledge.objects.create(
+        slug=slug,
+        title=title[:160],
+        summary=summary,
+        environment=environment[:128],
+        service=service[:128],
+        source_type=source_type,
+        evidence=evidence[:80] if isinstance(evidence, list) else [],
+        tags=tags[:24] if isinstance(tags, list) else [],
+        source_refs=source_refs[:40] if isinstance(source_refs, list) else [],
+        source_session=source_session,
+        source_task=source_task,
+        source_runbook=source_runbook,
+        created_by=getattr(user, 'username', ''),
+        updated_by=getattr(user, 'username', ''),
+    )
+
+
 def build_runbook_draft_from_payload(payload, user=None, source_task=None, source_session=None):
     payload = payload if isinstance(payload, dict) else {}
     title = str(payload.get('title') or payload.get('incident') or 'AIOps Runbook 草案').strip()[:160]
     environment = str(payload.get('environment') or '').strip()
     service = str(payload.get('service') or payload.get('system') or '').strip()
     base_slug_source = '-'.join([item for item in [environment, service, title] if item]) or title
-    base_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', base_slug_source.lower()).strip('-')[:120] or f'runbook-{uuid.uuid4().hex[:8]}'
-    slug = base_slug
-    suffix = 2
-    while AIOpsRunbook.objects.filter(slug=slug).exists():
-        slug = f'{base_slug}-{suffix}'
-        suffix += 1
+    slug = _unique_aiops_slug(AIOpsRunbook, base_slug_source, prefix='runbook')
     content = str(payload.get('content') or '').strip()
     if not content:
         content = '\n'.join([
@@ -1582,6 +1994,9 @@ def build_runbook_draft_from_payload(payload, user=None, source_task=None, sourc
             '2. 查询日志、链路、系统态势和最近变更。',
             '3. 输出处置建议、风险和回滚条件。',
         ])
+    evidence = payload.get('evidence') if isinstance(payload.get('evidence'), list) else []
+    if not evidence and source_session:
+        evidence = _session_evidence_snapshot(source_session)
     return AIOpsRunbook.objects.create(
         title=title,
         slug=slug,
@@ -1589,8 +2004,9 @@ def build_runbook_draft_from_payload(payload, user=None, source_task=None, sourc
         service=service,
         status=AIOpsRunbook.STATUS_DRAFT,
         content=content,
-        evidence=payload.get('evidence') if isinstance(payload.get('evidence'), list) else [],
+        evidence=evidence,
         tags=payload.get('tags') if isinstance(payload.get('tags'), list) else [],
+        source_refs=_runbook_source_refs(payload, source_task=source_task, source_session=source_session),
         source_task=source_task,
         source_session=source_session,
         created_by=getattr(user, 'username', ''),
@@ -6958,6 +7374,301 @@ def query_k8s_cluster_summary(session, user_message, user, query='', cluster_nam
     }
     _finish_tool_invocation(invocation, tool_summary, started_at, success=True)
     return {'summary': tool_summary, 'sections': sections, 'citations': [{'title': 'K8s 集群', 'path': '/containers/k8s'}], 'cluster': summary_payload, 'pods': pods}
+
+
+PLATFORM_MCP_RATE_LIMIT_PER_MINUTE = 60
+
+PLATFORM_MCP_TOOL_DEFINITIONS = [
+    {
+        'name': 'sxdevops.query_knowledge_graph',
+        'title': '查询 AIOps 知识图谱',
+        'description': '按环境、系统或服务查询平台知识图谱节点和关系。',
+        'permission': 'aiops.knowledge.view',
+        'handler': 'query_knowledge_graph',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'environment': {'type': 'string'},
+                'system_name': {'type': 'string'},
+                'service': {'type': 'string'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+            },
+        },
+    },
+    {
+        'name': 'sxdevops.query_alerts',
+        'title': '查询告警',
+        'description': '查询告警中心只读告警事实。',
+        'permission': 'ops.alert.view',
+        'handler': 'query_alerts',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'level': {'type': 'string'},
+                'status': {'type': 'string'},
+                'date_filter': {'type': 'string'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+            },
+        },
+    },
+    {
+        'name': 'sxdevops.query_logs',
+        'title': '查询日志',
+        'description': '查询平台日志源中的只读日志样本。',
+        'permission': 'ops.log.query',
+        'handler': 'query_logs',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'service': {'type': 'string'},
+                'level': {'type': 'string'},
+                'duration_minutes': {'type': 'integer', 'minimum': 1, 'maximum': 1440},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+            },
+        },
+    },
+    {
+        'name': 'sxdevops.query_traces',
+        'title': '查询链路',
+        'description': '查询链路追踪只读样本和异常链路。',
+        'permission': 'ops.trace.view',
+        'handler': 'query_traces',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'errors_only': {'type': 'boolean'},
+                'duration_minutes': {'type': 'integer', 'minimum': 1, 'maximum': 1440},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+            },
+        },
+    },
+    {
+        'name': 'sxdevops.query_k8s_cluster_summary',
+        'title': '查询 K8s 集群摘要',
+        'description': '查询 Kubernetes 集群、Pod 和异常摘要。',
+        'permission': 'ops.k8s.view',
+        'handler': 'query_k8s_cluster_summary',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'cluster_name': {'type': 'string'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+            },
+        },
+    },
+    {
+        'name': 'sxdevops.query_system_posture',
+        'title': '查询系统态势',
+        'description': '查询业务系统健康态势和 SLA 快照。',
+        'permission': 'ops.observability.system_posture.view',
+        'handler': 'query_system_posture',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+            },
+        },
+    },
+    {
+        'name': 'sxdevops.query_recent_changes',
+        'title': '查询最近变更',
+        'description': '查询最近发布、工单和事件候选变更。',
+        'permission': 'ops.deployment.view',
+        'handler': 'query_recent_changes',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+            },
+        },
+    },
+]
+
+
+def _platform_mcp_tool_map():
+    return {tool['name']: tool for tool in PLATFORM_MCP_TOOL_DEFINITIONS}
+
+
+def _serialize_platform_mcp_tool(tool, user=None):
+    permission = tool.get('permission')
+    available = not permission or not user or user_has_permissions(user, [permission])
+    return {
+        'name': tool['name'],
+        'title': tool.get('title') or tool['name'],
+        'description': tool.get('description') or '',
+        'inputSchema': tool.get('input_schema') or {'type': 'object', 'properties': {}},
+        'annotations': {'readOnlyHint': True, 'destructiveHint': False, 'idempotentHint': True},
+        'permission': permission,
+        'available': available,
+        'available_reason': '' if available else f'缺少权限：{permission}',
+    }
+
+
+def list_platform_mcp_tools(user=None):
+    return [_serialize_platform_mcp_tool(tool, user=user) for tool in PLATFORM_MCP_TOOL_DEFINITIONS]
+
+
+def _mcp_rate_limit_key(user):
+    bucket = int(time.time() // 60)
+    return f'aiops:mcp:rate:{getattr(user, "id", "anonymous")}:{bucket}'
+
+
+def _check_platform_mcp_rate_limit(user):
+    key = _mcp_rate_limit_key(user)
+    current = cache.get(key)
+    if current is None:
+        cache.set(key, 1, 70)
+        return
+    if int(current) >= PLATFORM_MCP_RATE_LIMIT_PER_MINUTE:
+        raise ValueError('MCP 调用过于频繁，请稍后再试')
+    try:
+        cache.incr(key)
+    except ValueError:
+        cache.set(key, int(current) + 1, 70)
+
+
+def _clamped_mcp_limit(arguments, default=6):
+    try:
+        return max(1, min(int(arguments.get('limit') or default), 20))
+    except (TypeError, ValueError):
+        return default
+
+
+def _mcp_ephemeral_session(user, tool_name):
+    return AIOpsChatSession.objects.create(
+        user=user,
+        title=f'MCP 外部调用 {tool_name}'[:128],
+        context={'source': 'platform_mcp_server', 'tool': tool_name},
+    )
+
+
+def _invoke_platform_mcp_handler(handler_name, session, user, arguments):
+    arguments = arguments if isinstance(arguments, dict) else {}
+    query = str(arguments.get('query') or '').strip()
+    limit = _clamped_mcp_limit(arguments)
+    if handler_name == 'query_knowledge_graph':
+        return query_knowledge_graph(
+            session,
+            None,
+            user,
+            query=query,
+            environment=str(arguments.get('environment') or '').strip(),
+            system_name=str(arguments.get('system_name') or '').strip(),
+            service=str(arguments.get('service') or '').strip(),
+            limit=limit,
+        )
+    if handler_name == 'query_alerts':
+        return query_alerts(
+            session,
+            None,
+            user,
+            query=query,
+            level=str(arguments.get('level') or '').strip(),
+            status=str(arguments.get('status') or '').strip(),
+            date_filter=str(arguments.get('date_filter') or '').strip(),
+            limit=limit,
+        )
+    if handler_name == 'query_logs':
+        return query_logs(
+            session,
+            None,
+            user,
+            query=query,
+            service=str(arguments.get('service') or '').strip(),
+            level=str(arguments.get('level') or '').strip(),
+            duration_minutes=arguments.get('duration_minutes'),
+            limit=limit,
+        )
+    if handler_name == 'query_traces':
+        return query_traces(
+            session,
+            None,
+            user,
+            query=query,
+            errors_only=bool(arguments.get('errors_only')),
+            duration_minutes=arguments.get('duration_minutes') or 60,
+            limit=limit,
+        )
+    if handler_name == 'query_k8s_cluster_summary':
+        return query_k8s_cluster_summary(
+            session,
+            None,
+            user,
+            query=query,
+            cluster_name=str(arguments.get('cluster_name') or '').strip(),
+            limit=limit,
+        )
+    if handler_name == 'query_system_posture':
+        return query_system_posture(session, None, user, query=query, limit=limit)
+    if handler_name == 'query_recent_changes':
+        return query_recent_changes(session, None, user, limit=limit)
+    raise ValueError('MCP 工具处理器不存在')
+
+
+def _mcp_text_summary(result):
+    sections = result.get('sections') if isinstance(result, dict) else []
+    if not sections:
+        return json.dumps(result, ensure_ascii=False, default=str)[:1800]
+    lines = []
+    for section in sections[:4]:
+        title = section.get('title') or '结果'
+        lines.append(f'## {title}')
+        for item in (section.get('items') or [])[:8]:
+            lines.append(f'- {item}')
+    return '\n'.join(lines)[:1800]
+
+
+def invoke_platform_mcp_tool(tool_name, arguments=None, user=None, request=None):
+    tool = _platform_mcp_tool_map().get(str(tool_name or '').strip())
+    if not tool:
+        raise ValueError('MCP 工具不存在')
+    if not user or not getattr(user, 'is_authenticated', False):
+        raise ValueError('MCP 调用需要登录鉴权')
+    if not user_has_permissions(user, ['aiops.mcp.invoke']):
+        raise ValueError('缺少权限：aiops.mcp.invoke')
+    permission = tool.get('permission')
+    if permission and not user_has_permissions(user, [permission]):
+        raise ValueError(f'缺少权限：{permission}')
+    _check_platform_mcp_rate_limit(user)
+    session = _mcp_ephemeral_session(user, tool['name'])
+    result = _invoke_platform_mcp_handler(tool['handler'], session, user, arguments or {})
+    response = {
+        'tool': _serialize_platform_mcp_tool(tool, user=user),
+        'content': [{'type': 'text', 'text': _mcp_text_summary(result)}],
+        'structuredContent': result,
+        'isError': bool(isinstance(result, dict) and result.get('error')),
+    }
+    record_event(
+        request=request,
+        module='aiops',
+        category='mcp_server',
+        action='call_platform_mcp_tool',
+        title='调用 AIOps 对外 MCP 工具',
+        summary=f"已调用只读 MCP 工具 {tool['name']}",
+        resource_type='aiops_mcp_tool',
+        resource_id=tool['name'],
+        resource_name=tool.get('title') or tool['name'],
+        correlation_id=f"aiops-mcp:{session.id}:{tool['name']}",
+        metadata={'arguments': arguments or {}, 'session_id': session.id},
+    )
+    return response
+
+
+def build_platform_mcp_manifest(user=None):
+    return {
+        'name': 'sxdevops-aiops',
+        'title': 'SxDevOps AIOps Platform MCP Server',
+        'version': '2.1',
+        'auth': {'type': 'token', 'header': 'Authorization'},
+        'rate_limit': {'per_minute': PLATFORM_MCP_RATE_LIMIT_PER_MINUTE},
+        'tools': list_platform_mcp_tools(user=user),
+    }
 
 
 def build_markdown_answer(title, sections, citations, intro=''):

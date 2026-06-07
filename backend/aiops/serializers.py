@@ -11,6 +11,8 @@ from .models import (
     AIOpsModelProvider,
     AIOpsPendingAction,
     AIOpsRunbook,
+    AIOpsRunbookVersion,
+    AIOpsReviewKnowledge,
     AIOpsSkill,
     AIOpsToolInvocation,
 )
@@ -343,11 +345,13 @@ class AIOpsExternalTaskSerializer(serializers.ModelSerializer):
         model = AIOpsExternalTask
         fields = [
             'id', 'public_id', 'source_agent', 'title', 'action_code', 'agent_mode', 'status', 'status_display',
-            'input_payload', 'plan_steps', 'result_payload', 'error_message', 'created_by', 'created_by_username',
+            'input_payload', 'plan_steps', 'orchestration_state', 'agent_results', 'react_trace',
+            'result_payload', 'error_message', 'created_by', 'created_by_username',
             'created_at', 'updated_at', 'completed_at', 'canceled_at',
         ]
         read_only_fields = [
-            'id', 'public_id', 'agent_mode', 'status', 'status_display', 'plan_steps', 'result_payload',
+            'id', 'public_id', 'agent_mode', 'status', 'status_display', 'plan_steps',
+            'orchestration_state', 'agent_results', 'react_trace', 'result_payload',
             'error_message', 'created_by', 'created_by_username', 'created_at', 'updated_at',
             'completed_at', 'canceled_at',
         ]
@@ -363,18 +367,61 @@ class AIOpsExternalTaskSerializer(serializers.ModelSerializer):
 
 class AIOpsRunbookSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    version_count = serializers.SerializerMethodField()
 
     class Meta:
         model = AIOpsRunbook
         fields = [
-            'id', 'title', 'slug', 'environment', 'service', 'status', 'status_display',
-            'content', 'evidence', 'tags', 'source_task', 'source_session',
+            'id', 'title', 'slug', 'environment', 'service', 'status', 'status_display', 'version',
+            'version_count', 'content', 'evidence', 'tags', 'source_refs', 'source_task', 'source_session',
+            'created_by', 'updated_by', 'published_at', 'archived_at', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['version', 'version_count', 'created_by', 'updated_by', 'published_at', 'archived_at', 'created_at', 'updated_at']
+
+    def validate(self, attrs):
+        for field in ['evidence', 'tags', 'source_refs']:
+            if field not in attrs:
+                continue
+            value = attrs.get(field)
+            if value in (None, ''):
+                attrs[field] = []
+            elif not isinstance(value, list):
+                raise serializers.ValidationError({field: '必须为数组'})
+        return attrs
+
+    def get_version_count(self, obj):
+        annotated = getattr(obj, 'version_count', None)
+        if annotated is not None:
+            return annotated
+        return obj.versions.count() if getattr(obj, 'id', None) else 0
+
+
+class AIOpsRunbookVersionSerializer(serializers.ModelSerializer):
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = AIOpsRunbookVersion
+        fields = [
+            'id', 'runbook', 'version', 'status', 'status_display', 'title', 'content',
+            'evidence', 'tags', 'source_refs', 'change_note', 'created_by', 'created_at',
+        ]
+        read_only_fields = fields
+
+
+class AIOpsReviewKnowledgeSerializer(serializers.ModelSerializer):
+    source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
+
+    class Meta:
+        model = AIOpsReviewKnowledge
+        fields = [
+            'id', 'slug', 'title', 'summary', 'environment', 'service', 'source_type', 'source_type_display',
+            'evidence', 'tags', 'source_refs', 'source_session', 'source_task', 'source_runbook',
             'created_by', 'updated_by', 'created_at', 'updated_at',
         ]
         read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
 
     def validate(self, attrs):
-        for field in ['evidence', 'tags']:
+        for field in ['evidence', 'tags', 'source_refs']:
             if field not in attrs:
                 continue
             value = attrs.get(field)

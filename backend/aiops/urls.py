@@ -16,6 +16,7 @@ router.register('admin/audit/model-invocations', views.AIOpsModelInvocationViewS
 router.register('admin/audit/actions', views.AIOpsPendingActionViewSet, basename='aiops-audit-action')
 router.register('a2a/tasks', views.AIOpsExternalTaskViewSet, basename='aiops-a2a-task')
 router.register('runbooks', views.AIOpsRunbookViewSet, basename='aiops-runbook')
+router.register('review-knowledge', views.AIOpsReviewKnowledgeViewSet, basename='aiops-review-knowledge')
 
 urlpatterns = [
     path('bootstrap/', views.bootstrap, name='aiops-bootstrap'),
@@ -23,6 +24,10 @@ urlpatterns = [
     path('admin/actions/', views.action_registry, name='aiops-action-registry'),
     path('admin/actions/preflight/', views.action_preflight, name='aiops-action-preflight'),
     path('admin/config/', views.agent_config_view, name='aiops-agent-config'),
+    path('mcp/manifest/', views.platform_mcp_manifest, name='aiops-platform-mcp-manifest'),
+    path('mcp/tools/', views.platform_mcp_tools, name='aiops-platform-mcp-tools'),
+    path('mcp/call/', views.platform_mcp_call, name='aiops-platform-mcp-call'),
+    path('mcp/rpc/', views.platform_mcp_rpc, name='aiops-platform-mcp-rpc'),
     path('admin/providers/presets/', views.model_provider_presets, name='aiops-provider-presets-explicit'),
     path('admin/audit/overview/', views.audit_overview, name='aiops-audit-overview'),
     path('admin/audit/costs/', views.audit_cost_overview, name='aiops-audit-cost-overview'),

@@ -1,5 +1,5 @@
 from django.core.cache import cache
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.utils import timezone
 from rest_framework import pagination, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
@@ -21,7 +21,9 @@ from .models import (
     AIOpsModelInvocation,
     AIOpsModelProvider,
     AIOpsPendingAction,
+    AIOpsReviewKnowledge,
     AIOpsRunbook,
+    AIOpsRunbookVersion,
     AIOpsSkill,
     AIOpsToolInvocation,
 )
@@ -38,17 +40,23 @@ from .serializers import (
     AIOpsModelInvocationSerializer,
     AIOpsModelProviderSerializer,
     AIOpsPendingActionSerializer,
+    AIOpsReviewKnowledgeSerializer,
     AIOpsRunbookSerializer,
+    AIOpsRunbookVersionSerializer,
     AIOpsSkillSerializer,
     AIOpsToolInvocationSerializer,
 )
 from .services import (
+    archive_runbook,
+    auto_ingest_review_knowledge,
     build_action_preflight_contract,
+    build_platform_mcp_manifest,
     build_action_registry_summary,
     bootstrap_payload_for_user,
     build_audit_overview,
     build_model_cost_overview,
     build_runbook_draft_from_payload,
+    build_runbook_draft_from_session,
     build_skill_marketplace_catalog,
     cancel_action,
     cancel_external_task,
@@ -57,11 +65,16 @@ from .services import (
     create_external_task,
     dispatch_chat,
     get_agent_config,
+    interrupt_external_task,
+    invoke_platform_mcp_tool,
     list_model_provider_models,
     list_model_provider_presets,
     list_mcp_server_tools,
     list_action_registry,
+    list_platform_mcp_tools,
+    publish_runbook,
     recover_masked_suggested_question,
+    run_external_task_orchestration,
     start_async_chat_processing,
     sync_admin_sessions_to_demo,
     sync_session_to_demo_if_needed,
@@ -897,6 +910,8 @@ class AIOpsExternalTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'retrieve': ['aiops.a2a.view'],
         'create': ['aiops.a2a.invoke'],
         'cancel': ['aiops.a2a.invoke'],
+        'run': ['aiops.a2a.invoke'],
+        'interrupt': ['aiops.a2a.invoke'],
     }
 
     def get_queryset(self):
@@ -943,6 +958,48 @@ class AIOpsExternalTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         )
         return Response(AIOpsExternalTaskSerializer(task).data)
 
+    @action(detail=True, methods=['post'])
+    def run(self, request, public_id=None):
+        task = self.get_object()
+        try:
+            task = run_external_task_orchestration(task, request.user)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        record_event(
+            request=request,
+            module='aiops',
+            category='a2a',
+            action='run_external_task',
+            title='运行 AIOps 多 Agent 编排',
+            summary=f'已运行外部任务《{task.title}》',
+            resource_type='aiops_external_task',
+            resource_id=task.id,
+            resource_name=str(task.public_id),
+            correlation_id=f'aiops-a2a-task:{task.public_id}',
+        )
+        return Response(AIOpsExternalTaskSerializer(task).data)
+
+    @action(detail=True, methods=['post'])
+    def interrupt(self, request, public_id=None):
+        task = self.get_object()
+        try:
+            task = interrupt_external_task(task, request.user)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        record_event(
+            request=request,
+            module='aiops',
+            category='a2a',
+            action='interrupt_external_task',
+            title='中断 AIOps 多 Agent 编排',
+            summary=f'已中断外部任务《{task.title}》',
+            resource_type='aiops_external_task',
+            resource_id=task.id,
+            resource_name=str(task.public_id),
+            correlation_id=f'aiops-a2a-task:{task.public_id}',
+        )
+        return Response(AIOpsExternalTaskSerializer(task).data)
+
 
 class AIOpsRunbookViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = AIOpsRunbookSerializer
@@ -954,10 +1011,14 @@ class AIOpsRunbookViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'partial_update': ['aiops.runbook.manage'],
         'destroy': ['aiops.runbook.manage'],
         'draft': ['aiops.runbook.manage'],
+        'from_session': ['aiops.runbook.manage'],
+        'publish': ['aiops.runbook.manage'],
+        'archive': ['aiops.runbook.manage'],
+        'versions': ['aiops.runbook.view'],
     }
 
     def get_queryset(self):
-        return AIOpsRunbook.objects.select_related('source_task', 'source_session').order_by('-updated_at', '-id')
+        return AIOpsRunbook.objects.select_related('source_task', 'source_session').annotate(version_count=Count('versions')).order_by('-updated_at', '-id')
 
     def perform_create(self, serializer):
         serializer.save(
@@ -997,6 +1058,208 @@ class AIOpsRunbookViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             correlation_id=f'aiops-runbook:{runbook.id}',
         )
         return Response(AIOpsRunbookSerializer(runbook).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['post'], url_path='from-session')
+    def from_session(self, request):
+        source_session_id = request.data.get('source_session') or request.data.get('session_id')
+        source_session = AIOpsChatSession.objects.filter(id=source_session_id).first()
+        if not source_session:
+            return Response({'detail': '来源会话不存在'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            runbook = build_runbook_draft_from_session(source_session, user=request.user, payload=request.data)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        record_event(
+            request=request,
+            module='aiops',
+            category='runbook',
+            action='create_runbook_from_session',
+            title='从事故会话生成 Runbook',
+            summary=f'已从会话《{source_session.title}》生成 Runbook《{runbook.title}》',
+            resource_type='aiops_runbook',
+            resource_id=runbook.id,
+            resource_name=runbook.title,
+            correlation_id=f'aiops-runbook:{runbook.id}',
+        )
+        return Response(AIOpsRunbookSerializer(runbook).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['get'])
+    def versions(self, request, pk=None):
+        runbook = self.get_object()
+        versions = runbook.versions.all().order_by('-version', '-id')
+        return Response(AIOpsRunbookVersionSerializer(versions, many=True).data)
+
+    @action(detail=True, methods=['post'])
+    def publish(self, request, pk=None):
+        runbook = self.get_object()
+        try:
+            runbook, version = publish_runbook(runbook, user=request.user, change_note=request.data.get('change_note', ''))
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        record_event(
+            request=request,
+            module='aiops',
+            category='runbook',
+            action='publish_runbook',
+            title='发布 AIOps Runbook',
+            summary=f'已发布 Runbook《{runbook.title}》v{version.version}',
+            resource_type='aiops_runbook',
+            resource_id=runbook.id,
+            resource_name=runbook.title,
+            correlation_id=f'aiops-runbook:{runbook.id}',
+            metadata={'version': version.version},
+        )
+        return Response(AIOpsRunbookSerializer(runbook).data)
+
+    @action(detail=True, methods=['post'])
+    def archive(self, request, pk=None):
+        runbook = self.get_object()
+        try:
+            runbook, version = archive_runbook(runbook, user=request.user, change_note=request.data.get('change_note', ''))
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        record_event(
+            request=request,
+            module='aiops',
+            category='runbook',
+            action='archive_runbook',
+            title='归档 AIOps Runbook',
+            summary=f'已归档 Runbook《{runbook.title}》v{version.version}',
+            resource_type='aiops_runbook',
+            resource_id=runbook.id,
+            resource_name=runbook.title,
+            correlation_id=f'aiops-runbook:{runbook.id}',
+            metadata={'version': version.version},
+        )
+        return Response(AIOpsRunbookSerializer(runbook).data)
+
+
+class AIOpsReviewKnowledgeViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+    serializer_class = AIOpsReviewKnowledgeSerializer
+    rbac_permissions = {
+        'list': ['aiops.review.view'],
+        'retrieve': ['aiops.review.view'],
+        'create': ['aiops.review.manage'],
+        'update': ['aiops.review.manage'],
+        'partial_update': ['aiops.review.manage'],
+        'destroy': ['aiops.review.manage'],
+        'auto_ingest': ['aiops.review.manage'],
+    }
+
+    def get_queryset(self):
+        queryset = AIOpsReviewKnowledge.objects.select_related('source_session', 'source_task', 'source_runbook').order_by('-updated_at', '-id')
+        query = str(self.request.query_params.get('q') or self.request.query_params.get('search') or '').strip()
+        if query:
+            queryset = queryset.filter(
+                Q(title__icontains=query)
+                | Q(summary__icontains=query)
+                | Q(environment__icontains=query)
+                | Q(service__icontains=query)
+            )
+        source_type = str(self.request.query_params.get('source_type') or '').strip()
+        if source_type:
+            queryset = queryset.filter(source_type=source_type)
+        return queryset
+
+    def perform_create(self, serializer):
+        serializer.save(
+            created_by=getattr(self.request.user, 'username', ''),
+            updated_by=getattr(self.request.user, 'username', ''),
+        )
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=getattr(self.request.user, 'username', ''))
+
+    @action(detail=False, methods=['post'], url_path='auto-ingest')
+    def auto_ingest(self, request):
+        source_session = None
+        source_task = None
+        source_runbook = None
+        if request.data.get('source_session'):
+            source_session = AIOpsChatSession.objects.filter(id=request.data.get('source_session')).first()
+        if request.data.get('source_task'):
+            source_task = AIOpsExternalTask.objects.filter(id=request.data.get('source_task')).first()
+        if request.data.get('source_runbook'):
+            source_runbook = AIOpsRunbook.objects.filter(id=request.data.get('source_runbook')).first()
+        if not any([source_session, source_task, source_runbook]):
+            return Response({'detail': '请提供可沉淀的会话、协同任务或 Runbook 来源'}, status=status.HTTP_400_BAD_REQUEST)
+        knowledge = auto_ingest_review_knowledge(
+            source_session=source_session,
+            source_task=source_task,
+            source_runbook=source_runbook,
+            user=request.user,
+            payload=request.data,
+        )
+        record_event(
+            request=request,
+            module='aiops',
+            category='review',
+            action='auto_ingest_review_knowledge',
+            title='自动沉淀 AIOps 复盘知识',
+            summary=f'已沉淀复盘知识《{knowledge.title}》',
+            resource_type='aiops_review_knowledge',
+            resource_id=knowledge.id,
+            resource_name=knowledge.title,
+            correlation_id=f'aiops-review:{knowledge.id}',
+        )
+        return Response(AIOpsReviewKnowledgeSerializer(knowledge).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('aiops.mcp.view')])
+def platform_mcp_manifest(request):
+    return Response(build_platform_mcp_manifest(user=request.user))
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('aiops.mcp.view')])
+def platform_mcp_tools(request):
+    return Response({'tools': list_platform_mcp_tools(user=request.user)})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, build_rbac_permission('aiops.mcp.invoke')])
+def platform_mcp_call(request):
+    tool_name = request.data.get('name') or request.data.get('tool')
+    arguments = request.data.get('arguments') or {}
+    try:
+        result = invoke_platform_mcp_tool(tool_name, arguments=arguments, user=request.user, request=request)
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(result)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, build_rbac_permission('aiops.mcp.invoke')])
+def platform_mcp_rpc(request):
+    rpc_id = request.data.get('id')
+    method = str(request.data.get('method') or '').strip()
+    params = request.data.get('params') if isinstance(request.data.get('params'), dict) else {}
+
+    def ok(result):
+        return Response({'jsonrpc': '2.0', 'id': rpc_id, 'result': result})
+
+    def error(code, message):
+        return Response({'jsonrpc': '2.0', 'id': rpc_id, 'error': {'code': code, 'message': message}}, status=status.HTTP_400_BAD_REQUEST)
+
+    if method in {'initialize', 'server/initialize'}:
+        return ok({
+            'protocolVersion': '2025-11-25',
+            'serverInfo': {'name': 'sxdevops-aiops', 'version': '2.1'},
+            'capabilities': {'tools': {'listChanged': False}},
+        })
+    if method in {'ping', 'server/ping'}:
+        return ok({})
+    if method == 'tools/list':
+        return ok({'tools': list_platform_mcp_tools(user=request.user)})
+    if method == 'tools/call':
+        tool_name = params.get('name')
+        arguments = params.get('arguments') if isinstance(params.get('arguments'), dict) else {}
+        try:
+            return ok(invoke_platform_mcp_tool(tool_name, arguments=arguments, user=request.user, request=request))
+        except ValueError as exc:
+            return error(-32000, str(exc))
+    return error(-32601, 'MCP 方法不存在')
 
 
 @api_view(['GET'])

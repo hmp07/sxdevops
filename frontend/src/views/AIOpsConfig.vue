@@ -142,8 +142,8 @@
             <strong>{{ runbookOverview.total }}</strong>
           </div>
           <div class="audit-card audit-card--inline">
-            <span>草稿手册</span>
-            <strong>{{ runbookOverview.draft }}</strong>
+            <span>复盘知识</span>
+            <strong>{{ reviewOverview.total }}</strong>
           </div>
         </div>
         <div class="audit-section">
@@ -157,7 +157,7 @@
           <el-table :data="a2aTasks" stripe size="small" class="console-table">
             <el-table-column type="expand">
               <template #default="{ row }">
-                <div class="json-preview">{{ formatJsonCompact({ input_payload: row.input_payload, plan_steps: row.plan_steps, result_payload: row.result_payload }) }}</div>
+                <div class="json-preview">{{ formatJsonCompact({ input_payload: row.input_payload, plan_steps: row.plan_steps, orchestration_state: row.orchestration_state, agent_results: row.agent_results, react_trace: row.react_trace, result_payload: row.result_payload }) }}</div>
               </template>
             </el-table-column>
             <el-table-column prop="title" label="任务标题" min-width="180" show-overflow-tooltip />
@@ -166,9 +166,14 @@
             <el-table-column prop="agent_mode" label="模式" width="110" />
             <el-table-column prop="status_display" label="状态" width="110" />
             <el-table-column prop="created_at" label="创建时间" min-width="170" />
-            <el-table-column v-if="canInvokeA2A" label="操作" width="100" fixed="right">
+            <el-table-column v-if="canInvokeA2A" label="操作" width="230" fixed="right">
               <template #default="{ row }">
-                <el-button link type="danger" :disabled="['completed', 'canceled'].includes(row.status)" @click="handleCancelA2ATask(row)">取消</el-button>
+                <div class="table-actions">
+                  <el-button link type="primary" :disabled="row.status !== 'queued'" @click="handleRunA2ATask(row)">运行</el-button>
+                  <el-button link type="warning" :disabled="['completed', 'canceled'].includes(row.status)" @click="handleInterruptA2ATask(row)">中断</el-button>
+                  <el-button link :disabled="['completed', 'canceled'].includes(row.status)" @click="handleCancelA2ATask(row)">取消</el-button>
+                  <el-button v-if="canManageReviewKnowledge" link type="success" @click="handleAutoIngestReviewKnowledge(row, 'task')">沉淀</el-button>
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -193,17 +198,24 @@
           <el-table :data="runbooks" stripe size="small" class="console-table">
             <el-table-column type="expand">
               <template #default="{ row }">
-                <div class="json-preview">{{ row.content || '暂无内容' }}</div>
+                <div class="json-preview">{{ formatJsonCompact({ content: row.content || '暂无内容', evidence: row.evidence, source_refs: row.source_refs }) }}</div>
               </template>
             </el-table-column>
             <el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip />
             <el-table-column prop="environment" label="环境" width="130" />
             <el-table-column prop="service" label="服务" width="150" />
+            <el-table-column prop="version" label="版本" width="76" />
             <el-table-column prop="status_display" label="状态" width="100" />
             <el-table-column prop="updated_at" label="更新时间" min-width="170" />
-            <el-table-column v-if="canManageRunbook" label="操作" width="100" fixed="right">
+            <el-table-column label="操作" width="270" fixed="right">
               <template #default="{ row }">
-                <el-button link type="danger" @click="handleDeleteRunbook(row)">删除</el-button>
+                <div class="table-actions">
+                  <el-button link @click="handleViewRunbookVersions(row)">版本</el-button>
+                  <el-button v-if="canManageRunbook" link type="primary" :disabled="row.status === 'published'" @click="handlePublishRunbook(row)">发布</el-button>
+                  <el-button v-if="canManageRunbook" link type="warning" :disabled="row.status === 'archived'" @click="handleArchiveRunbook(row)">归档</el-button>
+                  <el-button v-if="canManageReviewKnowledge" link type="success" @click="handleAutoIngestReviewKnowledge(row, 'runbook')">沉淀</el-button>
+                  <el-button v-if="canManageRunbook" link type="danger" @click="handleDeleteRunbook(row)">删除</el-button>
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -214,6 +226,40 @@
               :total="runbookPagination.total"
               layout="total, prev, pager, next"
               @current-change="loadRunbooks"
+            />
+          </div>
+        </div>
+        <div class="audit-section">
+          <div class="section-toolbar audit-toolbar">
+            <div class="toolbar-head">
+              <span class="toolbar-title">复盘知识</span>
+              <span class="toolbar-desc">自动关联会话、协同任务、Runbook 和证据，形成可检索知识</span>
+            </div>
+          </div>
+          <el-table :data="reviewKnowledge" stripe size="small" class="console-table">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div class="json-preview">{{ formatJsonCompact({ summary: row.summary, evidence: row.evidence, source_refs: row.source_refs }) }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip />
+            <el-table-column prop="environment" label="环境" width="130" />
+            <el-table-column prop="service" label="服务" width="150" />
+            <el-table-column prop="source_type_display" label="来源" width="110" />
+            <el-table-column prop="updated_at" label="更新时间" min-width="170" />
+            <el-table-column v-if="canManageReviewKnowledge" label="操作" width="92" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="danger" @click="handleDeleteReviewKnowledge(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div class="pagination-row">
+            <el-pagination
+              v-model:current-page="reviewPagination.page"
+              :page-size="reviewPagination.pageSize"
+              :total="reviewPagination.total"
+              layout="total, prev, pager, next"
+              @current-change="loadReviewKnowledge"
             />
           </div>
         </div>
@@ -257,9 +303,52 @@
       </template>
 
       <template v-else-if="activeTab === 'mcp'">
+        <div v-if="canViewMcpServer" class="audit-grid">
+          <div class="audit-card audit-card--inline">
+            <span>对外 MCP 工具</span>
+            <strong>{{ platformMcpOverview.total }}</strong>
+          </div>
+          <div class="audit-card audit-card--inline audit-card--success">
+            <span>当前可用</span>
+            <strong>{{ platformMcpOverview.available }}</strong>
+          </div>
+          <div class="audit-card audit-card--inline">
+            <span>每分钟限流</span>
+            <strong>{{ platformMcpOverview.rateLimit }}</strong>
+          </div>
+          <div class="audit-card audit-card--inline audit-card--warning">
+            <span>工具边界</span>
+            <strong>只读</strong>
+          </div>
+        </div>
+        <div v-if="canViewMcpServer" class="mcp-server-panel">
+          <div class="section-toolbar audit-toolbar">
+            <div class="toolbar-head">
+              <span class="toolbar-title">sxdevops 对外 MCP Server</span>
+              <span class="toolbar-desc">外部 Agent 通过 Token 鉴权调用平台只读工具，所有调用进入审计</span>
+            </div>
+          </div>
+          <el-table :data="platformMcpManifest.tools || []" stripe size="small" class="console-table">
+            <el-table-column prop="title" label="工具" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="name" label="MCP 名称" min-width="230" show-overflow-tooltip />
+            <el-table-column prop="permission" label="权限" min-width="160" />
+            <el-table-column label="状态" width="96">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.available === false ? 'warning' : 'success'">{{ row.available === false ? '受限' : '可用' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="安全" width="96">
+              <template #default="{ row }">
+                <el-tag size="small" effect="plain" :type="row.annotations?.readOnlyHint ? 'success' : 'danger'">
+                  {{ row.annotations?.readOnlyHint ? '只读' : '写入' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
         <div class="section-toolbar">
           <div class="toolbar-head">
-            <span class="toolbar-title">MCP</span>
+            <span class="toolbar-title">外部 MCP 接入</span>
             <span class="toolbar-desc">管理平台内置与外部 MCP 的接入、鉴权和运行边界</span>
           </div>
           <el-button size="small" type="primary" @click="openMcpDialog()">新增 MCP</el-button>
@@ -932,16 +1021,36 @@
     <el-dialog v-model="runbookDialogVisible" title="生成 Runbook 手册草案" width="760px" destroy-on-close append-to-body>
       <el-form :model="runbookForm" label-width="104px">
         <el-form-item label="标题"><el-input v-model="runbookForm.title" /></el-form-item>
+        <el-form-item label="来源会话"><el-input v-model="runbookForm.source_session" placeholder="填写会话 ID 可从事故会话一键生成" /></el-form-item>
         <div class="dialog-grid">
           <el-form-item label="环境"><el-input v-model="runbookForm.environment" /></el-form-item>
           <el-form-item label="服务"><el-input v-model="runbookForm.service" /></el-form-item>
         </div>
         <el-form-item label="标签"><el-select v-model="runbookForm.tags" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
+        <el-form-item label="引用来源"><el-input v-model="runbookForm.source_refs_text" type="textarea" :rows="3" /></el-form-item>
         <el-form-item label="内容"><el-input v-model="runbookForm.content" type="textarea" :rows="10" placeholder="留空则按环境、服务和标题生成基础草案" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="runbookDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="saveRunbookDraft">生成手册草案</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="runbookVersionDialogVisible" :title="currentRunbookVersionTitle || 'Runbook 版本历史'" width="840px" destroy-on-close append-to-body>
+      <el-table :data="runbookVersions" stripe max-height="420">
+        <el-table-column prop="version" label="版本" width="76" />
+        <el-table-column prop="status_display" label="状态" width="96" />
+        <el-table-column prop="change_note" label="说明" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="created_by" label="创建人" width="110" />
+        <el-table-column prop="created_at" label="创建时间" min-width="170" />
+        <el-table-column type="expand">
+          <template #default="{ row }">
+            <div class="json-preview">{{ formatJsonCompact({ content: row.content, evidence: row.evidence, source_refs: row.source_refs }) }}</div>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="runbookVersionDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
 
@@ -980,12 +1089,15 @@ import { ChatDotSquare, Connection, Cpu, Message, Promotion, Setting, Tickets, T
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import {
+  archiveAIOpsRunbook,
+  autoIngestAIOpsReviewKnowledge,
   cancelAIOpsA2ATask,
   createAIOpsMcpServer,
   createAIOpsProvider,
   createAIOpsSkill,
   createAIOpsA2ATask,
   createAIOpsRunbookDraft,
+  createAIOpsRunbookFromSession,
   bulkDeleteAIOpsAuditSessions,
   bulkDeleteAIOpsAuditActions,
   bulkDeleteAIOpsAuditToolInvocations,
@@ -997,6 +1109,7 @@ import {
   deleteAIOpsMcpServer,
   deleteAIOpsProvider,
   deleteAIOpsSkill,
+  deleteAIOpsReviewKnowledge,
   deleteAIOpsRunbook,
   getAIOpsA2ATasks,
   getAIOpsAuditActions,
@@ -1007,14 +1120,20 @@ import {
   getAIOpsAuditToolInvocations,
   getAIOpsActions,
   getAIOpsConfig,
+  getAIOpsPlatformMcpManifest,
   getAIOpsProviderPresets,
+  getAIOpsReviewKnowledge,
   getAIOpsRunbooks,
+  getAIOpsRunbookVersions,
   getAIOpsSkillMarketplace,
   getAIOpsMcpServers,
   getAIOpsProviders,
   getAIOpsSkills,
   listAIOpsProviderModels,
   listAIOpsMcpTools,
+  publishAIOpsRunbook,
+  runAIOpsA2ATask,
+  interruptAIOpsA2ATask,
   testAIOpsProvider,
   testAIOpsMcpServer,
   updateAIOpsConfig,
@@ -1045,6 +1164,8 @@ const selectedAuditToolIds = ref([])
 const selectedAuditActionIds = ref([])
 const a2aTasks = ref([])
 const runbooks = ref([])
+const reviewKnowledge = ref([])
+const platformMcpManifest = ref({ tools: [], rate_limit: {} })
 const skillMarketplace = ref({ summary: {}, items: [] })
 const auditSessionPagination = reactive({
   page: 1,
@@ -1077,6 +1198,11 @@ const runbookPagination = reactive({
   pageSize: 10,
   total: 0,
 })
+const reviewPagination = reactive({
+  page: 1,
+  pageSize: 10,
+  total: 0,
+})
 
 const configForm = reactive({
   default_provider_id: null,
@@ -1100,6 +1226,9 @@ const skillMarketDialogVisible = ref(false)
 const mcpToolsDialogVisible = ref(false)
 const a2aDialogVisible = ref(false)
 const runbookDialogVisible = ref(false)
+const runbookVersionDialogVisible = ref(false)
+const runbookVersions = ref([])
+const currentRunbookVersionTitle = ref('')
 
 const providerForm = reactive({})
 const providerModels = ref([])
@@ -1116,6 +1245,8 @@ const currentMcpToolsTitle = ref('')
 const canManageAudit = computed(() => authStore.hasPermission('aiops.audit.manage'))
 const canInvokeA2A = computed(() => authStore.hasPermission('aiops.a2a.invoke'))
 const canManageRunbook = computed(() => authStore.hasPermission('aiops.runbook.manage'))
+const canViewMcpServer = computed(() => authStore.hasPermission('aiops.mcp.view'))
+const canManageReviewKnowledge = computed(() => authStore.hasPermission('aiops.review.manage'))
 const selectedProviderPresetDetail = computed(() => providerPresets.value.find(item => item.key === selectedProviderPreset.value) || null)
 const providerApiKeyPlaceholder = computed(() => {
   const preset = selectedProviderPresetDetail.value
@@ -1197,6 +1328,17 @@ const runbookOverview = computed(() => ({
   draft: runbooks.value.filter(item => item.status === 'draft').length,
   published: runbooks.value.filter(item => item.status === 'published').length,
   archived: runbooks.value.filter(item => item.status === 'archived').length,
+}))
+const reviewOverview = computed(() => ({
+  total: reviewPagination.total || reviewKnowledge.value.length,
+  session: reviewKnowledge.value.filter(item => item.source_type === 'session').length,
+  task: reviewKnowledge.value.filter(item => item.source_type === 'task').length,
+  runbook: reviewKnowledge.value.filter(item => item.source_type === 'runbook').length,
+}))
+const platformMcpOverview = computed(() => ({
+  total: platformMcpManifest.value?.tools?.length || 0,
+  available: (platformMcpManifest.value?.tools || []).filter(item => item.available !== false).length,
+  rateLimit: platformMcpManifest.value?.rate_limit?.per_minute || 0,
 }))
 const skillCategoryOptions = computed(() => {
   const categories = new Set(['告警排障', '变更关联', '日志查询', 'K8s 诊断', '自愈安全', '任务中心', '发布回滚', '回答规范'])
@@ -1488,8 +1630,10 @@ function resetRunbookForm() {
     title: '',
     environment: '',
     service: '',
+    source_session: '',
     content: '',
     tags: [],
+    source_refs_text: '[]',
   })
 }
 
@@ -1524,7 +1668,7 @@ async function optionalLoad(loader, fallback) {
 async function loadAll() {
   loading.page = true
   try {
-    const [config, providerData, presetData, mcpData, skillData, marketData, actionData, auditData, costData] = await Promise.all([
+    const [config, providerData, presetData, mcpData, skillData, marketData, actionData, auditData, costData, mcpManifestData] = await Promise.all([
       getAIOpsConfig(),
       getAIOpsProviders(),
       getAIOpsProviderPresets(),
@@ -1534,6 +1678,7 @@ async function loadAll() {
       getAIOpsActions(),
       optionalLoad(() => getAIOpsAuditOverview({ skipErrorMessage: true })),
       optionalLoad(() => getAIOpsAuditCosts({ days: 7 }, { skipErrorMessage: true })),
+      optionalLoad(() => getAIOpsPlatformMcpManifest({ skipErrorMessage: true })),
     ])
     applyConfig(config)
     providers.value = providerData || []
@@ -1545,6 +1690,7 @@ async function loadAll() {
     actionRegistrySummary.value = actionData?.summary || {}
     auditOverview.value = auditData || {}
     auditCosts.value = costData || {}
+    platformMcpManifest.value = mcpManifestData || { tools: [], rate_limit: {} }
     await Promise.all([
       optionalLoad(() => loadAuditSessions(auditSessionPagination.page, { skipErrorMessage: true }), () => {
         auditSessionPagination.total = 0
@@ -1572,6 +1718,10 @@ async function loadAll() {
       optionalLoad(() => loadRunbooks(runbookPagination.page, { skipErrorMessage: true }), () => {
         runbookPagination.total = 0
         runbooks.value = []
+      }),
+      optionalLoad(() => loadReviewKnowledge(reviewPagination.page, { skipErrorMessage: true }), () => {
+        reviewPagination.total = 0
+        reviewKnowledge.value = []
       }),
     ])
   } finally {
@@ -1667,6 +1817,21 @@ async function loadRunbooks(page = 1, config = {}) {
     const message = String(error?.response?.data?.detail || '')
     if (page > 1 && message.includes('无效页面')) {
       return loadRunbooks(page - 1, config)
+    }
+    throw error
+  }
+}
+
+async function loadReviewKnowledge(page = 1, config = {}) {
+  try {
+    const data = await getAIOpsReviewKnowledge({ page, page_size: reviewPagination.pageSize }, config)
+    reviewPagination.page = page
+    reviewPagination.total = data.count || 0
+    reviewKnowledge.value = data.results || data || []
+  } catch (error) {
+    const message = String(error?.response?.data?.detail || '')
+    if (page > 1 && message.includes('无效页面')) {
+      return loadReviewKnowledge(page - 1, config)
     }
     throw error
   }
@@ -1922,22 +2087,75 @@ async function handleCancelA2ATask(row) {
   await loadA2ATasks(a2aPagination.page)
 }
 
+async function handleRunA2ATask(row) {
+  await runAIOpsA2ATask(row.public_id)
+  ElMessage.success('多 Agent 编排已完成')
+  await loadA2ATasks(a2aPagination.page)
+}
+
+async function handleInterruptA2ATask(row) {
+  await ElMessageBox.confirm(`确认中断协同任务《${row.title}》吗？`, '中断确认', { type: 'warning' })
+  await interruptAIOpsA2ATask(row.public_id)
+  ElMessage.success('协同任务已中断')
+  await loadA2ATasks(a2aPagination.page)
+}
+
 function openRunbookDialog() {
   resetRunbookForm()
   runbookDialogVisible.value = true
 }
 
 async function saveRunbookDraft() {
-  await createAIOpsRunbookDraft({
+  let sourceRefs = []
+  try {
+    sourceRefs = runbookForm.source_refs_text?.trim() ? JSON.parse(runbookForm.source_refs_text) : []
+  } catch (error) {
+    ElMessage.error('引用来源必须是合法 JSON 数组')
+    return
+  }
+  if (!Array.isArray(sourceRefs)) {
+    ElMessage.error('引用来源必须是 JSON 数组')
+    return
+  }
+  const payload = {
     title: runbookForm.title,
     environment: runbookForm.environment,
     service: runbookForm.service,
     content: runbookForm.content,
     tags: runbookForm.tags || [],
-  })
+    source_refs: sourceRefs,
+  }
+  if (runbookForm.source_session) {
+    await createAIOpsRunbookFromSession({
+      ...payload,
+      source_session: runbookForm.source_session,
+    })
+  } else {
+    await createAIOpsRunbookDraft(payload)
+  }
   runbookDialogVisible.value = false
   ElMessage.success('Runbook 手册草案已生成')
   await loadRunbooks(1)
+}
+
+async function handlePublishRunbook(row) {
+  await publishAIOpsRunbook(row.id, { change_note: '控制台发布' })
+  ElMessage.success('Runbook 已发布并自动沉淀复盘知识')
+  await Promise.all([loadRunbooks(runbookPagination.page), loadReviewKnowledge(reviewPagination.page)])
+}
+
+async function handleArchiveRunbook(row) {
+  await ElMessageBox.confirm(`确认归档 Runbook《${row.title}》吗？`, '归档确认', { type: 'warning' })
+  await archiveAIOpsRunbook(row.id, { change_note: '控制台归档' })
+  ElMessage.success('Runbook 已归档')
+  await loadRunbooks(runbookPagination.page)
+}
+
+async function handleViewRunbookVersions(row) {
+  const data = await getAIOpsRunbookVersions(row.id)
+  runbookVersions.value = data || []
+  currentRunbookVersionTitle.value = `${row.title} / ${runbookVersions.value.length} 个版本`
+  runbookVersionDialogVisible.value = true
 }
 
 async function handleDeleteRunbook(row) {
@@ -1945,6 +2163,24 @@ async function handleDeleteRunbook(row) {
   await deleteAIOpsRunbook(row.id)
   ElMessage.success('Runbook 手册已删除')
   await loadRunbooks(runbooks.value.length === 1 && runbookPagination.page > 1 ? runbookPagination.page - 1 : runbookPagination.page)
+}
+
+async function handleAutoIngestReviewKnowledge(row, type) {
+  const payload = {
+    title: `${row.title} 复盘知识`,
+  }
+  if (type === 'task') payload.source_task = row.id
+  if (type === 'runbook') payload.source_runbook = row.id
+  await autoIngestAIOpsReviewKnowledge(payload)
+  ElMessage.success('复盘知识已沉淀')
+  await loadReviewKnowledge(1)
+}
+
+async function handleDeleteReviewKnowledge(row) {
+  await ElMessageBox.confirm(`确认删除复盘知识《${row.title}》吗？`, '删除确认', { type: 'warning' })
+  await deleteAIOpsReviewKnowledge(row.id)
+  ElMessage.success('复盘知识已删除')
+  await loadReviewKnowledge(reviewKnowledge.value.length === 1 && reviewPagination.page > 1 ? reviewPagination.page - 1 : reviewPagination.page)
 }
 
 function formatJsonCompact(value) {
@@ -2547,6 +2783,14 @@ onMounted(async () => {
 
 .muted-text {
   color: #94a3b8;
+}
+
+.mcp-server-panel {
+  margin: 10px 0 12px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #ffffff;
 }
 
 .audit-section {
