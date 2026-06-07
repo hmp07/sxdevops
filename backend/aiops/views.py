@@ -15,10 +15,13 @@ from rbac.services import is_demo_account, user_has_permissions
 from .models import (
     AIOpsChatMessage,
     AIOpsChatSession,
+    AIOpsExternalTask,
     AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
+    AIOpsModelInvocation,
     AIOpsModelProvider,
     AIOpsPendingAction,
+    AIOpsRunbook,
     AIOpsSkill,
     AIOpsToolInvocation,
 )
@@ -29,19 +32,29 @@ from .serializers import (
     AIOpsChatMessageSerializer,
     AIOpsChatSessionSerializer,
     AIOpsCreateSessionSerializer,
+    AIOpsExternalTaskSerializer,
     AIOpsKnowledgeEnvironmentSerializer,
     AIOpsMCPServerSerializer,
+    AIOpsModelInvocationSerializer,
     AIOpsModelProviderSerializer,
     AIOpsPendingActionSerializer,
+    AIOpsRunbookSerializer,
     AIOpsSkillSerializer,
     AIOpsToolInvocationSerializer,
 )
 from .services import (
+    build_action_preflight_contract,
     build_action_registry_summary,
     bootstrap_payload_for_user,
     build_audit_overview,
+    build_model_cost_overview,
+    build_runbook_draft_from_payload,
+    build_skill_marketplace_catalog,
     cancel_action,
+    cancel_external_task,
+    clone_skill_to_team,
     confirm_action,
+    create_external_task,
     dispatch_chat,
     get_agent_config,
     list_model_provider_models,
@@ -179,6 +192,8 @@ class AIOpsSkillViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'update': ['aiops.config.manage'],
         'partial_update': ['aiops.config.manage'],
         'destroy': ['aiops.config.manage'],
+        'marketplace': ['aiops.config.view'],
+        'clone': ['aiops.config.manage'],
     }
 
     def get_queryset(self):
@@ -190,6 +205,34 @@ class AIOpsSkillViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if instance.is_builtin:
             return Response({'detail': '内置 Skill 不允许删除'}, status=status.HTTP_400_BAD_REQUEST)
         return super().destroy(request, *args, **kwargs)
+
+    @action(detail=False, methods=['get'])
+    def marketplace(self, request):
+        return Response(build_skill_marketplace_catalog(user=request.user))
+
+    @action(detail=True, methods=['post'])
+    def clone(self, request, pk=None):
+        source = self.get_object()
+        cloned = clone_skill_to_team(
+            source,
+            user=request.user,
+            name=request.data.get('name', ''),
+            slug=request.data.get('slug', ''),
+        )
+        record_event(
+            request=request,
+            module='aiops',
+            category='configuration',
+            action='clone_skill',
+            title='克隆 AIOps Skill',
+            summary=f'已克隆 Skill《{source.name}》为《{cloned.name}》',
+            resource_type='aiops_skill',
+            resource_id=cloned.id,
+            resource_name=cloned.name,
+            correlation_id=f'aiops-skill:{cloned.id}',
+            metadata={'source_skill_id': source.id, 'source_skill_slug': source.slug},
+        )
+        return Response(AIOpsSkillSerializer(cloned).data, status=status.HTTP_201_CREATED)
 
 
 class _AuditRecentPagination(pagination.PageNumberPagination):
@@ -812,6 +855,150 @@ class AIOpsPendingActionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         return Response({'deleted': deleted_count}, status=status.HTTP_200_OK)
 
 
+class AIOpsModelInvocationViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+    serializer_class = AIOpsModelInvocationSerializer
+    pagination_class = _AuditRecentPagination
+    http_method_names = ['get', 'delete', 'head', 'options']
+    rbac_permissions = {
+        'list': ['aiops.audit.view'],
+        'retrieve': ['aiops.audit.view'],
+        'destroy': ['aiops.audit.manage'],
+    }
+
+    def get_queryset(self):
+        return AIOpsModelInvocation.objects.select_related('provider', 'session', 'session__user', 'message').order_by('-created_at', '-id')
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        invocation_id = instance.id
+        model_name = instance.resolved_model or instance.requested_model
+        response = super().destroy(request, *args, **kwargs)
+        record_event(
+            request=request,
+            module='aiops',
+            category='audit',
+            action='delete_model_invocation',
+            title='删除 AIOps 模型调用审计',
+            summary=f'已删除模型调用《{model_name}》',
+            resource_type='aiops_model_invocation',
+            resource_id=invocation_id,
+            resource_name=model_name,
+            correlation_id=f'aiops-model-invocation:{invocation_id}',
+        )
+        return response
+
+
+class AIOpsExternalTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+    serializer_class = AIOpsExternalTaskSerializer
+    lookup_field = 'public_id'
+    http_method_names = ['get', 'post', 'head', 'options']
+    rbac_permissions = {
+        'list': ['aiops.a2a.view'],
+        'retrieve': ['aiops.a2a.view'],
+        'create': ['aiops.a2a.invoke'],
+        'cancel': ['aiops.a2a.invoke'],
+    }
+
+    def get_queryset(self):
+        return AIOpsExternalTask.objects.select_related('created_by').order_by('-created_at', '-id')
+
+    def create(self, request, *args, **kwargs):
+        try:
+            task = create_external_task(request.data, request.user)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        record_event(
+            request=request,
+            module='aiops',
+            category='a2a',
+            action='create_external_task',
+            title='创建 AIOps A2A 任务',
+            summary=f'已创建外部任务《{task.title}》',
+            resource_type='aiops_external_task',
+            resource_id=task.id,
+            resource_name=str(task.public_id),
+            correlation_id=f'aiops-a2a-task:{task.public_id}',
+            metadata={'action_code': task.action_code, 'source_agent': task.source_agent},
+        )
+        return Response(AIOpsExternalTaskSerializer(task).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, public_id=None):
+        task = self.get_object()
+        try:
+            task = cancel_external_task(task, request.user)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        record_event(
+            request=request,
+            module='aiops',
+            category='a2a',
+            action='cancel_external_task',
+            title='取消 AIOps A2A 任务',
+            summary=f'已取消外部任务《{task.title}》',
+            resource_type='aiops_external_task',
+            resource_id=task.id,
+            resource_name=str(task.public_id),
+            correlation_id=f'aiops-a2a-task:{task.public_id}',
+        )
+        return Response(AIOpsExternalTaskSerializer(task).data)
+
+
+class AIOpsRunbookViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+    serializer_class = AIOpsRunbookSerializer
+    rbac_permissions = {
+        'list': ['aiops.runbook.view'],
+        'retrieve': ['aiops.runbook.view'],
+        'create': ['aiops.runbook.manage'],
+        'update': ['aiops.runbook.manage'],
+        'partial_update': ['aiops.runbook.manage'],
+        'destroy': ['aiops.runbook.manage'],
+        'draft': ['aiops.runbook.manage'],
+    }
+
+    def get_queryset(self):
+        return AIOpsRunbook.objects.select_related('source_task', 'source_session').order_by('-updated_at', '-id')
+
+    def perform_create(self, serializer):
+        serializer.save(
+            created_by=getattr(self.request.user, 'username', ''),
+            updated_by=getattr(self.request.user, 'username', ''),
+        )
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=getattr(self.request.user, 'username', ''))
+
+    @action(detail=False, methods=['post'])
+    def draft(self, request):
+        source_task = None
+        source_task_id = request.data.get('source_task')
+        if source_task_id:
+            source_task = AIOpsExternalTask.objects.filter(id=source_task_id).first()
+        source_session = None
+        source_session_id = request.data.get('source_session')
+        if source_session_id:
+            source_session = AIOpsChatSession.objects.filter(id=source_session_id).first()
+        runbook = build_runbook_draft_from_payload(
+            request.data,
+            user=request.user,
+            source_task=source_task,
+            source_session=source_session,
+        )
+        record_event(
+            request=request,
+            module='aiops',
+            category='runbook',
+            action='create_runbook_draft',
+            title='生成 AIOps Runbook 草案',
+            summary=f'已生成 Runbook 草案《{runbook.title}》',
+            resource_type='aiops_runbook',
+            resource_id=runbook.id,
+            resource_name=runbook.title,
+            correlation_id=f'aiops-runbook:{runbook.id}',
+        )
+        return Response(AIOpsRunbookSerializer(runbook).data, status=status.HTTP_201_CREATED)
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, build_rbac_permission('aiops.config.view')])
 def action_registry(request):
@@ -820,6 +1007,18 @@ def action_registry(request):
         'summary': build_action_registry_summary(actions),
         'actions': actions,
     })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, build_rbac_permission('aiops.chat.analyze')])
+def action_preflight(request):
+    action_code = str(request.data.get('action_code') or '').strip()
+    if not action_code:
+        return Response({'detail': 'action_code 不能为空'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        return Response(build_action_preflight_contract(action_code, request.data, user=request.user))
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['GET'])
@@ -867,6 +1066,12 @@ def audit_overview(request):
     data['session_status'] = list(AIOpsChatSession.objects.filter(mirror_source__isnull=True).values('status').annotate(count=Count('id')).order_by('status'))
     data['action_status'] = list(AIOpsPendingAction.objects.filter(mirror_source__isnull=True, session__mirror_source__isnull=True).values('status').annotate(count=Count('id')).order_by('status'))
     return Response(data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('aiops.audit.view')])
+def audit_cost_overview(request):
+    return Response(build_model_cost_overview(days=request.query_params.get('days', 7)))
 
 
 @api_view(['POST'])

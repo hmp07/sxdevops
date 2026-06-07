@@ -4,10 +4,13 @@ from .models import (
     AIOpsAgentConfig,
     AIOpsChatMessage,
     AIOpsChatSession,
+    AIOpsExternalTask,
     AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
+    AIOpsModelInvocation,
     AIOpsModelProvider,
     AIOpsPendingAction,
+    AIOpsRunbook,
     AIOpsSkill,
     AIOpsToolInvocation,
 )
@@ -25,6 +28,7 @@ class AIOpsModelProviderSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'provider_type', 'base_url', 'api_key', 'has_api_key', 'default_model', 'backup_model',
             'temperature', 'max_tokens', 'timeout_seconds', 'is_enabled', 'runtime_ready', 'setup_hint',
+            'input_token_price_per_1m', 'output_token_price_per_1m',
             'last_test_status', 'last_test_message',
             'created_at', 'updated_at',
         ]
@@ -313,3 +317,69 @@ class AIOpsToolInvocationSerializer(serializers.ModelSerializer):
             'id', 'session', 'session_title', 'username', 'message', 'tool_name', 'status', 'latency_ms',
             'request_payload', 'response_summary', 'created_at',
         ]
+
+
+class AIOpsModelInvocationSerializer(serializers.ModelSerializer):
+    provider_name = serializers.CharField(source='provider.name', read_only=True)
+    session_title = serializers.CharField(source='session.title', read_only=True)
+    purpose_display = serializers.CharField(source='get_purpose_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = AIOpsModelInvocation
+        fields = [
+            'id', 'provider', 'provider_name', 'session', 'session_title', 'message', 'username',
+            'purpose', 'purpose_display', 'requested_model', 'resolved_model', 'status', 'status_display',
+            'latency_ms', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'estimated_cost_usd',
+            'request_summary', 'response_summary', 'created_at',
+        ]
+
+
+class AIOpsExternalTaskSerializer(serializers.ModelSerializer):
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = AIOpsExternalTask
+        fields = [
+            'id', 'public_id', 'source_agent', 'title', 'action_code', 'agent_mode', 'status', 'status_display',
+            'input_payload', 'plan_steps', 'result_payload', 'error_message', 'created_by', 'created_by_username',
+            'created_at', 'updated_at', 'completed_at', 'canceled_at',
+        ]
+        read_only_fields = [
+            'id', 'public_id', 'agent_mode', 'status', 'status_display', 'plan_steps', 'result_payload',
+            'error_message', 'created_by', 'created_by_username', 'created_at', 'updated_at',
+            'completed_at', 'canceled_at',
+        ]
+
+    def validate(self, attrs):
+        input_payload = attrs.get('input_payload')
+        if input_payload in (None, ''):
+            attrs['input_payload'] = {}
+        elif not isinstance(input_payload, dict):
+            raise serializers.ValidationError({'input_payload': '必须为对象'})
+        return attrs
+
+
+class AIOpsRunbookSerializer(serializers.ModelSerializer):
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = AIOpsRunbook
+        fields = [
+            'id', 'title', 'slug', 'environment', 'service', 'status', 'status_display',
+            'content', 'evidence', 'tags', 'source_task', 'source_session',
+            'created_by', 'updated_by', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
+
+    def validate(self, attrs):
+        for field in ['evidence', 'tags']:
+            if field not in attrs:
+                continue
+            value = attrs.get(field)
+            if value in (None, ''):
+                attrs[field] = []
+            elif not isinstance(value, list):
+                raise serializers.ValidationError({field: '必须为数组'})
+        return attrs

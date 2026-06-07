@@ -35,9 +35,9 @@
             <span class="tab-label"><el-icon><Promotion /></el-icon>Action</span>
           </template>
         </el-tab-pane>
-        <el-tab-pane name="im">
+        <el-tab-pane name="orchestration">
           <template #label>
-            <span class="tab-label"><el-icon><Message /></el-icon>IM 接入</span>
+            <span class="tab-label"><el-icon><Message /></el-icon>协同任务 / Runbook</span>
           </template>
         </el-tab-pane>
         <el-tab-pane name="providers">
@@ -127,10 +127,95 @@
         </div>
       </template>
 
-      <template v-else-if="activeTab === 'im'">
-        <div class="empty-panel">
-          <div class="section-title">IM 接入</div>
-          <div class="empty-copy">功能预留，暂未开发。</div>
+      <template v-else-if="activeTab === 'orchestration'">
+        <div class="audit-grid">
+          <div class="audit-card audit-card--inline">
+            <span>协同任务</span>
+            <strong>{{ a2aOverview.total }}</strong>
+          </div>
+          <div class="audit-card audit-card--inline audit-card--warning">
+            <span>待处理任务</span>
+            <strong>{{ a2aOverview.queued }}</strong>
+          </div>
+          <div class="audit-card audit-card--inline audit-card--success">
+            <span>Runbook 手册</span>
+            <strong>{{ runbookOverview.total }}</strong>
+          </div>
+          <div class="audit-card audit-card--inline">
+            <span>草稿手册</span>
+            <strong>{{ runbookOverview.draft }}</strong>
+          </div>
+        </div>
+        <div class="audit-section">
+          <div class="section-toolbar audit-toolbar">
+            <div class="toolbar-head">
+              <span class="toolbar-title">外部协同任务</span>
+              <span class="toolbar-desc">接收其他系统或 Agent 提交的任务草案，平台确认后再执行</span>
+            </div>
+            <el-button v-if="canInvokeA2A" size="small" type="primary" @click="openA2ADialog">创建任务草案</el-button>
+          </div>
+          <el-table :data="a2aTasks" stripe size="small" class="console-table">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div class="json-preview">{{ formatJsonCompact({ input_payload: row.input_payload, plan_steps: row.plan_steps, result_payload: row.result_payload }) }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column prop="title" label="任务标题" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="source_agent" label="来源" width="130" />
+            <el-table-column prop="action_code" label="Action" min-width="160" />
+            <el-table-column prop="agent_mode" label="模式" width="110" />
+            <el-table-column prop="status_display" label="状态" width="110" />
+            <el-table-column prop="created_at" label="创建时间" min-width="170" />
+            <el-table-column v-if="canInvokeA2A" label="操作" width="100" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="danger" :disabled="['completed', 'canceled'].includes(row.status)" @click="handleCancelA2ATask(row)">取消</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div class="pagination-row">
+            <el-pagination
+              v-model:current-page="a2aPagination.page"
+              :page-size="a2aPagination.pageSize"
+              :total="a2aPagination.total"
+              layout="total, prev, pager, next"
+              @current-change="loadA2ATasks"
+            />
+          </div>
+        </div>
+        <div class="audit-section">
+          <div class="section-toolbar audit-toolbar">
+            <div class="toolbar-head">
+              <span class="toolbar-title">Runbook 手册</span>
+              <span class="toolbar-desc">把排障步骤、证据和复盘结论保存成可复用手册</span>
+            </div>
+            <el-button v-if="canManageRunbook" size="small" type="primary" @click="openRunbookDialog">生成手册草案</el-button>
+          </div>
+          <el-table :data="runbooks" stripe size="small" class="console-table">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div class="json-preview">{{ row.content || '暂无内容' }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip />
+            <el-table-column prop="environment" label="环境" width="130" />
+            <el-table-column prop="service" label="服务" width="150" />
+            <el-table-column prop="status_display" label="状态" width="100" />
+            <el-table-column prop="updated_at" label="更新时间" min-width="170" />
+            <el-table-column v-if="canManageRunbook" label="操作" width="100" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="danger" @click="handleDeleteRunbook(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div class="pagination-row">
+            <el-pagination
+              v-model:current-page="runbookPagination.page"
+              :page-size="runbookPagination.pageSize"
+              :total="runbookPagination.total"
+              layout="total, prev, pager, next"
+              @current-change="loadRunbooks"
+            />
+          </div>
         </div>
       </template>
 
@@ -221,7 +306,10 @@
             <span class="toolbar-title">Skill 能力包</span>
             <span class="toolbar-desc">沉淀 SOP、证据清单、工具依赖、查询规范和回答方法</span>
           </div>
-          <el-button size="small" type="primary" @click="openSkillDialog()">新增 Skill</el-button>
+          <div class="toolbar-actions">
+            <el-button size="small" @click="openSkillMarketDialog">Skill 市场</el-button>
+            <el-button size="small" type="primary" @click="openSkillDialog()">新增 Skill</el-button>
+          </div>
         </div>
         <div class="concept-note concept-note--skill">
           <strong>Skill = 能力包</strong>
@@ -419,6 +507,40 @@
             <span>失败动作</span>
             <strong>{{ auditOverview.failed_actions_today || 0 }}</strong>
           </div>
+          <div class="audit-card audit-card--info">
+            <span>模型调用</span>
+            <strong>{{ auditOverview.model_calls_today || 0 }}</strong>
+          </div>
+          <div class="audit-card audit-card--success">
+            <span>7 日 Token</span>
+            <strong>{{ modelCostSummary.total_tokens || 0 }}</strong>
+          </div>
+          <div class="audit-card audit-card--warning">
+            <span>预估费用</span>
+            <strong>{{ modelCostSummary.estimated_cost_usd || 0 }}</strong>
+          </div>
+        </div>
+        <div class="cost-grid">
+          <div class="cost-panel">
+            <div class="section-title">模型成本统计</div>
+            <div class="cost-list">
+              <div v-for="item in modelCostSummary.by_provider || []" :key="item.provider" class="cost-row">
+                <span>{{ item.provider }}</span>
+                <strong>{{ item.calls }} 次 / {{ item.tokens }} tokens / {{ item.estimated_cost_usd }}</strong>
+              </div>
+              <div v-if="!(modelCostSummary.by_provider || []).length" class="muted-text">暂无模型调用数据</div>
+            </div>
+          </div>
+          <div class="cost-panel">
+            <div class="section-title">工具调用统计</div>
+            <div class="cost-list">
+              <div v-for="item in toolCostSummary.by_tool || []" :key="item.tool_name" class="cost-row">
+                <span>{{ item.tool_name }}</span>
+                <strong>{{ item.calls }} 次 / 平均 {{ item.avg_latency_ms }} ms</strong>
+              </div>
+              <div v-if="!(toolCostSummary.by_tool || []).length" class="muted-text">暂无工具调用数据</div>
+            </div>
+          </div>
         </div>
         <div class="audit-section">
           <div class="section-toolbar audit-toolbar">
@@ -479,6 +601,11 @@
           </div>
           <el-table :data="auditTools" stripe size="small" class="console-table" @selection-change="handleAuditToolSelectionChange">
             <el-table-column v-if="canManageAudit" type="selection" width="42" />
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div class="json-preview">{{ formatJsonCompact({ request_payload: row.request_payload, response_summary: row.response_summary }) }}</div>
+              </template>
+            </el-table-column>
             <el-table-column prop="tool_name" label="工具" width="180" />
             <el-table-column prop="username" label="用户" width="120" />
             <el-table-column prop="status" label="状态" width="100" />
@@ -497,6 +624,43 @@
               :total="auditToolPagination.total"
               layout="total, prev, pager, next"
               @current-change="loadAuditTools"
+            />
+          </div>
+        </div>
+        <div class="audit-section">
+          <div class="section-toolbar audit-toolbar">
+            <div class="section-title" style="margin-bottom:0;">最近模型调用</div>
+            <div class="audit-toolbar-actions">
+              <span class="audit-hint">展示模型 usage、耗时和费用估算</span>
+            </div>
+          </div>
+          <el-table :data="auditModels" stripe size="small" class="console-table">
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div class="json-preview">{{ formatJsonCompact({ request_summary: row.request_summary, response_summary: row.response_summary }) }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column prop="provider_name" label="提供商" min-width="150" show-overflow-tooltip />
+            <el-table-column prop="purpose_display" label="用途" width="110" />
+            <el-table-column prop="resolved_model" label="模型" min-width="160" show-overflow-tooltip />
+            <el-table-column prop="status_display" label="状态" width="90" />
+            <el-table-column prop="total_tokens" label="Token" width="100" />
+            <el-table-column prop="estimated_cost_usd" label="费用" width="110" />
+            <el-table-column prop="latency_ms" label="耗时(ms)" width="110" />
+            <el-table-column prop="created_at" label="时间" min-width="170" />
+            <el-table-column v-if="canManageAudit" label="操作" width="90" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="danger" @click="handleDeleteAuditModel(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div class="pagination-row">
+            <el-pagination
+              v-model:current-page="auditModelPagination.page"
+              :page-size="auditModelPagination.pageSize"
+              :total="auditModelPagination.total"
+              layout="total, prev, pager, next"
+              @current-change="loadAuditModels"
             />
           </div>
         </div>
@@ -590,6 +754,8 @@
           <el-form-item label="温度"><el-input-number v-model="providerForm.temperature" :min="0" :max="2" :step="0.1" /></el-form-item>
           <el-form-item label="最大 Tokens"><el-input-number v-model="providerForm.max_tokens" :min="100" :max="16000" :step="100" /></el-form-item>
           <el-form-item label="超时"><el-input-number v-model="providerForm.timeout_seconds" :min="5" :max="120" /></el-form-item>
+          <el-form-item label="输入单价"><el-input-number v-model="providerForm.input_token_price_per_1m" :min="0" :precision="6" :step="0.000001" /></el-form-item>
+          <el-form-item label="输出单价"><el-input-number v-model="providerForm.output_token_price_per_1m" :min="0" :precision="6" :step="0.000001" /></el-form-item>
           <el-form-item label="启用"><el-switch v-model="providerForm.is_enabled" /></el-form-item>
         </div>
       </el-form>
@@ -706,6 +872,79 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="skillMarketDialogVisible" title="Skill 市场" width="900px" destroy-on-close append-to-body>
+      <div class="skill-summary-row">
+        <div class="skill-summary-item">
+          <span>市场能力包</span>
+          <strong>{{ skillMarketSummary.total || 0 }}</strong>
+        </div>
+        <div class="skill-summary-item">
+          <span>平台内置</span>
+          <strong>{{ skillMarketSummary.builtin || 0 }}</strong>
+        </div>
+        <div class="skill-summary-item">
+          <span>团队自定义</span>
+          <strong>{{ skillMarketSummary.team || 0 }}</strong>
+        </div>
+        <div class="skill-summary-item">
+          <span>已启用</span>
+          <strong>{{ skillMarketSummary.enabled || 0 }}</strong>
+        </div>
+      </div>
+      <el-table :data="skillMarketplace.items || []" stripe max-height="460" class="console-table">
+        <el-table-column prop="name" label="名称" min-width="170" />
+        <el-table-column prop="category" label="分类" width="120" />
+        <el-table-column prop="source_display" label="来源" width="110" />
+        <el-table-column prop="description" label="描述" min-width="240" show-overflow-tooltip />
+        <el-table-column label="Action" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">{{ formatActionList(row.applicable_actions) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="110" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="handleCloneSkill(row)">克隆</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="skillMarketDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="a2aDialogVisible" title="创建协同任务草案" width="720px" destroy-on-close append-to-body>
+      <el-form :model="a2aForm" label-width="104px">
+        <el-form-item label="来源系统"><el-input v-model="a2aForm.source_agent" /></el-form-item>
+        <el-form-item label="任务标题"><el-input v-model="a2aForm.title" placeholder="留空则使用 Action 名称" /></el-form-item>
+        <el-form-item label="Action">
+          <el-select v-model="a2aForm.action_code" filterable style="width:100%">
+            <el-option v-for="action in actionRegistry" :key="action.code" :label="`${action.display_name || action.code}（${action.code}）`" :value="action.code" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="输入参数">
+          <el-input v-model="a2aForm.input_payload_text" type="textarea" :rows="8" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="a2aDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveA2ATask">创建任务草案</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="runbookDialogVisible" title="生成 Runbook 手册草案" width="760px" destroy-on-close append-to-body>
+      <el-form :model="runbookForm" label-width="104px">
+        <el-form-item label="标题"><el-input v-model="runbookForm.title" /></el-form-item>
+        <div class="dialog-grid">
+          <el-form-item label="环境"><el-input v-model="runbookForm.environment" /></el-form-item>
+          <el-form-item label="服务"><el-input v-model="runbookForm.service" /></el-form-item>
+        </div>
+        <el-form-item label="标签"><el-select v-model="runbookForm.tags" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
+        <el-form-item label="内容"><el-input v-model="runbookForm.content" type="textarea" :rows="10" placeholder="留空则按环境、服务和标题生成基础草案" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="runbookDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveRunbookDraft">生成手册草案</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="mcpToolsDialogVisible" title="MCP 工具列表" width="760px" destroy-on-close>
       <div class="section-title" style="margin-bottom:12px;">{{ currentMcpToolsTitle || '工具列表' }}</div>
       <div v-if="mcpToolDiagnostics.length" class="mcp-diagnostic-list">
@@ -741,25 +980,36 @@ import { ChatDotSquare, Connection, Cpu, Message, Promotion, Setting, Tickets, T
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import {
+  cancelAIOpsA2ATask,
   createAIOpsMcpServer,
   createAIOpsProvider,
   createAIOpsSkill,
+  createAIOpsA2ATask,
+  createAIOpsRunbookDraft,
   bulkDeleteAIOpsAuditSessions,
   bulkDeleteAIOpsAuditActions,
   bulkDeleteAIOpsAuditToolInvocations,
+  cloneAIOpsSkill,
   deleteAIOpsAuditSession,
   deleteAIOpsAuditAction,
+  deleteAIOpsAuditModelInvocation,
   deleteAIOpsAuditToolInvocation,
   deleteAIOpsMcpServer,
   deleteAIOpsProvider,
   deleteAIOpsSkill,
+  deleteAIOpsRunbook,
+  getAIOpsA2ATasks,
   getAIOpsAuditActions,
+  getAIOpsAuditCosts,
+  getAIOpsAuditModelInvocations,
   getAIOpsAuditOverview,
   getAIOpsAuditSessions,
   getAIOpsAuditToolInvocations,
   getAIOpsActions,
   getAIOpsConfig,
   getAIOpsProviderPresets,
+  getAIOpsRunbooks,
+  getAIOpsSkillMarketplace,
   getAIOpsMcpServers,
   getAIOpsProviders,
   getAIOpsSkills,
@@ -785,12 +1035,17 @@ const skills = ref([])
 const actionRegistry = ref([])
 const actionRegistrySummary = ref({})
 const auditOverview = ref({})
+const auditCosts = ref({})
 const auditSessions = ref([])
 const auditTools = ref([])
+const auditModels = ref([])
 const auditActions = ref([])
 const selectedAuditSessionIds = ref([])
 const selectedAuditToolIds = ref([])
 const selectedAuditActionIds = ref([])
+const a2aTasks = ref([])
+const runbooks = ref([])
+const skillMarketplace = ref({ summary: {}, items: [] })
 const auditSessionPagination = reactive({
   page: 1,
   pageSize: 10,
@@ -801,7 +1056,23 @@ const auditToolPagination = reactive({
   pageSize: 10,
   total: 0,
 })
+const auditModelPagination = reactive({
+  page: 1,
+  pageSize: 10,
+  total: 0,
+})
 const auditActionPagination = reactive({
+  page: 1,
+  pageSize: 10,
+  total: 0,
+})
+
+const a2aPagination = reactive({
+  page: 1,
+  pageSize: 10,
+  total: 0,
+})
+const runbookPagination = reactive({
   page: 1,
   pageSize: 10,
   total: 0,
@@ -825,7 +1096,10 @@ const configForm = reactive({
 const providerDialogVisible = ref(false)
 const mcpDialogVisible = ref(false)
 const skillDialogVisible = ref(false)
+const skillMarketDialogVisible = ref(false)
 const mcpToolsDialogVisible = ref(false)
+const a2aDialogVisible = ref(false)
+const runbookDialogVisible = ref(false)
 
 const providerForm = reactive({})
 const providerModels = ref([])
@@ -833,11 +1107,15 @@ const providerModelRecommendation = ref(null)
 const selectedProviderPreset = ref('')
 const mcpForm = reactive({})
 const skillForm = reactive({})
+const a2aForm = reactive({})
+const runbookForm = reactive({})
 const mcpToolsList = ref([])
 const mcpToolDiagnostics = ref([])
 const currentMcpToolsTitle = ref('')
 
 const canManageAudit = computed(() => authStore.hasPermission('aiops.audit.manage'))
+const canInvokeA2A = computed(() => authStore.hasPermission('aiops.a2a.invoke'))
+const canManageRunbook = computed(() => authStore.hasPermission('aiops.runbook.manage'))
 const selectedProviderPresetDetail = computed(() => providerPresets.value.find(item => item.key === selectedProviderPreset.value) || null)
 const providerApiKeyPlaceholder = computed(() => {
   const preset = selectedProviderPresetDetail.value
@@ -905,6 +1183,21 @@ const actionGroups = computed(() => {
     }))
     .sort((a, b) => a.category.localeCompare(b.category, 'zh-CN'))
 })
+const modelCostSummary = computed(() => auditCosts.value?.model || {})
+const toolCostSummary = computed(() => auditCosts.value?.tools || {})
+const skillMarketSummary = computed(() => skillMarketplace.value?.summary || {})
+const a2aOverview = computed(() => ({
+  total: a2aPagination.total || a2aTasks.value.length,
+  queued: a2aTasks.value.filter(item => item.status === 'queued').length,
+  running: a2aTasks.value.filter(item => item.status === 'running').length,
+  done: a2aTasks.value.filter(item => ['completed', 'canceled', 'failed'].includes(item.status)).length,
+}))
+const runbookOverview = computed(() => ({
+  total: runbookPagination.total || runbooks.value.length,
+  draft: runbooks.value.filter(item => item.status === 'draft').length,
+  published: runbooks.value.filter(item => item.status === 'published').length,
+  archived: runbooks.value.filter(item => item.status === 'archived').length,
+}))
 const skillCategoryOptions = computed(() => {
   const categories = new Set(['告警排障', '变更关联', '日志查询', 'K8s 诊断', '自愈安全', '任务中心', '发布回滚', '回答规范'])
   skills.value.forEach(item => {
@@ -1136,6 +1429,8 @@ function resetProviderForm() {
     temperature: 0.2,
     max_tokens: 1200,
     timeout_seconds: 30,
+    input_token_price_per_1m: 0,
+    output_token_price_per_1m: 0,
     is_enabled: true,
   })
   selectedProviderPreset.value = ''
@@ -1179,6 +1474,25 @@ function resetSkillForm() {
   })
 }
 
+function resetA2AForm() {
+  Object.assign(a2aForm, {
+    source_agent: 'web-console',
+    title: '',
+    action_code: 'runbook.generate',
+    input_payload_text: '{\n  "environment": "电商测试环境",\n  "service": "order-service"\n}',
+  })
+}
+
+function resetRunbookForm() {
+  Object.assign(runbookForm, {
+    title: '',
+    environment: '',
+    service: '',
+    content: '',
+    tags: [],
+  })
+}
+
 function applyConfig(payload = {}) {
   Object.assign(configForm, {
     default_provider_id: payload.default_provider?.id || null,
@@ -1196,39 +1510,78 @@ function applyConfig(payload = {}) {
   })
 }
 
+async function optionalLoad(loader, fallback) {
+  try {
+    return await loader()
+  } catch {
+    if (typeof fallback === 'function') {
+      fallback()
+    }
+    return null
+  }
+}
+
 async function loadAll() {
   loading.page = true
   try {
-    const [config, providerData, presetData, mcpData, skillData, actionData, auditData] = await Promise.all([
+    const [config, providerData, presetData, mcpData, skillData, marketData, actionData, auditData, costData] = await Promise.all([
       getAIOpsConfig(),
       getAIOpsProviders(),
       getAIOpsProviderPresets(),
       getAIOpsMcpServers(),
       getAIOpsSkills(),
+      getAIOpsSkillMarketplace(),
       getAIOpsActions(),
-      getAIOpsAuditOverview(),
+      optionalLoad(() => getAIOpsAuditOverview({ skipErrorMessage: true })),
+      optionalLoad(() => getAIOpsAuditCosts({ days: 7 }, { skipErrorMessage: true })),
     ])
     applyConfig(config)
     providers.value = providerData || []
     providerPresets.value = presetData?.presets || []
     mcpServers.value = mcpData || []
     skills.value = skillData || []
+    skillMarketplace.value = marketData || { summary: {}, items: [] }
     actionRegistry.value = actionData?.actions || []
     actionRegistrySummary.value = actionData?.summary || {}
     auditOverview.value = auditData || {}
+    auditCosts.value = costData || {}
     await Promise.all([
-      loadAuditSessions(auditSessionPagination.page),
-      loadAuditTools(auditToolPagination.page),
-      loadAuditActions(auditActionPagination.page),
+      optionalLoad(() => loadAuditSessions(auditSessionPagination.page, { skipErrorMessage: true }), () => {
+        auditSessionPagination.total = 0
+        auditSessions.value = []
+        selectedAuditSessionIds.value = []
+      }),
+      optionalLoad(() => loadAuditTools(auditToolPagination.page, { skipErrorMessage: true }), () => {
+        auditToolPagination.total = 0
+        auditTools.value = []
+        selectedAuditToolIds.value = []
+      }),
+      optionalLoad(() => loadAuditModels(auditModelPagination.page, { skipErrorMessage: true }), () => {
+        auditModelPagination.total = 0
+        auditModels.value = []
+      }),
+      optionalLoad(() => loadAuditActions(auditActionPagination.page, { skipErrorMessage: true }), () => {
+        auditActionPagination.total = 0
+        auditActions.value = []
+        selectedAuditActionIds.value = []
+      }),
+      optionalLoad(() => loadA2ATasks(a2aPagination.page, { skipErrorMessage: true }), () => {
+        a2aPagination.total = 0
+        a2aTasks.value = []
+      }),
+      optionalLoad(() => loadRunbooks(runbookPagination.page, { skipErrorMessage: true }), () => {
+        runbookPagination.total = 0
+        runbooks.value = []
+      }),
     ])
   } finally {
     loading.page = false
   }
 }
 
-async function loadAuditSessions(page = 1) {
+async function loadAuditSessions(page = 1, config = {}) {
   try {
-    const sessionData = await getAIOpsAuditSessions({ page })
+    const sessionData = await getAIOpsAuditSessions({ page }, config)
     auditSessionPagination.page = page
     auditSessionPagination.total = sessionData.count || 0
     auditSessions.value = sessionData.results || sessionData || []
@@ -1236,15 +1589,15 @@ async function loadAuditSessions(page = 1) {
   } catch (error) {
     const message = String(error?.response?.data?.detail || '')
     if (page > 1 && message.includes('无效页面')) {
-      return loadAuditSessions(page - 1)
+      return loadAuditSessions(page - 1, config)
     }
     throw error
   }
 }
 
-async function loadAuditTools(page = 1) {
+async function loadAuditTools(page = 1, config = {}) {
   try {
-    const toolData = await getAIOpsAuditToolInvocations({ page, page_size: auditToolPagination.pageSize })
+    const toolData = await getAIOpsAuditToolInvocations({ page, page_size: auditToolPagination.pageSize }, config)
     auditToolPagination.page = page
     auditToolPagination.total = toolData.count || 0
     auditTools.value = toolData.results || toolData || []
@@ -1252,15 +1605,30 @@ async function loadAuditTools(page = 1) {
   } catch (error) {
     const message = String(error?.response?.data?.detail || '')
     if (page > 1 && message.includes('无效页面')) {
-      return loadAuditTools(page - 1)
+      return loadAuditTools(page - 1, config)
     }
     throw error
   }
 }
 
-async function loadAuditActions(page = 1) {
+async function loadAuditModels(page = 1, config = {}) {
   try {
-    const actionData = await getAIOpsAuditActions({ page, page_size: auditActionPagination.pageSize })
+    const modelData = await getAIOpsAuditModelInvocations({ page, page_size: auditModelPagination.pageSize }, config)
+    auditModelPagination.page = page
+    auditModelPagination.total = modelData.count || 0
+    auditModels.value = modelData.results || modelData || []
+  } catch (error) {
+    const message = String(error?.response?.data?.detail || '')
+    if (page > 1 && message.includes('无效页面')) {
+      return loadAuditModels(page - 1, config)
+    }
+    throw error
+  }
+}
+
+async function loadAuditActions(page = 1, config = {}) {
+  try {
+    const actionData = await getAIOpsAuditActions({ page, page_size: auditActionPagination.pageSize }, config)
     auditActionPagination.page = page
     auditActionPagination.total = actionData.count || 0
     auditActions.value = actionData.results || actionData || []
@@ -1268,7 +1636,37 @@ async function loadAuditActions(page = 1) {
   } catch (error) {
     const message = String(error?.response?.data?.detail || '')
     if (page > 1 && message.includes('无效页面')) {
-      return loadAuditActions(page - 1)
+      return loadAuditActions(page - 1, config)
+    }
+    throw error
+  }
+}
+
+async function loadA2ATasks(page = 1, config = {}) {
+  try {
+    const data = await getAIOpsA2ATasks({ page, page_size: a2aPagination.pageSize }, config)
+    a2aPagination.page = page
+    a2aPagination.total = data.count || 0
+    a2aTasks.value = data.results || data || []
+  } catch (error) {
+    const message = String(error?.response?.data?.detail || '')
+    if (page > 1 && message.includes('无效页面')) {
+      return loadA2ATasks(page - 1, config)
+    }
+    throw error
+  }
+}
+
+async function loadRunbooks(page = 1, config = {}) {
+  try {
+    const data = await getAIOpsRunbooks({ page, page_size: runbookPagination.pageSize }, config)
+    runbookPagination.page = page
+    runbookPagination.total = data.count || 0
+    runbooks.value = data.results || data || []
+  } catch (error) {
+    const message = String(error?.response?.data?.detail || '')
+    if (page > 1 && message.includes('无效页面')) {
+      return loadRunbooks(page - 1, config)
     }
     throw error
   }
@@ -1478,6 +1876,85 @@ async function handleDeleteSkill(row) {
   await loadAll()
 }
 
+function openSkillMarketDialog() {
+  skillMarketDialogVisible.value = true
+}
+
+async function handleCloneSkill(row) {
+  await cloneAIOpsSkill(row.id, {})
+  ElMessage.success('已克隆为团队 Skill')
+  skillMarketDialogVisible.value = false
+  await loadAll()
+}
+
+function openA2ADialog() {
+  resetA2AForm()
+  a2aDialogVisible.value = true
+}
+
+async function saveA2ATask() {
+  let inputPayload = {}
+  try {
+    inputPayload = a2aForm.input_payload_text?.trim() ? JSON.parse(a2aForm.input_payload_text) : {}
+  } catch (error) {
+    ElMessage.error('输入参数必须是合法 JSON 对象')
+    return
+  }
+  if (!inputPayload || Array.isArray(inputPayload) || typeof inputPayload !== 'object') {
+    ElMessage.error('输入参数必须是 JSON 对象')
+    return
+  }
+  await createAIOpsA2ATask({
+    source_agent: a2aForm.source_agent,
+    title: a2aForm.title,
+    action_code: a2aForm.action_code,
+    input_payload: inputPayload,
+  })
+  a2aDialogVisible.value = false
+  ElMessage.success('协同任务草案已创建')
+  await loadA2ATasks(1)
+}
+
+async function handleCancelA2ATask(row) {
+  await ElMessageBox.confirm(`确认取消外部任务《${row.title}》吗？`, '取消确认', { type: 'warning' })
+  await cancelAIOpsA2ATask(row.public_id)
+  ElMessage.success('协同任务已取消')
+  await loadA2ATasks(a2aPagination.page)
+}
+
+function openRunbookDialog() {
+  resetRunbookForm()
+  runbookDialogVisible.value = true
+}
+
+async function saveRunbookDraft() {
+  await createAIOpsRunbookDraft({
+    title: runbookForm.title,
+    environment: runbookForm.environment,
+    service: runbookForm.service,
+    content: runbookForm.content,
+    tags: runbookForm.tags || [],
+  })
+  runbookDialogVisible.value = false
+  ElMessage.success('Runbook 手册草案已生成')
+  await loadRunbooks(1)
+}
+
+async function handleDeleteRunbook(row) {
+  await ElMessageBox.confirm(`确认删除 Runbook《${row.title}》吗？`, '删除确认', { type: 'warning' })
+  await deleteAIOpsRunbook(row.id)
+  ElMessage.success('Runbook 手册已删除')
+  await loadRunbooks(runbooks.value.length === 1 && runbookPagination.page > 1 ? runbookPagination.page - 1 : runbookPagination.page)
+}
+
+function formatJsonCompact(value) {
+  try {
+    return JSON.stringify(value || {}, null, 2)
+  } catch (error) {
+    return String(value || '')
+  }
+}
+
 async function handleDeleteAuditSession(row) {
   await ElMessageBox.confirm(`确认删除会话《${row.title}》吗？该操作不可恢复。`, '删除确认', { type: 'warning' })
   await deleteAIOpsAuditSession(row.id)
@@ -1542,6 +2019,22 @@ async function handleBatchDeleteAuditTools() {
   ])
 }
 
+async function handleDeleteAuditModel(row) {
+  const shouldFallbackPage = auditModels.value.length === 1 && auditModelPagination.page > 1
+  await ElMessageBox.confirm(`确认删除模型调用《${row.resolved_model || row.requested_model}》吗？该操作不可恢复。`, '删除确认', { type: 'warning' })
+  await deleteAIOpsAuditModelInvocation(row.id)
+  ElMessage.success('模型调用已删除')
+  await Promise.all([
+    getAIOpsAuditOverview().then((data) => {
+      auditOverview.value = data || {}
+    }),
+    getAIOpsAuditCosts({ days: 7 }).then((data) => {
+      auditCosts.value = data || {}
+    }),
+    loadAuditModels(shouldFallbackPage ? auditModelPagination.page - 1 : auditModelPagination.page),
+  ])
+}
+
 function handleAuditActionSelectionChange(rows) {
   selectedAuditActionIds.value = rows.map((item) => item.id)
 }
@@ -1578,6 +2071,8 @@ onMounted(async () => {
   resetProviderForm()
   resetMcpForm()
   resetSkillForm()
+  resetA2AForm()
+  resetRunbookForm()
   await loadAll()
 })
 </script>
@@ -1815,6 +2310,13 @@ onMounted(async () => {
   margin-bottom: 8px;
 }
 
+.toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .toolbar-head {
   display: inline-flex;
   align-items: baseline;
@@ -1847,7 +2349,7 @@ onMounted(async () => {
 
 .audit-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
 .audit-card {
@@ -1860,9 +2362,63 @@ onMounted(async () => {
   gap: 8px;
 }
 
+.audit-card--inline {
+  min-height: 68px;
+}
+
 .audit-card strong {
-  font-size: 28px;
+  font-size: 24px;
   color: #0f172a;
+}
+
+.cost-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 8px 0 0;
+}
+
+.cost-panel {
+  padding: 12px;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+}
+
+.cost-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cost-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.cost-row strong {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.json-preview {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  color: #334155;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .audit-card--info {

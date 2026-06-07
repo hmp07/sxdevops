@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 import requests
 from django.contrib.auth import get_user_model
 from django.db import close_old_connections
-from django.db.models import Q
+from django.db.models import Avg, Count, Q, Sum
 from django.http import QueryDict
 from django.utils import timezone
 
@@ -62,10 +62,13 @@ from .models import (
     AIOpsAgentConfig,
     AIOpsChatMessage,
     AIOpsChatSession,
+    AIOpsExternalTask,
     AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
+    AIOpsModelInvocation,
     AIOpsModelProvider,
     AIOpsPendingAction,
+    AIOpsRunbook,
     AIOpsSkill,
     AIOpsToolInvocation,
 )
@@ -854,6 +857,7 @@ BUILTIN_ACTION_REGISTRY = [
         'suggested_questions': [
             '电商测试环境当前未确认的严重告警有哪些？',
             '分析下电商测试环境订单服务最近一小时有什么异常',
+            '帮我看下电商测试环境订单服务 5xx 告警是什么原因',
         ],
     },
     {
@@ -886,6 +890,7 @@ BUILTIN_ACTION_REGISTRY = [
         'suggested_questions': [
             '最近有哪些变更可能影响生产环境订单系统？',
             '今天有哪些发布和告警时间上接近？',
+            '今天订单服务发布后错误率升高，帮我看看和变更有没有关系',
         ],
     },
     {
@@ -917,6 +922,7 @@ BUILTIN_ACTION_REGISTRY = [
         'suggested_questions': [
             '帮我生成电商测试环境订单服务的错误日志查询。',
             '查询最近 30 分钟登录失败相关日志。',
+            '帮我查下电商测试环境 checkout 的超时日志',
         ],
     },
     {
@@ -951,6 +957,7 @@ BUILTIN_ACTION_REGISTRY = [
         'suggested_questions': [
             '分析下电商测试环境 k8s 集群的异常工作负载。',
             '这个命名空间里有哪些 Pod 异常？',
+            '电商测试环境 k8s 节点资源不足会影响哪些 pod',
         ],
     },
     {
@@ -986,6 +993,7 @@ BUILTIN_ACTION_REGISTRY = [
         'suggested_questions': [
             '给我推荐一套针对订单系统告警的自愈方案。',
             '当前这类故障适合先做哪个自愈脚本？',
+            '这个故障能不能先 dry-run 一个自愈脚本',
         ],
     },
     {
@@ -1018,6 +1026,7 @@ BUILTIN_ACTION_REGISTRY = [
         'suggested_questions': [
             '帮我生成订单服务 QPS 和错误率的指标查询。',
             '生成查看最近一小时接口 P95 延迟的 PromQL。',
+            '帮我写一个 PromQL 看订单服务错误率',
         ],
     },
     {
@@ -1055,6 +1064,7 @@ BUILTIN_ACTION_REGISTRY = [
         'suggested_questions': [
             '分析这次订单服务发布失败的可能原因。',
             '最近一次发布失败是否和 K8s 事件或日志异常相关？',
+            '订单服务发布失败了，帮我诊断可能原因',
         ],
     },
     {
@@ -1090,6 +1100,7 @@ BUILTIN_ACTION_REGISTRY = [
         'suggested_questions': [
             '分析订单服务最近一小时的 SLO 风险。',
             '当前服务健康度下降主要受哪些指标影响？',
+            '订单服务健康度下降主要是延迟还是错误率导致的',
         ],
     },
     {
@@ -1121,6 +1132,7 @@ BUILTIN_ACTION_REGISTRY = [
         'suggested_questions': [
             '给生产严重告警设计一套通知和升级策略。',
             '这个服务的告警应该通知哪些角色并如何升级？',
+            '生产环境 P1 告警应该通知谁，多久升级一次',
         ],
     },
     {
@@ -1159,6 +1171,7 @@ BUILTIN_ACTION_REGISTRY = [
         'suggested_questions': [
             '基于这次故障生成一个 Runbook 草案。',
             '把订单服务 5xx 告警的排障流程沉淀成 Runbook。',
+            '生成一个支付服务超时的排障手册草案',
         ],
     },
 ]
@@ -1347,6 +1360,244 @@ def build_action_registry_summary(actions=None):
     }
 
 
+def build_skill_marketplace_catalog(user=None):
+    get_agent_config()
+    skills = list(AIOpsSkill.objects.all().order_by('is_builtin', 'category', 'name', 'id'))
+    installed_slugs = set(
+        AIOpsSkill.objects.filter(is_enabled=True).values_list('slug', flat=True)
+    )
+    items = []
+    for skill in skills:
+        source = 'builtin' if skill.is_builtin else 'team'
+        item = {
+            'id': skill.id,
+            'name': skill.name,
+            'slug': skill.slug,
+            'category': skill.category or '未分类',
+            'description': skill.description,
+            'source': source,
+            'source_display': '平台内置' if source == 'builtin' else '团队自定义',
+            'risk_level': skill.risk_level,
+            'risk_level_display': skill.get_risk_level_display(),
+            'applicable_actions': skill.applicable_actions or [],
+            'builtin_tools': skill.builtin_tools or [],
+            'recommended_tools': skill.recommended_tools or [],
+            'examples': skill.examples or [],
+            'output_contract': skill.output_contract or {},
+            'is_enabled': skill.is_enabled,
+            'installed': skill.slug in installed_slugs,
+            'can_clone': True,
+            'can_edit': (not skill.is_builtin) and (not user or user_has_permissions(user, ['aiops.config.manage'])),
+        }
+        items.append(item)
+    return {
+        'summary': {
+            'total': len(items),
+            'builtin': sum(1 for item in items if item['source'] == 'builtin'),
+            'team': sum(1 for item in items if item['source'] == 'team'),
+            'enabled': sum(1 for item in items if item['is_enabled']),
+        },
+        'items': items,
+    }
+
+
+def clone_skill_to_team(skill, user=None, name='', slug=''):
+    base_name = (name or f'{skill.name} 团队版').strip()
+    base_slug = (slug or f'{skill.slug}-team').strip()
+    candidate_slug = base_slug
+    suffix = 2
+    while AIOpsSkill.objects.filter(slug=candidate_slug).exists():
+        candidate_slug = f'{base_slug}-{suffix}'
+        suffix += 1
+    candidate_name = base_name
+    name_suffix = 2
+    while AIOpsSkill.objects.filter(name=candidate_name).exists():
+        candidate_name = f'{base_name} {name_suffix}'
+        name_suffix += 1
+    return AIOpsSkill.objects.create(
+        name=candidate_name,
+        slug=candidate_slug,
+        description=skill.description,
+        category=skill.category,
+        applicable_actions=skill.applicable_actions or [],
+        examples=skill.examples or [],
+        builtin_tools=skill.builtin_tools or [],
+        recommended_tools=skill.recommended_tools or [],
+        max_iterations=skill.max_iterations,
+        risk_level=skill.risk_level,
+        output_contract=skill.output_contract or {},
+        source_type=AIOpsSkill.SOURCE_INLINE,
+        content=skill.content,
+        allowed_role_codes=skill.allowed_role_codes or [],
+        is_builtin=False,
+        is_enabled=True,
+    )
+
+
+def build_action_preflight_contract(action_code, payload=None, user=None):
+    payload = payload if isinstance(payload, dict) else {}
+    question = str(payload.get('question') or '').strip()
+    action = _action_registry_item_by_code(action_code, user=user, include_unavailable=True)
+    if not action:
+        raise ValueError('Action 不存在')
+    if user and not action.get('available'):
+        raise ValueError(action.get('available_reason') or '缺少 Action 权限')
+
+    knowledge_environment = None
+    analysis_scope = {}
+    if question:
+        matches = resolve_knowledge_environments_from_text(question)
+        if len(matches) == 1:
+            knowledge_environment = matches[0]
+    environment_name = str(payload.get('environment') or '').strip()
+    if environment_name:
+        environment = resolve_knowledge_environment(environment_name)
+        if environment:
+            knowledge_environment = environment
+    if knowledge_environment:
+        analysis_scope = _build_analysis_scope(knowledge_environment)
+
+    missing_fields = _missing_action_context_fields(action, question, knowledge_environment=knowledge_environment, analysis_scope=analysis_scope)
+    result = _build_action_preflight_result(
+        action,
+        knowledge_environment=knowledge_environment,
+        analysis_scope=analysis_scope,
+        missing_fields=missing_fields,
+        summary=f"{action.get('display_name') or action_code} 的预检上下文。",
+        suggestions=_action_preflight_suggestions(action, missing_fields, knowledge_environment=knowledge_environment),
+        current_question=question,
+    )
+    return result['metadata']
+
+
+def _action_plan_step(tool_name, title='', risk_level='read_only'):
+    return {
+        'tool': tool_name,
+        'title': title or tool_name,
+        'risk_level': risk_level,
+        'status': 'pending',
+    }
+
+
+def build_external_task_plan(action, payload=None):
+    payload = payload if isinstance(payload, dict) else {}
+    action = action or {}
+    steps = []
+    if action.get('preflight_required') or action.get('risk_level') in {'draft', 'write', 'execute'}:
+        steps.append({
+            'tool': 'preflight',
+            'title': '上下文预检',
+            'risk_level': action.get('risk_level') or 'draft',
+            'status': 'pending',
+        })
+    for tool in action.get('allowed_tools') or []:
+        steps.append(_action_plan_step(tool, title=f'调用 {tool}', risk_level=action.get('risk_level') or 'read_only'))
+    if action.get('code') == 'runbook.generate':
+        steps.append({
+            'tool': 'persist_runbook_draft',
+            'title': '沉淀 Runbook 草案',
+            'risk_level': 'draft',
+            'status': 'pending',
+        })
+    if not steps:
+        steps.append({
+            'tool': 'answer',
+            'title': '生成结构化回答',
+            'risk_level': action.get('risk_level') or 'read_only',
+            'status': 'pending',
+        })
+    return steps[:12]
+
+
+def create_external_task(payload, user):
+    payload = payload if isinstance(payload, dict) else {}
+    action_code = str(payload.get('action_code') or '').strip()
+    action = _action_registry_item_by_code(action_code, user=user, include_unavailable=True)
+    if not action:
+        raise ValueError('Action 不存在')
+    if not action.get('available'):
+        raise ValueError(action.get('available_reason') or '缺少 Action 权限')
+    input_payload = payload.get('input_payload') if isinstance(payload.get('input_payload'), dict) else {}
+    task = AIOpsExternalTask.objects.create(
+        source_agent=str(payload.get('source_agent') or '').strip(),
+        title=str(payload.get('title') or action.get('display_name') or 'AIOps 外部任务')[:128],
+        action_code=action_code,
+        agent_mode=action.get('agent_mode') or 'direct',
+        input_payload=input_payload,
+        plan_steps=build_external_task_plan(action, input_payload),
+        result_payload={
+            'mode': 'orchestration_preview',
+            'message': '已创建受控编排任务草案，等待后续确认或执行链路接入。',
+            'action': {
+                'code': action.get('code'),
+                'display_name': action.get('display_name'),
+                'risk_level': action.get('risk_level'),
+                'agent_mode': action.get('agent_mode'),
+            },
+        },
+        created_by=user,
+    )
+    return task
+
+
+def cancel_external_task(task, user=None):
+    if task.status in {AIOpsExternalTask.STATUS_COMPLETED, AIOpsExternalTask.STATUS_CANCELED}:
+        raise ValueError('任务已结束，不能取消')
+    task.status = AIOpsExternalTask.STATUS_CANCELED
+    task.canceled_at = timezone.now()
+    task.result_payload = {
+        **(task.result_payload or {}),
+        'canceled_by': getattr(user, 'username', ''),
+    }
+    task.save(update_fields=['status', 'canceled_at', 'result_payload', 'updated_at'])
+    return task
+
+
+def build_runbook_draft_from_payload(payload, user=None, source_task=None, source_session=None):
+    payload = payload if isinstance(payload, dict) else {}
+    title = str(payload.get('title') or payload.get('incident') or 'AIOps Runbook 草案').strip()[:160]
+    environment = str(payload.get('environment') or '').strip()
+    service = str(payload.get('service') or payload.get('system') or '').strip()
+    base_slug_source = '-'.join([item for item in [environment, service, title] if item]) or title
+    base_slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', base_slug_source.lower()).strip('-')[:120] or f'runbook-{uuid.uuid4().hex[:8]}'
+    slug = base_slug
+    suffix = 2
+    while AIOpsRunbook.objects.filter(slug=slug).exists():
+        slug = f'{base_slug}-{suffix}'
+        suffix += 1
+    content = str(payload.get('content') or '').strip()
+    if not content:
+        content = '\n'.join([
+            f'# {title}',
+            '',
+            '## 适用范围',
+            f'- 环境：{environment or "待补充"}',
+            f'- 服务：{service or "待补充"}',
+            '',
+            '## 触发条件',
+            '- 待结合告警、日志、链路和变更证据补充。',
+            '',
+            '## 排查步骤',
+            '1. 确认告警状态、影响范围和时间窗口。',
+            '2. 查询日志、链路、系统态势和最近变更。',
+            '3. 输出处置建议、风险和回滚条件。',
+        ])
+    return AIOpsRunbook.objects.create(
+        title=title,
+        slug=slug,
+        environment=environment,
+        service=service,
+        status=AIOpsRunbook.STATUS_DRAFT,
+        content=content,
+        evidence=payload.get('evidence') if isinstance(payload.get('evidence'), list) else [],
+        tags=payload.get('tags') if isinstance(payload.get('tags'), list) else [],
+        source_task=source_task,
+        source_session=source_session,
+        created_by=getattr(user, 'username', ''),
+        updated_by=getattr(user, 'username', ''),
+    )
+
+
 ACTION_ROUTE_PRIORITY = [
     'self_heal.recommend',
     'k8s.diagnose',
@@ -1376,28 +1627,42 @@ def _action_question_matches(action_code, question, analysis_scope=None):
         return False
     if action_code == 'alert.root_cause':
         has_root_cause_intent = _question_contains_any(lowered, ['根因', '原因', '为什么', '可能原因', '定位', '最新', '最近一条', '最后一条', '这条'])
-        has_service_scope = bool(_action_detected_service(question, analysis_scope=analysis_scope))
+        has_alert_scope = _question_contains_any(lowered, ['告警', 'alert'])
+        has_alert_listing_intent = _question_contains_any(lowered, ['当前', '未确认', '严重', '有哪些', '哪些', '列表', '最新', '最近一条', '最后一条'])
+        has_service_scope = (
+            bool(_action_detected_service(question, analysis_scope=analysis_scope))
+            or _question_contains_any(lowered, ['服务', '系统', '应用', '订单'])
+        )
+        has_abnormal_analysis_intent = (
+            has_service_scope
+            and _question_contains_any(lowered, ['异常', '故障', '错误', '失败', '5xx', '超时'])
+            and _question_contains_any(lowered, ['分析', '排查', '定位', '最近', '一小时'])
+        )
         return (
-            _question_contains_any(lowered, ['告警', 'alert'])
-            and (
-                has_root_cause_intent
-                or (has_service_scope and _question_contains_any(lowered, ['排查', '分析', '定位', '异常']))
+            (
+                has_alert_scope
+                and (
+                    has_alert_listing_intent
+                    or has_root_cause_intent
+                    or (has_service_scope and _question_contains_any(lowered, ['排查', '分析', '定位', '异常']))
+                )
             )
+            or has_abnormal_analysis_intent
         )
     if action_code == 'change.correlation':
         return (
             _question_contains_any(lowered, ['变更', '发布', '工单', '部署', '回滚', '上线', 'deploy', 'deployment'])
-            and _question_contains_any(lowered, ['关联', '影响', '导致', '相关', '异常', '问题', '原因', '排查'])
+            and _question_contains_any(lowered, ['关联', '关系', '影响', '导致', '相关', '异常', '问题', '原因', '排查', '接近', '时间', '时间线', '升高', '下降'])
         )
     if action_code == 'log.query_generate':
         return (
             _question_contains_any(lowered, ['日志', 'log', 'logs', 'loki', 'elk', 'sls'])
-            and _question_contains_any(lowered, ['生成', '查询', '语句', '条件', '过滤', '分析', '检索'])
+            and _question_contains_any(lowered, ['生成', '查询', '查下', '查看', '看下', '语句', '条件', '过滤', '分析', '检索'])
         )
     if action_code == 'k8s.diagnose':
         return (
             _question_contains_any(lowered, ['k8s', 'kubernetes', 'pod', 'pods', 'namespace', '命名空间', '集群', 'deployment', 'statefulset', 'daemonset', 'workload', 'workloads', '容器'])
-            and _question_contains_any(lowered, ['诊断', '排查', '分析', '根因', '原因', '为什么'])
+            and _question_contains_any(lowered, ['诊断', '排查', '分析', '根因', '原因', '为什么', '异常', '失败', 'pending', 'crashloopbackoff', '不可用', '资源不足', '影响', '哪些'])
         )
     if action_code == 'self_heal.recommend':
         return (
@@ -2557,15 +2822,19 @@ def _llm_extract_log_query_arguments(provider, question, scoped_question, servic
         f'带环境问题：{scoped_question}',
         '返回格式：{"service":"","levels":[],"duration_minutes":60}',
     ])
-    completion = _request_model_completion(provider, {
-        'model': provider.default_model,
-        'temperature': 0,
-        'max_tokens': 256,
-        'messages': [
-            {'role': 'system', 'content': '只输出一个 JSON object。'},
-            {'role': 'user', 'content': prompt},
-        ],
-    })
+    completion = _request_model_completion(
+        provider,
+        {
+            'model': provider.default_model,
+            'temperature': 0,
+            'max_tokens': 256,
+            'messages': [
+                {'role': 'system', 'content': '只输出一个 JSON object。'},
+                {'role': 'user', 'content': prompt},
+            ],
+        },
+        purpose=AIOpsModelInvocation.PURPOSE_PARAMETER_EXTRACTION,
+    )
     message = (((completion or {}).get('choices') or [{}])[0]).get('message') or {}
     parsed = _parse_json_object_from_text(_extract_message_content(message))
     service = str(parsed.get('service') or '').strip()
@@ -5178,6 +5447,8 @@ def _build_direct_tool_result(
         'formatter_mode': (
             'skill'
             if formatter_result and formatter_result.get('used') and not formatter_result.get('fell_back')
+            else 'fallback'
+            if formatter_result and formatter_result.get('fell_back')
             else 'deterministic'
         ),
         'formatter_attempts': (formatter_result or {}).get('attempts', 0),
@@ -5225,6 +5496,8 @@ def _is_service_anomaly_question(question):
 
 def _is_task_generation_question(question):
     text = str(question or '').lower()
+    if _is_direct_log_question(question) or _is_direct_promql_question(question):
+        return False
     return any(keyword in text for keyword in ['生成', '创建', '新建', '安排', '巡检任务', '任务', 'task'])
 
 
@@ -5336,7 +5609,12 @@ def _build_evidence_bundle_result(
     citations = _dedupe_citations(citations)
     tool_names = _dedupe_tool_names(tool_names)
     bundle_tool_count = len([item for item in collected_tool_outputs if item.get('tool_name')])
-    if bundle_tool_count > 2 and not pending_action_draft:
+    alert_context = _collect_alert_context(collected_tool_outputs or [], sections)
+    should_prefer_structured_answer = bool(alert_context.get('entries')) and any(
+        keyword in str(scoped_question or question or '').lower()
+        for keyword in ['告警', 'alert', 'alerts']
+    )
+    if bundle_tool_count > 2 and not pending_action_draft and not should_prefer_structured_answer:
         fallback_content = build_markdown_answer(
             '智能助手回复',
             sections,
@@ -5892,25 +6170,38 @@ def _run_action_root_cause(session, user_message, user, question, scoped_questio
 def _run_action_log_query(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
     parameter_provider = provider if _provider_is_ready(provider) else None
     log_arguments = _direct_log_query_arguments(question, scoped_question, analysis_scope=analysis_scope, provider=parameter_provider)
-    result = _direct_tool_fastpath(
+    emit(
+        step={
+            'title': '日志查询生成',
+            'detail': '动作路由已选择日志查询生成，直接调用平台日志接口并整理查询语句。',
+            'status': PROCESSING_STATUS_COMPLETED,
+        },
+        text='正在生成日志查询',
+    )
+    sections, citations, tool_names, collected = [], [], [], []
+    log_tool_result = _run_scoped_tool(
         session,
         user_message,
         user,
-        tool_name='query_logs',
-        arguments=log_arguments,
-        question=question,
-        scoped_question=scoped_question,
-        knowledge_environment=knowledge_environment,
-        analysis_scope=analysis_scope,
-        execution_mode='direct_logs_fastpath',
+        collected,
+        sections,
+        citations,
+        tool_names,
+        'query_logs',
+        log_arguments,
+        emit=emit,
+    )
+    log_result = log_tool_result.get('tool_output') or {}
+    result = _build_direct_log_result(
+        log_result,
+        scoped_question,
+        knowledge_environment,
+        analysis_scope,
+        log_arguments,
         provider=parameter_provider,
         active_skills=active_skills,
-        emit=emit,
-        step_title='日志查询生成',
-        step_detail='动作路由已选择日志查询生成，直接调用平台日志接口并整理查询语句。',
-        step_text='正在生成日志查询',
-        extra_metadata={'log_query': log_arguments},
     )
+    result['metadata']['log_query'] = log_arguments
     return _attach_selected_action_metadata(result, action)
 
 
@@ -7318,10 +7609,12 @@ def _should_prefer_structured_alert_answer(content, structured_answer, collected
 
 
 def _build_fallback_answer(sections, citations, pending_action_draft=None, question='', collected_tool_outputs=None):
+    structured_alert_answer = _build_alert_structured_answer(question, sections, citations, collected_tool_outputs or [])
+    if structured_alert_answer and any(keyword in str(question or '').lower() for keyword in ['告警', 'alert', 'alerts']):
+        return structured_alert_answer
     structured_log_answer = _build_log_structured_answer(question, citations, collected_tool_outputs or [])
     if structured_log_answer:
         return structured_log_answer
-    structured_alert_answer = _build_alert_structured_answer(question, sections, citations, collected_tool_outputs or [])
     if structured_alert_answer:
         return structured_alert_answer
     intro = '已通过已启用的 MCP 与 Skills 获取平台内能力结果。'
@@ -7800,7 +8093,9 @@ def _run_answer_formatter(provider, *, question, draft_content, sections, citati
 
     profile = _detect_formatter_profile(question, pending_action_draft, message_type, collected_tool_outputs=collected_tool_outputs)
     previous_issue = ''
-    for attempt in [1, 2, 3]:
+    alert_context = _collect_alert_context(collected_tool_outputs or [], citations or [])
+    max_attempts = 4 if alert_context.get('entries') and any(keyword in str(question or '').lower() for keyword in ['告警', 'alert', 'alerts']) else 3
+    for attempt in range(1, max_attempts + 1):
         messages = _build_answer_formatter_messages(
             question=question,
             draft_content=draft_content,
@@ -7816,12 +8111,16 @@ def _run_answer_formatter(provider, *, question, draft_content, sections, citati
             previous_issue=previous_issue,
             reference_answer=fallback_content if attempt >= 2 else '',
         )
-        completion = _request_model_completion(provider, {
-            'model': provider.default_model,
-            'temperature': min(provider.temperature or 0.2, 0.2),
-            'max_tokens': provider.max_tokens,
-            'messages': messages,
-        })
+        completion = _request_model_completion(
+            provider,
+            {
+                'model': provider.default_model,
+                'temperature': min(provider.temperature or 0.2, 0.2),
+                'max_tokens': provider.max_tokens,
+                'messages': messages,
+            },
+            purpose=AIOpsModelInvocation.PURPOSE_ANSWER_FORMATTING,
+        )
         choice = ((completion or {}).get('choices') or [{}])[0]
         message = choice.get('message') or {}
         content = _normalize_formatter_output(_extract_message_content(message))
@@ -7850,7 +8149,7 @@ def _run_answer_formatter(provider, *, question, draft_content, sections, citati
         'fallback_content': fallback_content,
         'fell_back': True,
         'reason': 'invalid_formatter_output',
-        'attempts': 3,
+        'attempts': max_attempts,
     }
 
 
@@ -8633,6 +8932,158 @@ def _model_provider_api_base(provider):
     return endpoint
 
 
+def _model_usage_from_response(data):
+    usage = data.get('usage') if isinstance(data, dict) else {}
+    if not isinstance(usage, dict):
+        usage = {}
+    prompt_tokens = usage.get('prompt_tokens') or usage.get('input_tokens') or 0
+    completion_tokens = usage.get('completion_tokens') or usage.get('output_tokens') or 0
+    total_tokens = usage.get('total_tokens') or 0
+    try:
+        prompt_tokens = int(prompt_tokens or 0)
+    except (TypeError, ValueError):
+        prompt_tokens = 0
+    try:
+        completion_tokens = int(completion_tokens or 0)
+    except (TypeError, ValueError):
+        completion_tokens = 0
+    try:
+        total_tokens = int(total_tokens or 0)
+    except (TypeError, ValueError):
+        total_tokens = 0
+    if not total_tokens:
+        total_tokens = prompt_tokens + completion_tokens
+    return prompt_tokens, completion_tokens, total_tokens
+
+
+def _estimate_model_invocation_cost(provider, prompt_tokens=0, completion_tokens=0):
+    if not provider:
+        return Decimal('0')
+    unit = Decimal('1000000')
+    input_price = getattr(provider, 'input_token_price_per_1m', Decimal('0')) or Decimal('0')
+    output_price = getattr(provider, 'output_token_price_per_1m', Decimal('0')) or Decimal('0')
+    return (Decimal(prompt_tokens or 0) * input_price / unit) + (Decimal(completion_tokens or 0) * output_price / unit)
+
+
+def _model_request_summary(payload):
+    messages = payload.get('messages') or []
+    tools = payload.get('tools') or []
+    return {
+        'message_count': len(messages) if isinstance(messages, list) else 0,
+        'tool_count': len(tools) if isinstance(tools, list) else 0,
+        'max_tokens': payload.get('max_tokens'),
+        'temperature': payload.get('temperature'),
+    }
+
+
+def _record_model_invocation(provider, payload, data=None, *, status_value, latency_ms=0, purpose='', session=None, message=None, user=None, error_detail=''):
+    try:
+        meta = (data or {}).get('_meta') if isinstance(data, dict) else {}
+        meta = meta if isinstance(meta, dict) else {}
+        prompt_tokens, completion_tokens, total_tokens = _model_usage_from_response(data or {})
+        response_summary = {
+            'usage_present': bool(prompt_tokens or completion_tokens or total_tokens),
+            'attempts': meta.get('attempts'),
+        }
+        if error_detail:
+            response_summary['error'] = str(error_detail)[:240]
+        AIOpsModelInvocation.objects.create(
+            provider=provider,
+            session=session,
+            message=message,
+            username=getattr(user, 'username', '') or getattr(getattr(session, 'user', None), 'username', ''),
+            purpose=purpose or AIOpsModelInvocation.PURPOSE_CHAT_PLANNING,
+            requested_model=str(meta.get('requested_model') or payload.get('model') or '').strip(),
+            resolved_model=str(meta.get('resolved_model') or payload.get('model') or '').strip(),
+            status=status_value,
+            latency_ms=max(int(latency_ms or 0), 0),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            estimated_cost_usd=_estimate_model_invocation_cost(provider, prompt_tokens, completion_tokens),
+            request_summary=_model_request_summary(payload),
+            response_summary=response_summary,
+        )
+    except Exception:
+        return
+
+
+def build_model_cost_overview(days=7):
+    try:
+        days = int(days or 7)
+    except (TypeError, ValueError):
+        days = 7
+    since = timezone.now() - timedelta(days=max(1, min(days, 90)))
+    queryset = AIOpsModelInvocation.objects.filter(created_at__gte=since)
+    totals = queryset.aggregate(
+        total_calls=Count('id'),
+        total_tokens=Sum('total_tokens'),
+        prompt_tokens=Sum('prompt_tokens'),
+        completion_tokens=Sum('completion_tokens'),
+        estimated_cost_usd=Sum('estimated_cost_usd'),
+        avg_latency_ms=Avg('latency_ms'),
+    )
+    by_provider = []
+    for item in queryset.values('provider__name').annotate(
+        calls=Count('id'),
+        tokens=Sum('total_tokens'),
+        cost=Sum('estimated_cost_usd'),
+        avg_latency=Avg('latency_ms'),
+    ).order_by('-calls')[:10]:
+        by_provider.append({
+            'provider': item.get('provider__name') or '未知提供商',
+            'calls': item.get('calls') or 0,
+            'tokens': item.get('tokens') or 0,
+            'estimated_cost_usd': item.get('cost') or Decimal('0'),
+            'avg_latency_ms': int(item.get('avg_latency') or 0),
+        })
+    by_purpose = []
+    for item in queryset.values('purpose').annotate(
+        calls=Count('id'),
+        tokens=Sum('total_tokens'),
+        cost=Sum('estimated_cost_usd'),
+    ).order_by('-calls')[:10]:
+        by_purpose.append({
+            'purpose': item.get('purpose') or '',
+            'calls': item.get('calls') or 0,
+            'tokens': item.get('tokens') or 0,
+            'estimated_cost_usd': item.get('cost') or Decimal('0'),
+        })
+    tool_queryset = AIOpsToolInvocation.objects.filter(created_at__gte=since)
+    tool_totals = tool_queryset.aggregate(
+        total_calls=Count('id'),
+        avg_latency_ms=Avg('latency_ms'),
+    )
+    by_tool = []
+    for item in tool_queryset.values('tool_name').annotate(
+        calls=Count('id'),
+        avg_latency=Avg('latency_ms'),
+    ).order_by('-calls')[:12]:
+        by_tool.append({
+            'tool_name': item.get('tool_name') or '',
+            'calls': item.get('calls') or 0,
+            'avg_latency_ms': int(item.get('avg_latency') or 0),
+        })
+    return {
+        'window_days': max(1, min(days, 90)),
+        'model': {
+            'total_calls': totals.get('total_calls') or 0,
+            'total_tokens': totals.get('total_tokens') or 0,
+            'prompt_tokens': totals.get('prompt_tokens') or 0,
+            'completion_tokens': totals.get('completion_tokens') or 0,
+            'estimated_cost_usd': totals.get('estimated_cost_usd') or Decimal('0'),
+            'avg_latency_ms': int(totals.get('avg_latency_ms') or 0),
+            'by_provider': by_provider,
+            'by_purpose': by_purpose,
+        },
+        'tools': {
+            'total_calls': tool_totals.get('total_calls') or 0,
+            'avg_latency_ms': int(tool_totals.get('avg_latency_ms') or 0),
+            'by_tool': by_tool,
+        },
+    }
+
+
 def _normalize_model_catalog_items(payload):
     raw_items = payload
     if isinstance(payload, dict):
@@ -8727,31 +9178,39 @@ def _format_model_catalog_request_error(exc):
 
 
 def _probe_model_text_completion(provider, model_name):
-    result = _request_model_completion(provider, {
-        'model': model_name,
-        'temperature': 0,
-        'max_tokens': 32,
-        'messages': [{'role': 'user', 'content': 'reply with ping only'}],
-    })
+    result = _request_model_completion(
+        provider,
+        {
+            'model': model_name,
+            'temperature': 0,
+            'max_tokens': 32,
+            'messages': [{'role': 'user', 'content': 'reply with ping only'}],
+        },
+        purpose=AIOpsModelInvocation.PURPOSE_MODEL_PROBE,
+    )
     return ((result or {}).get('_meta') or {}).get('resolved_model') or model_name
 
 
 def _probe_model_tool_calling(provider, model_name):
-    result = _request_model_completion(provider, {
-        'model': model_name,
-        'temperature': 0,
-        'max_tokens': 96,
-        'messages': [{'role': 'user', 'content': 'please call the ping_tool'}],
-        'tools': [{
-            'type': 'function',
-            'function': {
-                'name': 'ping_tool',
-                'description': 'return pong',
-                'parameters': {'type': 'object', 'properties': {}},
-            },
-        }],
-        'tool_choice': 'auto',
-    })
+    result = _request_model_completion(
+        provider,
+        {
+            'model': model_name,
+            'temperature': 0,
+            'max_tokens': 96,
+            'messages': [{'role': 'user', 'content': 'please call the ping_tool'}],
+            'tools': [{
+                'type': 'function',
+                'function': {
+                    'name': 'ping_tool',
+                    'description': 'return pong',
+                    'parameters': {'type': 'object', 'properties': {}},
+                },
+            }],
+            'tool_choice': 'auto',
+        },
+        purpose=AIOpsModelInvocation.PURPOSE_MODEL_PROBE,
+    )
     choice = ((result or {}).get('choices') or [{}])[0]
     message = choice.get('message') or {}
     resolved_model = ((result or {}).get('_meta') or {}).get('resolved_model') or model_name
@@ -8928,7 +9387,7 @@ def _request_model_completion_legacy(provider, payload):
     raise AIOpsModelCallError(_format_model_call_error(last_error))
 
 
-def _request_model_completion(provider, payload):
+def _request_model_completion(provider, payload, *, session=None, message=None, user=None, purpose=AIOpsModelInvocation.PURPOSE_CHAT_PLANNING):
     payload = {
         **payload,
         'temperature': _normalize_provider_temperature(provider, payload.get('temperature', getattr(provider, 'temperature', 0.2))),
@@ -8944,6 +9403,8 @@ def _request_model_completion(provider, payload):
     recent_errors = []
     total_attempts = 0
     requested_model = payload.get('model')
+    started_at = time.time()
+    audit_message = message
 
     for model_name in _provider_model_candidates(provider, requested_model):
         for request_payload in _model_request_payload_variants(payload, model_name):
@@ -8951,11 +9412,23 @@ def _request_model_completion(provider, payload):
                 for attempt_index in range(2):
                     total_attempts += 1
                     if total_attempts > MODEL_MAX_CALL_ATTEMPTS:
-                        raise AIOpsModelCallError(_format_model_call_error({
+                        detail = _format_model_call_error({
                             'last_error': last_error,
                             'recent_errors': recent_errors,
                             'error': {'type': 'attempts_exhausted', 'message': 'model call attempts exhausted'},
-                        }))
+                        })
+                        _record_model_invocation(
+                            provider,
+                            payload,
+                            status_value=AIOpsModelInvocation.STATUS_FAILED,
+                            latency_ms=(time.time() - started_at) * 1000,
+                            purpose=purpose,
+                            session=session,
+                            message=audit_message,
+                            user=user,
+                            error_detail=detail,
+                        )
+                        raise AIOpsModelCallError(detail)
                     if attempt_index:
                         _sleep_before_model_retry(attempt_index)
                     try:
@@ -9007,6 +9480,17 @@ def _request_model_completion(provider, payload):
                         data.setdefault('_meta', {})['resolved_model'] = model_name
                         data['_meta']['requested_model'] = requested_model
                         data['_meta']['attempts'] = total_attempts
+                        _record_model_invocation(
+                            provider,
+                            payload,
+                            data,
+                            status_value=AIOpsModelInvocation.STATUS_SUCCESS,
+                            latency_ms=(time.time() - started_at) * 1000,
+                            purpose=purpose,
+                            session=session,
+                            message=audit_message,
+                            user=user,
+                        )
                         return data
                     last_error = {'error': {'message': f'model {model_name} returned empty content', 'type': 'empty_content'}}
                     _append_model_error(
@@ -9017,18 +9501,34 @@ def _request_model_completion(provider, payload):
                     )
                     break
 
-    raise AIOpsModelCallError(_format_model_call_error({'last_error': last_error, 'recent_errors': recent_errors}))
+    detail = _format_model_call_error({'last_error': last_error, 'recent_errors': recent_errors})
+    _record_model_invocation(
+        provider,
+        payload,
+        status_value=AIOpsModelInvocation.STATUS_FAILED,
+        latency_ms=(time.time() - started_at) * 1000,
+        purpose=purpose,
+        session=session,
+        message=audit_message,
+        user=user,
+        error_detail=detail,
+    )
+    raise AIOpsModelCallError(detail)
 
 
 def test_model_provider_connection(provider):
     if not _provider_is_ready(provider):
         return {'status': 'failed', 'message': get_model_provider_setup_hint(provider) or '请完善 Base URL、模型和 API Key'}
-    result = _request_model_completion(provider, {
-        'model': provider.default_model,
-        'temperature': 0,
-        'max_tokens': 32,
-        'messages': [{'role': 'user', 'content': '请只回复：连接成功'}],
-    })
+    result = _request_model_completion(
+        provider,
+        {
+            'model': provider.default_model,
+            'temperature': 0,
+            'max_tokens': 32,
+            'messages': [{'role': 'user', 'content': '请只回复：连接成功'}],
+        },
+        purpose=AIOpsModelInvocation.PURPOSE_CONNECTION_TEST,
+    )
     resolved_model = ((result or {}).get('_meta') or {}).get('resolved_model') or provider.default_model
     return {
         'status': 'success',
@@ -10500,42 +11000,6 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     scoped_question = f"{knowledge_environment.get('name')} {question}".strip()
     provider_ready = _provider_is_ready(provider)
     formatter_provider = provider if provider_ready else None
-    selected_action = _select_action_for_question(question, user=user, analysis_scope=analysis_scope)
-    if selected_action:
-        emit(
-            step={
-                'title': 'Action Router',
-                'detail': f"已命中动作 {selected_action.get('display_name') or selected_action.get('code')}。",
-                'status': PROCESSING_STATUS_COMPLETED,
-            },
-            text=f"已识别动作：{selected_action.get('code')}",
-        )
-        missing_fields = _missing_action_context_fields(selected_action, question, knowledge_environment=knowledge_environment, analysis_scope=analysis_scope)
-        if missing_fields:
-            return _build_action_preflight_result(
-                selected_action,
-                knowledge_environment=knowledge_environment,
-                analysis_scope=analysis_scope,
-                missing_fields=missing_fields,
-                summary=f"已识别为 {selected_action.get('display_name') or selected_action.get('code')}，请先补齐必要上下文后再继续。",
-                suggestions=_action_preflight_suggestions(selected_action, missing_fields, knowledge_environment=knowledge_environment),
-                current_question=question,
-            )
-        routed_result = _run_selected_action(
-            session,
-            user_message,
-            user,
-            question,
-            scoped_question,
-            knowledge_environment,
-            analysis_scope,
-            formatter_provider,
-            active_skills,
-            selected_action,
-            emit,
-        )
-        if routed_result:
-            return routed_result
     if _is_direct_alert_analysis_question(question):
         emit(
             step={
@@ -10631,6 +11095,68 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             active_skills,
             emit,
         )
+    if _is_direct_container_question(question):
+        resource_type = _detect_k8s_resource_type(question)
+        if resource_type and resource_type != 'pods':
+            tool_name = 'query_k8s_resources'
+            container_arguments = {'query': scoped_question, 'resource_type': resource_type, 'limit': 8}
+        else:
+            tool_name = 'query_k8s_cluster_summary' if any(keyword in str(question or '').lower() for keyword in ['pod', 'pods', 'k8s', 'kubernetes']) else 'query_container_assets'
+            container_arguments = {'query': scoped_question, 'limit': 1 if tool_name == 'query_k8s_cluster_summary' else 8}
+        return _direct_tool_fastpath(
+            session,
+            user_message,
+            user,
+            tool_name=tool_name,
+            arguments=container_arguments,
+            question=question,
+            scoped_question=scoped_question,
+            knowledge_environment=knowledge_environment,
+            analysis_scope=analysis_scope,
+            execution_mode='direct_container_fastpath',
+            provider=formatter_provider,
+            active_skills=active_skills,
+            emit=emit,
+            step_title='容器环境直接查询',
+            step_detail='命中 K8s/Pod/容器状态类事实问题，直接查询容器环境，LLM 只用于结果总结。',
+            step_text='正在通过平台接口查询容器环境',
+        )
+    selected_action = _select_action_for_question(question, user=user, analysis_scope=analysis_scope)
+    if selected_action:
+        emit(
+            step={
+                'title': 'Action Router',
+                'detail': f"已命中动作 {selected_action.get('display_name') or selected_action.get('code')}。",
+                'status': PROCESSING_STATUS_COMPLETED,
+            },
+            text=f"已识别动作：{selected_action.get('code')}",
+        )
+        missing_fields = _missing_action_context_fields(selected_action, question, knowledge_environment=knowledge_environment, analysis_scope=analysis_scope)
+        if missing_fields:
+            return _build_action_preflight_result(
+                selected_action,
+                knowledge_environment=knowledge_environment,
+                analysis_scope=analysis_scope,
+                missing_fields=missing_fields,
+                summary=f"已识别为 {selected_action.get('display_name') or selected_action.get('code')}，请先补齐必要上下文后再继续。",
+                suggestions=_action_preflight_suggestions(selected_action, missing_fields, knowledge_environment=knowledge_environment),
+                current_question=question,
+            )
+        routed_result = _run_selected_action(
+            session,
+            user_message,
+            user,
+            question,
+            scoped_question,
+            knowledge_environment,
+            analysis_scope,
+            formatter_provider,
+            active_skills,
+            selected_action,
+            emit,
+        )
+        if routed_result:
+            return routed_result
     if _is_service_anomaly_question(question):
         return _run_service_anomaly_evidence(
             session,
@@ -10724,32 +11250,6 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             step_title='PromQL 直接查询',
             step_detail=f'命中明确 PromQL：{promql[:80]}',
             step_text='正在通过平台后端执行 PromQL',
-        )
-    if _is_direct_container_question(question):
-        resource_type = _detect_k8s_resource_type(question)
-        if resource_type and resource_type != 'pods':
-            tool_name = 'query_k8s_resources'
-            container_arguments = {'query': scoped_question, 'resource_type': resource_type, 'limit': 8}
-        else:
-            tool_name = 'query_k8s_cluster_summary' if any(keyword in str(question or '').lower() for keyword in ['pod', 'pods', 'k8s', 'kubernetes']) else 'query_container_assets'
-            container_arguments = {'query': scoped_question, 'limit': 1 if tool_name == 'query_k8s_cluster_summary' else 8}
-        return _direct_tool_fastpath(
-            session,
-            user_message,
-            user,
-            tool_name=tool_name,
-            arguments=container_arguments,
-            question=question,
-            scoped_question=scoped_question,
-            knowledge_environment=knowledge_environment,
-            analysis_scope=analysis_scope,
-            execution_mode='direct_container_fastpath',
-            provider=formatter_provider,
-            active_skills=active_skills,
-            emit=emit,
-            step_title='容器环境直接查询',
-            step_detail='命中 K8s/Pod/容器状态类事实问题，直接查询容器环境，LLM 只用于结果总结。',
-            step_text='正在通过平台接口查询容器环境',
         )
     if _is_direct_event_list_question(question):
         event_arguments = _direct_event_query_arguments(question, scoped_question)
@@ -10889,14 +11389,21 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                 },
                 text='\u6b63\u5728\u8bf7\u6c42\u5927\u6a21\u578b\u89c4\u5212',
             )
-            completion = _request_model_completion(provider, {
-                'model': provider.default_model,
-                'temperature': provider.temperature,
-                'max_tokens': provider.max_tokens,
-                'messages': messages,
-                'tools': tools,
-                'tool_choice': 'auto',
-            })
+            completion = _request_model_completion(
+                provider,
+                {
+                    'model': provider.default_model,
+                    'temperature': provider.temperature,
+                    'max_tokens': provider.max_tokens,
+                    'messages': messages,
+                    'tools': tools,
+                    'tool_choice': 'auto',
+                },
+                session=session,
+                message=user_message,
+                user=user,
+                purpose=AIOpsModelInvocation.PURPOSE_CHAT_PLANNING,
+            )
             choice = ((completion or {}).get('choices') or [{}])[0]
             message = choice.get('message') or {}
             content = (message.get('content') or '').strip()
@@ -11369,11 +11876,16 @@ def dispatch_chat(session, user_message, user, question):
 def build_audit_overview():
     now = timezone.now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    model_today = AIOpsModelInvocation.objects.filter(created_at__gte=today_start)
+    model_totals = model_today.aggregate(tokens=Sum('total_tokens'), cost=Sum('estimated_cost_usd'))
     return {
         'sessions_today': AIOpsChatSession.objects.filter(created_at__gte=today_start, mirror_source__isnull=True).count(),
         'messages_today': AIOpsChatMessage.objects.filter(created_at__gte=today_start, session__mirror_source__isnull=True).count(),
         'actions_today': AIOpsPendingAction.objects.filter(created_at__gte=today_start, mirror_source__isnull=True, session__mirror_source__isnull=True).count(),
         'failed_actions_today': AIOpsPendingAction.objects.filter(created_at__gte=today_start, status=AIOpsPendingAction.STATUS_FAILED, mirror_source__isnull=True, session__mirror_source__isnull=True).count(),
+        'model_calls_today': model_today.count(),
+        'model_tokens_today': model_totals.get('tokens') or 0,
+        'estimated_model_cost_today': model_totals.get('cost') or Decimal('0'),
         'providers_total': AIOpsModelProvider.objects.count(),
         'mcp_total': AIOpsMCPServer.objects.filter(is_enabled=True).count(),
     }

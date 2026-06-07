@@ -12,15 +12,21 @@ router.register('admin/skills', views.AIOpsSkillViewSet, basename='aiops-skill')
 router.register('knowledge-environments', views.AIOpsKnowledgeEnvironmentViewSet, basename='aiops-knowledge-environment')
 router.register('admin/audit/sessions', views.AIOpsAuditSessionViewSet, basename='aiops-audit-session')
 router.register('admin/audit/tool-invocations', views.AIOpsToolInvocationViewSet, basename='aiops-audit-tool')
+router.register('admin/audit/model-invocations', views.AIOpsModelInvocationViewSet, basename='aiops-audit-model')
 router.register('admin/audit/actions', views.AIOpsPendingActionViewSet, basename='aiops-audit-action')
+router.register('a2a/tasks', views.AIOpsExternalTaskViewSet, basename='aiops-a2a-task')
+router.register('runbooks', views.AIOpsRunbookViewSet, basename='aiops-runbook')
 
 urlpatterns = [
     path('bootstrap/', views.bootstrap, name='aiops-bootstrap'),
     path('knowledge-graph/', views.knowledge_graph, name='aiops-knowledge-graph'),
     path('admin/actions/', views.action_registry, name='aiops-action-registry'),
+    path('admin/actions/preflight/', views.action_preflight, name='aiops-action-preflight'),
     path('admin/config/', views.agent_config_view, name='aiops-agent-config'),
     path('admin/providers/presets/', views.model_provider_presets, name='aiops-provider-presets-explicit'),
     path('admin/audit/overview/', views.audit_overview, name='aiops-audit-overview'),
+    path('admin/audit/costs/', views.audit_cost_overview, name='aiops-audit-cost-overview'),
+    re_path(r'^admin/audit/costs/?$', views.audit_cost_overview, name='aiops-audit-cost-overview-compat'),
     re_path(
         r'^sessions/(?P<pk>\d+)/delete_session/?$',
         views.AIOpsChatSessionViewSet.as_view({'post': 'delete_session'}),

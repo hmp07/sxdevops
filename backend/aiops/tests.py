@@ -1,4 +1,5 @@
 from datetime import timedelta
+from decimal import Decimal
 from unittest import mock
 
 import requests
@@ -19,10 +20,13 @@ from rbac.services import ensure_builtin_rbac
 from .models import (
     AIOpsChatMessage,
     AIOpsChatSession,
+    AIOpsExternalTask,
     AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
+    AIOpsModelInvocation,
     AIOpsModelProvider,
     AIOpsPendingAction,
+    AIOpsRunbook,
     AIOpsSkill,
     AIOpsToolInvocation,
 )
@@ -38,16 +42,19 @@ from .services import (
     _normalize_mcp_input_schema,
     _request_model_completion,
     _sanitize_mcp_error_text,
+    _select_action_for_question,
     _skills_for_action,
     _summarize_external_tool_result,
     _build_runtime_tool_registry,
     recover_masked_suggested_question,
+    build_action_preflight_contract,
     _should_materialize_host_task,
     build_task_draft,
     confirm_action,
     create_pending_task_action_from_draft,
     get_active_provider,
     get_agent_config,
+    list_action_registry,
     list_model_provider_models,
     list_model_provider_presets,
     build_markdown_answer,
@@ -311,6 +318,261 @@ class AIOpsApiTests(TestCase):
         metric_action = next(item for item in response.data['actions'] if item['code'] == 'metric.query_generate')
         self.assertEqual(metric_action['category'], '查询生成')
         self.assertIn('query_grafana_promql', metric_action['allowed_tools'])
+
+    def test_action_preflight_endpoint_returns_approval_contract(self):
+        get_agent_config()
+        self.ensure_ecommerce_knowledge_environment()
+
+        response = self.client.post('/api/aiops/admin/actions/preflight/', {
+            'action_code': 'log.query_generate',
+            'question': '帮我生成电商测试环境日志查询语句',
+        }, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['action_preflight'])
+        self.assertEqual(response.data['selected_action']['code'], 'log.query_generate')
+        self.assertIn('service', {item.get('name') for item in response.data['missing_context']})
+        self.assertEqual(response.data['response_blocks'][0]['type'], 'approval_form')
+
+    def test_action_registry_examples_pass_preflight_and_route_when_supported(self):
+        get_agent_config()
+        self.ensure_ecommerce_knowledge_environment()
+
+        routed_action_codes = {
+            'alert.root_cause',
+            'change.correlation',
+            'log.query_generate',
+            'k8s.diagnose',
+            'self_heal.recommend',
+        }
+        for action in list_action_registry(user=self.user, include_unavailable=True):
+            for question in action.get('suggested_questions') or []:
+                with self.subTest(action=action['code'], question=question):
+                    contract = build_action_preflight_contract(
+                        action['code'],
+                        {
+                            'question': question,
+                            'environment': '电商测试环境',
+                        },
+                        user=self.user,
+                    )
+                    self.assertTrue(contract['action_preflight'])
+                    self.assertEqual(contract['selected_action']['code'], action['code'])
+                    if action['code'] in routed_action_codes:
+                        routed = _select_action_for_question(question, user=self.user)
+                        self.assertIsNotNone(routed)
+                        self.assertEqual(routed['code'], action['code'])
+
+    def test_action_user_question_variants_pass_preflight_and_supported_routes(self):
+        get_agent_config()
+        self.ensure_ecommerce_knowledge_environment()
+
+        variants = {
+            'alert.root_cause': [
+                '帮我看下电商测试环境订单服务 5xx 告警是什么原因',
+                '电商测试环境支付服务一直报错，帮我定位是不是告警导致的',
+                '排查一下电商环境最新告警的根因',
+            ],
+            'change.correlation': [
+                '今天订单服务发布后错误率升高，帮我看看和变更有没有关系',
+                '最近的上线是不是导致了电商测试环境订单服务异常',
+                '查一下发布、工单和告警是否在同一个时间窗口',
+            ],
+            'log.query_generate': [
+                '给订单服务生成最近 15 分钟 ERROR 日志查询条件',
+                '帮我查下电商测试环境 checkout 的超时日志',
+                '我要一条 Loki 查询语句看 order-service warning 日志',
+            ],
+            'k8s.diagnose': [
+                '看看电商测试环境 production 命名空间 Pod CrashLoopBackOff 怎么回事',
+                '帮我排查 order deployment 副本不可用',
+                '电商测试环境 k8s 节点资源不足会影响哪些 pod',
+            ],
+            'self_heal.recommend': [
+                '订单服务 5xx 告警怎么处置，推荐个安全方案',
+                '这个故障能不能先 dry-run 一个自愈脚本',
+                '帮我生成针对支付服务超时的修复建议，不要直接执行',
+            ],
+            'metric.query_generate': [
+                '帮我写一个 PromQL 看订单服务错误率',
+                '生成 checkout 最近一小时 P95 延迟和 QPS 查询',
+            ],
+            'deploy.failure_diagnose': [
+                '订单服务发布失败了，帮我诊断可能原因',
+                '最近一次上线失败和 k8s 事件有没有关系',
+            ],
+            'slo.analysis': [
+                '分析 checkout 服务今天 SLO 有没有风险',
+                '订单服务健康度下降主要是延迟还是错误率导致的',
+            ],
+            'notification.policy_suggest': [
+                '生产环境 P1 告警应该通知谁，多久升级一次',
+                '帮我给订单服务设计告警通知升级策略',
+            ],
+            'runbook.generate': [
+                '把这次订单服务 5xx 故障整理成 runbook',
+                '生成一个支付服务超时的排障手册草案',
+            ],
+        }
+        routed_action_codes = {
+            'alert.root_cause',
+            'change.correlation',
+            'log.query_generate',
+            'k8s.diagnose',
+            'self_heal.recommend',
+        }
+
+        for action_code, questions in variants.items():
+            for question in questions:
+                with self.subTest(action=action_code, question=question):
+                    contract = build_action_preflight_contract(
+                        action_code,
+                        {
+                            'question': question,
+                            'environment': '电商测试环境',
+                        },
+                        user=self.user,
+                    )
+                    self.assertTrue(contract['action_preflight'])
+                    self.assertEqual(contract['selected_action']['code'], action_code)
+                    if action_code in routed_action_codes:
+                        routed = _select_action_for_question(question, user=self.user)
+                        self.assertIsNotNone(routed)
+                        self.assertEqual(routed['code'], action_code)
+
+    def test_skill_marketplace_can_clone_builtin_skill(self):
+        get_agent_config()
+        marketplace_response = self.client.get('/api/aiops/admin/skills/marketplace/')
+
+        self.assertEqual(marketplace_response.status_code, 200)
+        self.assertGreater(marketplace_response.data['summary']['builtin'], 0)
+        source = next(item for item in marketplace_response.data['items'] if item['source'] == 'builtin')
+
+        clone_response = self.client.post(f"/api/aiops/admin/skills/{source['id']}/clone/", {}, format='json')
+
+        self.assertEqual(clone_response.status_code, 201)
+        self.assertFalse(clone_response.data['is_builtin'])
+        self.assertTrue(clone_response.data['slug'].startswith(source['slug']))
+        self.assertTrue(AIOpsSkill.objects.filter(id=clone_response.data['id'], is_builtin=False).exists())
+
+    @mock.patch('aiops.services.requests.post')
+    def test_model_invocation_records_usage_and_estimated_cost(self, mocked_post):
+        class MockResponse:
+            status_code = 200
+            text = ''
+
+            def json(self):
+                return {
+                    'choices': [{'message': {'content': 'pong'}}],
+                    'usage': {'prompt_tokens': 1000, 'completion_tokens': 2000, 'total_tokens': 3000},
+                }
+
+        mocked_post.return_value = MockResponse()
+        provider = AIOpsModelProvider.objects.create(
+            name='cost-provider',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            base_url='https://example.com/v1',
+            default_model='mock-model',
+            input_token_price_per_1m=Decimal('1.000000'),
+            output_token_price_per_1m=Decimal('2.000000'),
+            is_enabled=True,
+        )
+        provider.set_api_key('test-key')
+        provider.save(update_fields=['api_key_encrypted'])
+        session = AIOpsChatSession.objects.create(user=self.user, title='model-cost')
+        user_message = AIOpsChatMessage.objects.create(session=session, role='user', content='ping')
+
+        result = _request_model_completion(
+            provider,
+            {
+                'model': provider.default_model,
+                'messages': [{'role': 'user', 'content': 'ping'}],
+                'max_tokens': 32,
+            },
+            session=session,
+            message=user_message,
+            user=self.user,
+        )
+
+        self.assertEqual(result['choices'][0]['message']['content'], 'pong')
+        invocation = AIOpsModelInvocation.objects.get()
+        self.assertEqual(invocation.session, session)
+        self.assertEqual(invocation.username, self.user.username)
+        self.assertEqual(invocation.total_tokens, 3000)
+        self.assertEqual(invocation.estimated_cost_usd, Decimal('0.005000'))
+
+    def test_audit_cost_overview_includes_model_and_tool_stats(self):
+        provider = AIOpsModelProvider.objects.create(
+            name='overview-provider',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            default_model='mock-model',
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='cost-overview')
+        AIOpsModelInvocation.objects.create(
+            provider=provider,
+            session=session,
+            username=self.user.username,
+            requested_model='mock-model',
+            resolved_model='mock-model',
+            total_tokens=120,
+            prompt_tokens=80,
+            completion_tokens=40,
+            estimated_cost_usd=Decimal('0.001200'),
+        )
+        AIOpsToolInvocation.objects.create(
+            session=session,
+            tool_name='query_alerts',
+            status=AIOpsToolInvocation.STATUS_SUCCESS,
+            latency_ms=25,
+        )
+
+        response = self.client.get('/api/aiops/admin/audit/costs/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['model']['total_calls'], 1)
+        self.assertEqual(response.data['model']['total_tokens'], 120)
+        self.assertEqual(response.data['tools']['total_calls'], 1)
+        self.assertEqual(response.data['tools']['by_tool'][0]['tool_name'], 'query_alerts')
+
+    def test_audit_cost_overview_accepts_missing_trailing_slash(self):
+        response = self.client.get('/api/aiops/admin/audit/costs')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('model', response.data)
+        self.assertIn('tools', response.data)
+
+    def test_a2a_external_task_can_be_created_and_canceled(self):
+        get_agent_config()
+
+        response = self.client.post('/api/aiops/a2a/tasks/', {
+            'source_agent': 'external-orchestrator',
+            'title': '生成故障 Runbook',
+            'action_code': 'runbook.generate',
+            'input_payload': {'environment': 'prod', 'service': 'order-service'},
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['action_code'], 'runbook.generate')
+        self.assertEqual(response.data['status'], AIOpsExternalTask.STATUS_QUEUED)
+        self.assertTrue(response.data['plan_steps'])
+
+        cancel_response = self.client.post(f"/api/aiops/a2a/tasks/{response.data['public_id']}/cancel/", {}, format='json')
+
+        self.assertEqual(cancel_response.status_code, 200)
+        self.assertEqual(cancel_response.data['status'], AIOpsExternalTask.STATUS_CANCELED)
+
+    def test_runbook_draft_endpoint_creates_draft(self):
+        response = self.client.post('/api/aiops/runbooks/draft/', {
+            'title': '订单服务 5xx 排障',
+            'environment': '电商测试环境',
+            'service': 'order-service',
+            'tags': ['5xx', 'runbook'],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['status'], AIOpsRunbook.STATUS_DRAFT)
+        self.assertEqual(response.data['service'], 'order-service')
+        self.assertTrue(AIOpsRunbook.objects.filter(slug=response.data['slug']).exists())
 
     def test_agent_config_repairs_unscoped_default_alert_question(self):
         config = get_agent_config()

@@ -301,9 +301,9 @@ sxdevops 接入外部 MCP：
 - 做健康检查、工具发现、权限绑定和超时控制。
 - 外部工具输出必须进入事实集，不能直接变成最终回答。
 
-A2A 方向：
+A2A 方向在产品界面上命名为“协同任务 / Runbook”，避免把协议名直接暴露给普通运维用户：
 
-- 支持外部 Agent 创建 AIOps 任务。
+- 支持外部系统或 Agent 创建 AIOps 协同任务草案。
 - 支持任务状态查询、取消、结果回调。
 - 支持跨系统编排时保留用户身份、权限和审计链路。
 
@@ -311,32 +311,111 @@ A2A 方向：
 
 ### P0：AIOps assistant 基座
 
-- LLM 配置中心升级为 Provider + Model Profile。
-- 会话流式响应、取消、恢复和 ChatLock。
-- Action registry 初版。
-- RBAC 工具层和工具 schema 规范。
-- 页面上下文注入。
-- 结构化响应 block 协议。
-- Skill 库初版：告警根因、变更关联、日志查询生成、K8s 诊断、自愈推荐。
-- 工具调用追踪和基础审计。
+| 状态 | 任务 | 当前落地说明 |
+| --- | --- | --- |
+| 已完成 | LLM 配置中心升级为 Provider + Model Profile | 已落地 Provider 管理、默认/备用模型、连接测试、模型拉取、输入/输出 Token 单价配置。当前未单独拆出 Model Profile 表，先由 Provider 字段承载。 |
+| 已完成 | 会话流式响应、取消、恢复和 ChatLock | 已有会话、消息、异步发送、取消信号、上下文恢复和并发保护基础能力。后续可继续补强长任务恢复体验。 |
+| 已完成 | Action registry 初版 | 已内置 Action 注册表，覆盖告警根因、变更关联、日志/指标查询生成、K8s 诊断、发布失败诊断、自愈建议、Runbook 生成等入口。 |
+| 已完成 | RBAC 工具层和工具 schema 规范 | 后端 RBAC 强制校验，前端只做入口镜像；工具调用统一记录权限、入参、结果、耗时和状态。 |
+| 已完成 | 页面上下文注入 | 已支持从页面和知识环境注入上下文，结合环境、服务、集群、日志、链路、事件等范围做分析。 |
+| 已完成 | 结构化响应 block 协议 | 已支持 `approval_form`、工具追踪、任务草案等结构化对象；前端可渲染确认和审计信息。 |
+| 已完成 | Skill 库初版 | 已内置告警证据、K8s 排障、日志分析、变更影响、自愈护栏、任务模板、回滚策略、回答整形等 Skill。 |
+| 已完成 | 工具调用追踪和基础审计 | 已有会话审计、工具调用审计、待确认动作审计，并扩展模型调用审计。 |
 
 ### P1：能力增强
 
-- Skill 市场和团队自定义 Skill。
-- MCP 接入与对外暴露。
-- preflight 表单。
-- AI 执行审计。
-- 工具调用追踪详情。
-- 模型连接测试、成本统计、工具调用成本统计。
+| 状态 | 任务 | 当前落地说明 |
+| --- | --- | --- |
+| 已完成 | Skill 市场和团队自定义 Skill | 已支持内置 Skill 市场、团队克隆、自定义 Skill、适用 Action、工具依赖、风险等级和输出约束。 |
+| 部分完成 | MCP 接入与对外暴露 | 已支持外部 MCP Server 配置、健康检查和工具发现；sxdevops 作为 MCP Server 对外暴露平台工具仍需单独实现。 |
+| 已完成 | preflight 表单 | 已提供 `POST /api/aiops/admin/actions/preflight/`，可按 Action 返回缺参、风险、权限和 `approval_form` 合同。 |
+| 已完成 | AI 执行审计 | 已覆盖会话、工具调用、待确认动作、模型调用、协同任务和 Runbook 的审计数据。 |
+| 已完成 | 工具调用追踪详情 | 已有工具调用列表、详情展开、单条/批量删除和失败信息展示。 |
+| 已完成 | 模型连接测试和模型列表 | 已支持 Provider 连接测试、模型列表拉取、推荐模型和超时/连接错误提示。 |
+| 已完成 | 模型成本统计 | 已记录模型调用 Token、耗时、用途、Provider、请求模型/实际模型和估算成本，提供 `GET /api/aiops/admin/audit/costs/` 成本概览。 |
+| 部分完成 | 工具调用成本统计 | 当前已统计工具调用次数、耗时和按工具聚合；尚未引入工具级单价，因此不是严格货币成本。 |
 
 ### P2：深度编排
 
-- A2A。
-- 多 Agent 编排。
-- Plan + ReAct 深度排障。
-- 自动生成 Runbook。
-- 自动沉淀复盘知识。
+| 状态 | 任务 | 当前落地说明 |
+| --- | --- | --- |
+| 已完成初版 | A2A | 后端已新增 `AIOpsExternalTask` 和 `/api/aiops/a2a/tasks/`，前端以“外部协同任务”展示，支持创建任务草案、查看状态和取消。 |
+| 未开始 | 多 Agent 编排 | 目前仍是单 Agent 内核和 Action 模式选择，尚未实现多 Agent 角色拆分、任务派发和结果合并。 |
+| 部分完成 | Plan + ReAct 深度排障 | Action 已具备 `agent_mode` 和计划步骤字段，协同任务会生成计划草案；完整 Plan + ReAct 多轮深度排障仍需继续实现。 |
+| 已完成初版 | 自动生成 Runbook | 后端已新增 `AIOpsRunbook` 和 `/api/aiops/runbooks/draft/`，前端以“Runbook 手册”展示，支持生成草案、列表和删除。 |
+| 未开始 | 自动沉淀复盘知识 | 尚未把事故会话、工具证据、协同任务结果自动归档为复盘知识；当前只支持手动生成 Runbook 草案。 |
 
-## 12. 结论
+## 12. 当前接口与数据模型清单
 
-AIOps 2.0 的价值在于把 AI 做进 sxdevops 的运维控制面，而不是外接一个通用 Bot。研发应围绕“Action 合同 + Skill 知识包 + 权限工具层 + 结构化 UI + 安全执行闭环”推进。
+### 新增和扩展的数据模型
+
+- `AIOpsModelProvider`：新增 `input_token_price_per_1m`、`output_token_price_per_1m`，用于模型成本估算。
+- `AIOpsModelInvocation`：记录模型调用、Token、模型、用途、耗时、错误和估算成本。
+- `AIOpsExternalTask`：记录外部系统或 Agent 提交的协同任务草案。
+- `AIOpsRunbook`：记录 Runbook 手册草案和后续发布/归档状态。
+
+### 新增和关键接口
+
+- `GET /api/aiops/admin/skills/marketplace/`：查看内置 Skill 市场。
+- `POST /api/aiops/admin/skills/{id}/clone/`：把内置 Skill 克隆为团队 Skill。
+- `POST /api/aiops/admin/actions/preflight/`：获取 Action 预检和确认表单合同。
+- `GET /api/aiops/admin/audit/model-invocations/`：查看模型调用审计。
+- `GET /api/aiops/admin/audit/costs/`：查看模型成本和工具调用概览，兼容无尾斜杠。
+- `GET/POST /api/aiops/a2a/tasks/`：查看或创建外部协同任务草案。
+- `POST /api/aiops/a2a/tasks/{public_id}/cancel/`：取消协同任务。
+- `GET /api/aiops/runbooks/`：查看 Runbook 手册。
+- `POST /api/aiops/runbooks/draft/`：生成 Runbook 手册草案。
+
+### 权限补充
+
+- `aiops.a2a.view`：查看协同任务。
+- `aiops.a2a.invoke`：创建或取消协同任务。
+- `aiops.runbook.view`：查看 Runbook 手册。
+- `aiops.runbook.manage`：生成、更新或删除 Runbook 手册。
+
+## 13. 运行与迁移注意事项
+
+本次升级包含数据库结构变更。部署或本地调试时必须先执行：
+
+```bash
+cd backend
+python manage.py migrate aiops
+```
+
+否则访问模型供应商、模型审计、协同任务或 Runbook 接口时，可能出现类似 `no such column: aiops_aiopsmodelprovider.input_token_price_per_1m` 的数据库错误。
+
+如果后端使用 Daphne 启动，代码变更后需要手动重启：
+
+```bash
+cd backend
+python -m daphne -b 0.0.0.0 -p 8000 sxdevops.asgi:application
+```
+
+前端变更至少执行：
+
+```bash
+cd frontend
+npm run build
+```
+
+建议验收顺序：
+
+1. `python manage.py check`
+2. `python manage.py test aiops`
+3. `python manage.py test rbac`
+4. `npm run build`
+5. 打开 `/aiops/config`，检查模型提供商、Skill、Action、协同任务 / Runbook、审计页签。
+
+## 14. 后续待办
+
+后续优先补齐以下缺口：
+
+- sxdevops 作为 MCP Server 对外暴露只读平台工具，并接入统一鉴权、限流和审计。
+- 多 Agent 编排：拆出诊断 Agent、证据 Agent、变更 Agent、Runbook Agent，并定义结果合并规则。
+- 完整 Plan + ReAct 深度排障：支持计划、执行、观察、修正、终止条件和用户中断。
+- Runbook 发布、归档、版本历史、引用来源和从事故会话一键生成。
+- 自动复盘知识沉淀：把会话、工具证据、协同任务和 Runbook 关联成可检索知识。
+
+## 15. 结论
+
+AIOps 2.0 的价值在于把 AI 做进 sxdevops 的运维控制面，而不是外接一个通用 Bot。研发应围绕“Action 合同 + Skill 知识包 + 权限工具层 + 结构化 UI + 安全执行闭环”推进。当前 P0 已基本闭环，P1 已完成核心能力增强，P2 已落地协同任务和 Runbook 初版，下一阶段重点应放在对外 MCP、多 Agent 编排和自动复盘知识沉淀。

@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import uuid
 
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
@@ -41,6 +42,8 @@ class AIOpsModelProvider(models.Model):
     temperature = models.FloatField('温度', default=0.2)
     max_tokens = models.PositiveIntegerField('最大 Tokens', default=1200)
     timeout_seconds = models.PositiveIntegerField('超时(秒)', default=30)
+    input_token_price_per_1m = models.DecimalField('输入 Token 单价/百万', max_digits=10, decimal_places=6, default=0)
+    output_token_price_per_1m = models.DecimalField('输出 Token 单价/百万', max_digits=10, decimal_places=6, default=0)
     is_enabled = models.BooleanField('启用', default=True)
     last_test_status = models.CharField('最近测试状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_UNKNOWN)
     last_test_message = models.CharField('最近测试信息', max_length=255, blank=True, default='')
@@ -405,3 +408,144 @@ class AIOpsToolInvocation(models.Model):
 
     def __str__(self):
         return f'{self.tool_name} / {self.status}'
+
+
+class AIOpsModelInvocation(models.Model):
+    PURPOSE_CHAT_PLANNING = 'chat_planning'
+    PURPOSE_ANSWER_FORMATTING = 'answer_formatting'
+    PURPOSE_PARAMETER_EXTRACTION = 'parameter_extraction'
+    PURPOSE_MODEL_PROBE = 'model_probe'
+    PURPOSE_CONNECTION_TEST = 'connection_test'
+    PURPOSE_CHOICES = [
+        (PURPOSE_CHAT_PLANNING, '聊天规划'),
+        (PURPOSE_ANSWER_FORMATTING, '回答整形'),
+        (PURPOSE_PARAMETER_EXTRACTION, '参数抽取'),
+        (PURPOSE_MODEL_PROBE, '模型探测'),
+        (PURPOSE_CONNECTION_TEST, '连接测试'),
+    ]
+
+    STATUS_SUCCESS = 'success'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_SUCCESS, '成功'),
+        (STATUS_FAILED, '失败'),
+    ]
+
+    provider = models.ForeignKey(
+        AIOpsModelProvider,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='model_invocations',
+        verbose_name='模型提供商',
+    )
+    session = models.ForeignKey(
+        AIOpsChatSession,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='model_invocations',
+        verbose_name='会话',
+    )
+    message = models.ForeignKey(
+        AIOpsChatMessage,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='model_invocations',
+        verbose_name='消息',
+    )
+    username = models.CharField('用户', max_length=64, blank=True, default='')
+    purpose = models.CharField('调用目的', max_length=32, choices=PURPOSE_CHOICES, default=PURPOSE_CHAT_PLANNING)
+    requested_model = models.CharField('请求模型', max_length=128, blank=True, default='')
+    resolved_model = models.CharField('实际模型', max_length=128, blank=True, default='')
+    status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_SUCCESS)
+    latency_ms = models.PositiveIntegerField('耗时', default=0)
+    prompt_tokens = models.PositiveIntegerField('输入 Token', default=0)
+    completion_tokens = models.PositiveIntegerField('输出 Token', default=0)
+    total_tokens = models.PositiveIntegerField('总 Token', default=0)
+    estimated_cost_usd = models.DecimalField('预估费用 USD', max_digits=12, decimal_places=6, default=0)
+    request_summary = models.JSONField('请求摘要', default=dict, blank=True)
+    response_summary = models.JSONField('响应摘要', default=dict, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        verbose_name = 'AIOps 模型调用'
+        verbose_name_plural = 'AIOps 模型调用'
+
+    def __str__(self):
+        return f'{self.resolved_model or self.requested_model} / {self.status}'
+
+
+class AIOpsExternalTask(models.Model):
+    STATUS_QUEUED = 'queued'
+    STATUS_RUNNING = 'running'
+    STATUS_COMPLETED = 'completed'
+    STATUS_CANCELED = 'canceled'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_QUEUED, '排队中'),
+        (STATUS_RUNNING, '执行中'),
+        (STATUS_COMPLETED, '已完成'),
+        (STATUS_CANCELED, '已取消'),
+        (STATUS_FAILED, '失败'),
+    ]
+
+    public_id = models.UUIDField('外部任务 ID', default=uuid.uuid4, unique=True, editable=False)
+    source_agent = models.CharField('来源 Agent', max_length=128, blank=True, default='')
+    title = models.CharField('任务标题', max_length=128, default='AIOps 外部任务')
+    action_code = models.CharField('Action', max_length=64, blank=True, default='')
+    agent_mode = models.CharField('Agent 模式', max_length=32, blank=True, default='')
+    status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_QUEUED)
+    input_payload = models.JSONField('输入参数', default=dict, blank=True)
+    plan_steps = models.JSONField('计划步骤', default=list, blank=True)
+    result_payload = models.JSONField('结果', default=dict, blank=True)
+    error_message = models.CharField('错误信息', max_length=255, blank=True, default='')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='aiops_external_tasks', verbose_name='创建人')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+    completed_at = models.DateTimeField('完成时间', null=True, blank=True)
+    canceled_at = models.DateTimeField('取消时间', null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        verbose_name = 'AIOps A2A 外部任务'
+        verbose_name_plural = 'AIOps A2A 外部任务'
+
+    def __str__(self):
+        return f'{self.public_id} / {self.action_code or self.title}'
+
+
+class AIOpsRunbook(models.Model):
+    STATUS_DRAFT = 'draft'
+    STATUS_PUBLISHED = 'published'
+    STATUS_ARCHIVED = 'archived'
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, '草稿'),
+        (STATUS_PUBLISHED, '已发布'),
+        (STATUS_ARCHIVED, '已归档'),
+    ]
+
+    title = models.CharField('标题', max_length=160)
+    slug = models.SlugField('标识', max_length=160, unique=True)
+    environment = models.CharField('环境', max_length=128, blank=True, default='')
+    service = models.CharField('服务', max_length=128, blank=True, default='')
+    status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_DRAFT)
+    content = models.TextField('内容', blank=True, default='')
+    evidence = models.JSONField('证据', default=list, blank=True)
+    tags = models.JSONField('标签', default=list, blank=True)
+    source_task = models.ForeignKey(AIOpsExternalTask, on_delete=models.SET_NULL, null=True, blank=True, related_name='runbooks', verbose_name='来源任务')
+    source_session = models.ForeignKey(AIOpsChatSession, on_delete=models.SET_NULL, null=True, blank=True, related_name='runbooks', verbose_name='来源会话')
+    created_by = models.CharField('创建人', max_length=64, blank=True, default='')
+    updated_by = models.CharField('更新人', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at', '-id']
+        verbose_name = 'AIOps Runbook'
+        verbose_name_plural = 'AIOps Runbook'
+
+    def __str__(self):
+        return self.title
