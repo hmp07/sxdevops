@@ -433,8 +433,6 @@ class TaskResourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, views
             queryset = queryset.filter(resource_type=resource_type)
         if status_value:
             queryset = queryset.filter(status=status_value)
-        else:
-            queryset = queryset.filter(status=TaskResource.STATUS_ACTIVE)
         if environment:
             queryset = queryset.filter(Q(environment_id=environment) | Q(environment__name=environment))
         if system_value:

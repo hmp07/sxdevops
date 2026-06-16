@@ -244,6 +244,141 @@ class HostTaskApiTests(TestCase):
         self.assertEqual(execution['target_id'], f'task_resource:{resource.id}')
         self.assertEqual(execution['target_kind'], 'task_resource_host')
 
+    def test_task_resource_list_defaults_to_all_statuses_and_allows_reactivate(self):
+        env = TaskResourceGroup.objects.create(name='resource-test-env', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        active_resource = TaskResource.objects.create(
+            name='active-resource-host',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            ip_address='10.20.30.10',
+            ssh_user='root',
+            ssh_password='secret',
+        )
+        inactive_resource = TaskResource.objects.create(
+            name='inactive-resource-host',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_INACTIVE,
+            ip_address='10.20.30.11',
+            ssh_user='root',
+            ssh_password='secret',
+        )
+        warning_resource = TaskResource.objects.create(
+            name='warning-resource-host',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_WARNING,
+            ip_address='10.20.30.12',
+            ssh_user='root',
+            ssh_password='secret',
+        )
+
+        response = self.client.get('/api/task-resources/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        items = payload.get('results', payload)
+        returned_ids = {item['id'] for item in items}
+        self.assertTrue({active_resource.id, inactive_resource.id, warning_resource.id}.issubset(returned_ids))
+
+        stats_response = self.client.get('/api/task-resources/stats/')
+        self.assertEqual(stats_response.status_code, 200)
+        stats_payload = stats_response.json()
+        self.assertGreaterEqual(stats_payload['total'], 3)
+        self.assertGreaterEqual(stats_payload['active'], 1)
+        self.assertGreaterEqual(stats_payload['warning'], 1)
+        self.assertGreaterEqual(stats_payload['inactive'], 1)
+
+        active_response = self.client.get('/api/task-resources/', {'status': TaskResource.STATUS_ACTIVE})
+        self.assertEqual(active_response.status_code, 200)
+        active_items = active_response.json().get('results', active_response.json())
+        self.assertIn(active_resource.id, {item['id'] for item in active_items})
+        self.assertNotIn(inactive_resource.id, {item['id'] for item in active_items})
+
+        update_response = self.client.put(
+            f'/api/task-resources/{inactive_resource.id}/',
+            {
+                'name': inactive_resource.name,
+                'resource_type': inactive_resource.resource_type,
+                'environment': env.id,
+                'system': None,
+                'status': TaskResource.STATUS_ACTIVE,
+                'ip_address': str(inactive_resource.ip_address),
+                'ssh_port': inactive_resource.ssh_port,
+                'ssh_user': inactive_resource.ssh_user,
+                'description': inactive_resource.description,
+                'metadata': inactive_resource.metadata,
+            },
+            format='json',
+        )
+
+        self.assertEqual(update_response.status_code, 200)
+        inactive_resource.refresh_from_db()
+        self.assertEqual(inactive_resource.status, TaskResource.STATUS_ACTIVE)
+
+    @patch('ops.host_tasks.open_ssh_client')
+    def test_task_resource_ssh_failure_does_not_mark_resource_inactive(self, mock_open_ssh_client):
+        mock_open_ssh_client.side_effect = RuntimeError('authentication failed')
+        env = TaskResourceGroup.objects.create(name='ssh-failure-env', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        resource = TaskResource.objects.create(
+            name='ssh-failure-resource-host',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            ip_address='10.20.40.11',
+            ssh_user='root',
+            ssh_password='bad-secret',
+        )
+
+        response = self.client.post(
+            '/api/host-tasks/',
+            {
+                'name': 'resource-ssh-failure-command',
+                'task_type': HostTask.TASK_RUN_COMMAND,
+                'execution_mode': HostTask.EXECUTION_MODE_SSH,
+                'resource_ids': [resource.id],
+                'payload': {'command': 'uptime'},
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()['executions'][0]['status'], 'failed')
+        resource.refresh_from_db()
+        self.assertEqual(resource.status, TaskResource.STATUS_ACTIVE)
+
+    @patch('ops.host_tasks.execute_ansible_command')
+    def test_task_resource_ansible_failure_does_not_mark_resource_inactive(self, mock_execute_ansible_command):
+        mock_execute_ansible_command.side_effect = RuntimeError('UNREACHABLE! authentication failed')
+        env = TaskResourceGroup.objects.create(name='ansible-failure-env', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        resource = TaskResource.objects.create(
+            name='ansible-failure-resource-host',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            ip_address='10.20.40.12',
+            ssh_user='root',
+            ssh_password='bad-secret',
+        )
+
+        response = self.client.post(
+            '/api/host-tasks/',
+            {
+                'name': 'resource-ansible-failure-command',
+                'task_type': HostTask.TASK_RUN_COMMAND,
+                'execution_mode': HostTask.EXECUTION_MODE_ANSIBLE,
+                'resource_ids': [resource.id],
+                'payload': {'command': 'uptime'},
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()['executions'][0]['status'], 'failed')
+        resource.refresh_from_db()
+        self.assertEqual(resource.status, TaskResource.STATUS_ACTIVE)
+
     @patch('ops.host_tasks.collect_host_metrics')
     @patch('ops.host_tasks.open_ssh_client')
     def test_refresh_metrics_task_updates_host_usage(self, mock_open_ssh_client, mock_collect_host_metrics):

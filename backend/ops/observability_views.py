@@ -2243,6 +2243,31 @@ def _prometheus_query_range(client, query, start_time, end_time, step):
     return data.get('result') or [], data.get('resultType') or ''
 
 
+def _prometheus_label_values(client, label_name, *, match_expr='', start_time=None, end_time=None, limit=2000):
+    params = {}
+    if match_expr:
+        params['match[]'] = match_expr
+    if start_time:
+        params['start'] = start_time.timestamp()
+    if end_time:
+        params['end'] = end_time.timestamp()
+    response = http_requests.get(
+        f"{client['base_url'].rstrip('/')}/api/v1/label/{quote(str(label_name or ''), safe='')}/values",
+        params=params,
+        headers=client.get('headers') or {},
+        timeout=client.get('timeout') or 6,
+        auth=client.get('auth'),
+        verify=client.get('verify', True),
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f'Prometheus HTTP {response.status_code}')
+    body = response.json()
+    if body.get('status') != 'success':
+        raise RuntimeError(body.get('error') or 'Prometheus 标签查询失败')
+    values = (body.get('data') or []) if isinstance(body.get('data'), list) else []
+    return [str(item) for item in values if item not in (None, '')][:limit]
+
+
 def _prometheus_scalar(client, query, at_time=None):
     results = _prometheus_query(client, query, at_time=at_time)
     return _prometheus_value(results[0]) if results else None
@@ -4637,6 +4662,44 @@ def metrics_promql_query(request):
     except Exception as exc:
         return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
     return Response(payload)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.metric.query')])
+def metrics_series_names(request):
+    keyword = str(request.query_params.get('q') or request.query_params.get('keyword') or '').strip()
+    limit = max(1, min(_config_int(request.query_params.get('limit'), 80), 200))
+    lowered = keyword.lower()
+    match_expr = ''
+    if keyword:
+        escaped_keyword = re.escape(keyword)
+        match_expr = f'{{__name__=~".*{escaped_keyword}.*"}}'
+    try:
+        client = _resolve_metric_datasource_client(
+            metric_datasource_id=request.query_params.get('metric_datasource_id') or request.query_params.get('datasource_id') or '',
+            environment=request.query_params.get('environment') or '',
+        )
+        if not client or not client.get('ready'):
+            raise RuntimeError((client or {}).get('warning') or '指标数据源未就绪')
+        values = _prometheus_label_values(client, '__name__', match_expr=match_expr, limit=max(5000, limit * 20))
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+    if lowered:
+        values = [item for item in values if lowered in item.lower()]
+    values = sorted(values, key=lambda item: (
+        0 if lowered and item.lower().startswith(lowered) else 1,
+        len(item),
+        item,
+    ))[:limit]
+    return Response({
+        'metrics': values,
+        'keyword': keyword,
+        'source': client.get('source') or 'metric_datasource',
+        'metric_datasource': client.get('metric_datasource'),
+    })
 
 
 @api_view(['POST'])

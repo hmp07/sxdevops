@@ -6486,6 +6486,107 @@ class AIOpsApiTests(TestCase):
         self.assertFalse(action.result_payload['materialized_in_task_center'])
         self.assertEqual(action.result_payload['task_draft']['k8s_targets'][0]['kind'], 'service')
 
+    def test_build_task_draft_normalizes_shell_script_alias_to_command_payload(self):
+        env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        resource = TaskResource.objects.create(
+            name='tf-shell-node',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            ip_address='120.26.213.188',
+            ssh_user='root',
+        )
+        shell_script = 'df -h\nfree -m'
+
+        draft = build_task_draft(
+            self.user,
+            '帮我给电商测试环境生成一个 Shell 脚本任务',
+            {
+                'request_summary': '帮我给电商测试环境生成一个 Shell 脚本任务',
+                'resource_environment': '电商测试环境',
+                'target_resource_ids': [resource.id],
+                'task_kind': 'run_command',
+                'shell_script': shell_script,
+            },
+        )
+
+        self.assertNotIn('error', draft)
+        self.assertEqual(draft['task_type'], HostTask.TASK_RUN_COMMAND)
+        self.assertEqual(draft['payload']['command'], shell_script)
+        self.assertEqual(draft['payload']['script_kind'], 'shell')
+
+    def test_confirm_action_repairs_legacy_shell_script_alias_payload(self):
+        env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        resource = TaskResource.objects.create(
+            name='legacy-shell-node',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            ip_address='120.26.213.189',
+            ssh_user='root',
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='legacy-shell-script')
+        assistant_message = AIOpsChatMessage.objects.create(session=session, role='assistant', content='已生成 Shell 脚本任务')
+        legacy_payload = {
+            'name': 'Shell 脚本任务',
+            'description': '由 AIOps 智能助手生成的 Shell 脚本任务',
+            'task_type': HostTask.TASK_RUN_COMMAND,
+            'payload': {'script': 'uptime\nwhoami'},
+            'resource_ids': [resource.id],
+            'target_refs': [{'source': 'task_resource', 'id': resource.id}],
+            'host_count': 1,
+            'execution_mode': HostTask.EXECUTION_MODE_ANSIBLE,
+            'execution_strategy': HostTask.STRATEGY_STOP_ON_ERROR,
+            'timeout_seconds': 30,
+            'risk_level': AIOpsPendingAction.RISK_HIGH,
+            'request_summary': '帮我生成 Shell 脚本任务',
+        }
+        action = create_pending_task_action_from_draft(session, assistant_message, legacy_payload)
+
+        task_draft = confirm_action(action, self.user)
+
+        self.assertEqual(task_draft['payload']['command'], 'uptime\nwhoami')
+        self.assertEqual(task_draft['payload']['script_kind'], 'shell')
+        action.refresh_from_db()
+        self.assertEqual(action.action_payload['payload']['command'], 'uptime\nwhoami')
+        self.assertEqual(action.result_payload['task_draft']['payload']['command'], 'uptime\nwhoami')
+
+    @mock.patch('aiops.services._request_model_completion')
+    def test_shell_script_chat_generation_keeps_script_content(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        TaskResource.objects.create(
+            name='tf-shell-chat-node',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            ip_address='120.26.213.190',
+            ssh_user='root',
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='电商测试环境',
+            aliases=['电商测试'],
+            task_resource_environment_ids=[env.id],
+            is_enabled=True,
+        )
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'shell-script-chat'}, format='json')
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '帮我给电商测试环境生成一个 Shell 脚本任务，脚本内容：df -h && free -m'},
+            format='json',
+        )
+
+        payload = response.data['pending_action']['action_payload']
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['assistant_message']['metadata']['execution_mode'], 'deterministic_task_generation')
+        self.assertEqual(payload['task_type'], HostTask.TASK_RUN_COMMAND)
+        self.assertEqual(payload['payload']['command'], 'df -h && free -m')
+        self.assertEqual(payload['payload']['script_kind'], 'shell')
+        mocked_completion.assert_not_called()
+
     def test_build_task_draft_resolves_config_item_id_before_conflicting_ip(self):
         ci_type, _ = CIType.objects.get_or_create(name='云主机(ECS)')
         target_host = Host.objects.create(

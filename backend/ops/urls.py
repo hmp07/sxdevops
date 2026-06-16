@@ -65,6 +65,7 @@ urlpatterns = [
     path('observability/overview/', observability_views.observability_overview, name='observability-overview'),
     path('observability/grafana/config/', observability_views.grafana_setting_view, name='observability-grafana-config'),
     path('observability/metrics/query/', observability_views.metrics_promql_query, name='observability-metrics-query'),
+    path('observability/metrics/series-names/', observability_views.metrics_series_names, name='observability-metrics-series-names'),
     path('observability/grafana/promql/query/', observability_views.grafana_promql_query, name='observability-grafana-promql-query'),
     path('observability/grafana/panel/query/', observability_views.grafana_panel_query, name='observability-grafana-panel-query'),
     path('observability/tracing/providers/', observability_views.tracing_providers, name='observability-tracing-providers'),

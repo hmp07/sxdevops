@@ -6099,6 +6099,23 @@ def _is_task_generation_question(question):
     return any(keyword in text for keyword in ['生成', '创建', '新建', '安排', '巡检任务', '任务', 'task'])
 
 
+def _looks_like_shell_task_request(question, draft_request=None):
+    draft_request = draft_request or {}
+    task_kind = _normalize_task_kind(draft_request.get('task_kind'))
+    if task_kind == HostTask.TASK_RUN_COMMAND:
+        return True
+    if _extract_shell_command_from_mapping(draft_request):
+        return True
+    payload = draft_request.get('payload')
+    if isinstance(payload, dict) and _extract_shell_command_from_mapping(payload):
+        return True
+    text = str(question or '')
+    lowered = text.lower()
+    has_script_word = any(keyword in lowered for keyword in ['shell', '脚本', '命令', 'command', 'cmd'])
+    has_task_word = any(keyword in lowered for keyword in ['生成', '创建', '新建', '安排', '执行', '运行', '任务', 'task'])
+    return has_script_word and has_task_word
+
+
 def _is_latest_alert_root_cause_question(question):
     text = str(question or '').lower()
     return (
@@ -6500,6 +6517,7 @@ def _run_latest_alert_rca_evidence(session, user_message, user, question, scoped
 def _run_task_generation_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit):
     is_k8s_task = _looks_like_k8s_task_request(question, {})
     resource_type = TaskResource.RESOURCE_K8S if is_k8s_task else TaskResource.RESOURCE_HOST
+    shell_command = '' if is_k8s_task else _extract_shell_command_from_question(question)
     emit(
         step={'title': '任务生成证据收集', 'detail': '先查询资源底座，再生成待确认任务草稿。', 'status': PROCESSING_STATUS_COMPLETED},
         text='正在查询任务资源并生成任务草稿',
@@ -6526,8 +6544,11 @@ def _run_task_generation_evidence(session, user_message, user, question, scoped_
         'resource_type': resource_type,
         'resource_status': 'active',
         'resource_ids': resource_ids,
-        'task_kind': _detect_k8s_task_kind_from_request(question, {}) if is_k8s_task else ('run_playbook' if any(keyword in question for keyword in ['巡检', '检查', 'inspection']) else ''),
+        'task_kind': _detect_k8s_task_kind_from_request(question, {}) if is_k8s_task else ('run_command' if _looks_like_shell_task_request(question, {'command': shell_command}) else ('run_playbook' if any(keyword in question for keyword in ['巡检', '检查', 'inspection']) else '')),
     }
+    if shell_command:
+        draft_args['command'] = shell_command
+        draft_args['script_kind'] = 'shell'
     if draft_args['task_kind'] == 'run_playbook':
         draft_args['playbook_content'] = (
             '- hosts: all\n'
@@ -9270,6 +9291,101 @@ def _is_generic_task_title(value):
     return bool(re.match(r'^(aiops)?(ansible)?playbook(执行|任务|执行任务)?$', key))
 
 
+SHELL_COMMAND_ALIAS_KEYS = [
+    'command',
+    'commands',
+    'cmd',
+    'script',
+    'script_content',
+    'script_text',
+    'script_body',
+    'shell',
+    'shell_script',
+    'shell_command',
+    'command_text',
+]
+
+
+def _coerce_shell_command_text(value):
+    if value is None:
+        return ''
+    if isinstance(value, str):
+        return value.replace('\\r\\n', '\n').replace('\\n', '\n').strip()
+    if isinstance(value, (list, tuple, set)):
+        lines = []
+        for item in value:
+            if isinstance(item, dict):
+                item_text = _extract_shell_command_from_mapping(item)
+            else:
+                item_text = _coerce_shell_command_text(item)
+            if item_text:
+                lines.append(item_text)
+        return '\n'.join(lines).strip()
+    if isinstance(value, dict):
+        return _extract_shell_command_from_mapping(value)
+    return str(value).strip()
+
+
+def _extract_shell_command_from_mapping(mapping):
+    if not isinstance(mapping, dict):
+        return ''
+    for key in SHELL_COMMAND_ALIAS_KEYS:
+        text = _coerce_shell_command_text(mapping.get(key))
+        if text:
+            return text
+    return ''
+
+
+def _extract_shell_command_from_question(question):
+    raw = str(question or '')
+    if not raw.strip():
+        return ''
+    fenced_match = re.search(r'```(?:bash|sh|shell)?\s*([\s\S]+?)```', raw, flags=re.IGNORECASE)
+    if fenced_match:
+        return fenced_match.group(1).strip()
+    quoted_match = re.search(r'[“"\'`]{1}([^“”"\'`]{3,500})[”"\'`]{1}', raw)
+    if quoted_match and any(token in raw.lower() for token in ['shell', '脚本', '命令', '执行', '运行']):
+        return quoted_match.group(1).strip()
+    patterns = [
+        r'(?:脚本内容|脚本|命令|command|shell)\s*(?:为|是|:|：)\s*([\s\S]{3,500})$',
+        r'(?:执行|运行)\s*(?:命令|脚本|shell)?\s*[:：]?\s*([\w./$][\s\S]{2,500})$',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, raw, flags=re.IGNORECASE)
+        if match:
+            candidate = match.group(1).strip(' "\'“”‘’，,。；;')
+            if candidate:
+                return candidate
+    return ''
+
+
+def _normalize_script_kind(value, command=''):
+    text = str(value or '').strip().lower()
+    command_text = str(command or '').strip().lower()
+    if text in {'python', 'py'} or command_text.startswith(('python ', 'python3 ', 'python2 ')):
+        return 'python'
+    return 'shell'
+
+
+def _normalize_run_command_payload(payload=None, draft_request=None, question=''):
+    draft_request = draft_request or {}
+    normalized = dict(payload or {}) if isinstance(payload, dict) else {}
+    command = (
+        _coerce_shell_command_text(normalized.get('command'))
+        or _extract_shell_command_from_mapping(normalized)
+        or _extract_shell_command_from_mapping(draft_request)
+        or _extract_shell_command_from_mapping(draft_request.get('payload') if isinstance(draft_request.get('payload'), dict) else {})
+        or _extract_shell_command_from_question(question or draft_request.get('request_summary') or '')
+    )
+    if command:
+        normalized['command'] = command
+    normalized['script_kind'] = _normalize_script_kind(
+        normalized.get('script_kind') or draft_request.get('script_kind') or draft_request.get('script_type') or draft_request.get('language'),
+        normalized.get('command'),
+    )
+    return normalized
+
+
 def _request_summary_task_title(request_summary, *, fallback=''):
     summary = _compact_task_title(request_summary)
     if not summary:
@@ -9428,6 +9544,9 @@ def _task_title_from_draft_payload(draft):
 
 def _ensure_task_draft_title(draft):
     payload = dict(draft or {})
+    task_type = payload.get('task_type') or ''
+    if task_type == HostTask.TASK_RUN_COMMAND:
+        payload['payload'] = _normalize_run_command_payload(payload.get('payload'), payload, payload.get('request_summary') or '')
     title = _compact_task_title(payload.get('name') or payload.get('title') or payload.get('task_name'))
     stripped_title = _strip_task_title_environment_context(title)
     if stripped_title:
@@ -10169,7 +10288,8 @@ def build_task_draft(user, question='', draft_request=None):
 
     task_kind = draft_request.get('task_kind') or ''
     service_name = (draft_request.get('service_name') or '').strip()
-    command = (draft_request.get('command') or '').strip()
+    command_payload = _normalize_run_command_payload(draft_request.get('payload'), draft_request, question)
+    command = (command_payload.get('command') or '').strip()
     playbook_content = (draft_request.get('playbook_content') or '').strip()
     request_summary = (draft_request.get('request_summary') or question or '').strip()
 
@@ -10204,7 +10324,7 @@ def build_task_draft(user, question='', draft_request=None):
         description = f"检查 {payload['service_name']} 服务状态"
     elif task_kind == 'run_command':
         task_type = HostTask.TASK_RUN_COMMAND
-        payload = {'command': command or 'hostname && uptime'}
+        payload = _normalize_run_command_payload({'command': command or 'hostname && uptime'}, draft_request, question)
         execution_mode = HostTask.EXECUTION_MODE_ANSIBLE
         execution_strategy = HostTask.STRATEGY_STOP_ON_ERROR
         title = f"批量命令执行：{payload['command'][:32]}"
@@ -12390,7 +12510,12 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
                     'labels': {'type': 'object', 'description': '要写入 metadata.labels 的键值对。'},
                     'annotations': {'type': 'object', 'description': '要写入 metadata.annotations 的键值对。'},
                     'selector': {'type': 'object', 'description': '要写入 spec.selector 的键值对。'},
-                    'command': {'type': 'string'},
+                    'command': {'type': 'string', 'description': 'Shell 或 kubectl 命令内容；Shell 脚本任务必须填写，系统会保存到 payload.command。'},
+                    'script': {'type': 'string', 'description': 'Shell 脚本内容，command 的兼容别名。'},
+                    'shell_script': {'type': 'string', 'description': 'Shell 脚本内容，command 的兼容别名。'},
+                    'script_content': {'type': 'string', 'description': '脚本正文，command 的兼容别名。'},
+                    'commands': {'type': 'array', 'items': {'type': 'string'}, 'description': '多行命令列表，系统会合并为 Shell 脚本内容。'},
+                    'script_kind': {'type': 'string', 'enum': ['shell', 'python'], 'description': '主机命令脚本类型，默认 shell。'},
                     'playbook_content': {'type': 'string'},
                     'target_host_ids': {'type': 'array', 'items': {'type': 'integer'}},
                     'target_resource_ids': {'type': 'array', 'items': {'type': 'integer'}, 'description': '任务中心资源底座 resource_id 列表，来自 query_task_resources.resource_ids'},

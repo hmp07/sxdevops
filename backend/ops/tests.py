@@ -2231,6 +2231,40 @@ class ObservabilityViewsTests(TestCase):
         self.assertIn('/api/v1/query', mock_get.call_args.args[0])
         self.assertEqual(mock_get.call_args.kwargs['headers']['Authorization'], 'Bearer secret-token')
 
+    @patch('ops.observability_views.http_requests.get')
+    def test_metrics_series_names_uses_prometheus_label_values(self, mock_get):
+        datasource = MetricDataSource.objects.create(
+            name='Retail Metrics',
+            environment='test',
+            is_default=True,
+            config={
+                'query_url': 'http://prometheus.test.local:9090',
+                'headers': {'X-Scope-OrgID': 'retail'},
+            },
+        )
+        mock_get.return_value = MockHttpResponse({
+            'status': 'success',
+            'data': [
+                'http_requests_total',
+                'node_cpu_seconds_total',
+                'node_memory_MemAvailable_bytes',
+                'process_cpu_seconds_total',
+            ],
+        })
+
+        response = self.client.get(
+            '/api/observability/metrics/series-names/',
+            {'metric_datasource_id': datasource.id, 'q': 'node_', 'limit': 5},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['metrics'], ['node_cpu_seconds_total', 'node_memory_MemAvailable_bytes'])
+        self.assertEqual(payload['metric_datasource']['id'], datasource.id)
+        self.assertIn('/api/v1/label/__name__/values', mock_get.call_args.args[0])
+        self.assertEqual(mock_get.call_args.kwargs['headers']['X-Scope-OrgID'], 'retail')
+        self.assertEqual(mock_get.call_args.kwargs['params']['match[]'], '{__name__=~".*node_.*"}')
+
     def test_metric_datasource_serializer_masks_secrets(self):
         datasource = MetricDataSource.objects.create(
             name='Secure Prometheus',

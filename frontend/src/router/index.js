@@ -259,7 +259,7 @@ const routes = [
         path: 'observability/grafana',
         name: 'GrafanaDashboard',
         component: () => import('@/views/GrafanaDashboard.vue'),
-        meta: { title: '监控看板', icon: 'Histogram', permission: 'ops.grafana.view' },
+        meta: { title: '仪表盘', icon: 'Histogram', permission: 'ops.grafana.view' },
       },
       {
         path: 'observability/tracing',

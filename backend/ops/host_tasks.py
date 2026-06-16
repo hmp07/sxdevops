@@ -298,6 +298,8 @@ def collect_host_metrics(client, timeout_seconds):
 
 
 def _mark_host_offline(host):
+    if isinstance(host, TaskResourceHostTarget):
+        return
     if host.status != 'offline':
         host.status = 'offline'
         host.save(update_fields=['status'])

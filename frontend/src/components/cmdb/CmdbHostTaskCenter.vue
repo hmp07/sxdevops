@@ -1132,11 +1132,28 @@ function templateExecutionKindLabel(template) {
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value)
 }
+function commandTextFromValue(value) {
+  if (value == null) return ''
+  if (Array.isArray(value)) return value.map(commandTextFromValue).filter(Boolean).join('\n').trim()
+  if (isPlainObject(value)) return extractCommandText(value)
+  return String(value || '').replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').trim()
+}
+function extractCommandText(source = {}) {
+  if (!isPlainObject(source)) return ''
+  const aliasKeys = ['command', 'commands', 'cmd', 'script', 'script_content', 'script_text', 'script_body', 'shell', 'shell_script', 'shell_command', 'command_text']
+  for (const key of aliasKeys) {
+    const text = commandTextFromValue(source[key])
+    if (text) return text
+  }
+  return ''
+}
 function buildEditablePayload(payload = {}, executionKindValue = 'shell') {
   const patch = isPlainObject(payload.patch) ? payload.patch : {}
+  const command = extractCommandText(payload)
   return {
     ...defaultPayload(),
     ...(payload || {}),
+    ...(command ? { command } : {}),
     script_kind: payload?.script_kind || (executionKindValue === 'python' ? 'python' : 'shell'),
     namespace: payload?.namespace || 'default',
     patch,
@@ -1146,7 +1163,7 @@ function sanitizePayload(payload = {}) {
   return payload
 }
 function normalizePayloadByType(taskType, source = {}) {
-  if (taskType === 'run_command') return { command: (source.command || '').trim(), script_kind: source.script_kind === 'python' ? 'python' : 'shell' }
+  if (taskType === 'run_command') return { command: extractCommandText(source), script_kind: source.script_kind === 'python' ? 'python' : 'shell' }
   if (taskType === 'run_playbook') return { playbook_name: (source.playbook_name || '').trim(), playbook_content: (source.playbook_content || '').trim() }
   if (taskType === 'service_status') return { service_name: (source.service_name || '').trim() }
   if (taskType === 'k8s_pod_exec') {

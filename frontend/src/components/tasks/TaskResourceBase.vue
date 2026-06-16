@@ -350,6 +350,7 @@ const statCards = computed(() => [
   { key: 'k8s', label: 'K8s', value: stats.value.k8s || 0, color: '#38bdf8', resourceType: 'k8s', active: filters.resource_type === 'k8s' },
   { key: 'active', label: '可用', value: stats.value.active || 0, color: '#22c55e', status: 'active', active: filters.status === 'active' },
   { key: 'warning', label: '异常', value: stats.value.warning || 0, color: '#f59e0b', status: 'warning', active: filters.status === 'warning' },
+  { key: 'inactive', label: '停用', value: stats.value.inactive || 0, color: '#94a3b8', status: 'inactive', active: filters.status === 'inactive' },
 ])
 
 function defaultNodeForm() {

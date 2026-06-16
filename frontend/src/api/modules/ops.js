@@ -179,6 +179,7 @@ export const updateGrafanaConfig = (data) => request.put('/observability/grafana
 export const queryGrafanaPromQL = (data) => request.post('/observability/grafana/promql/query/', data)
 export const queryGrafanaPanel = (data) => request.post('/observability/grafana/panel/query/', data)
 export const queryMetrics = (data) => request.post('/observability/metrics/query/', data)
+export const getMetricSeriesNames = (params) => request.get('/observability/metrics/series-names/', { params })
 export const getMetricDataSources = (params) => request.get('/observability/metric/datasources/', { params })
 export const createMetricDataSource = (data) => request.post('/observability/metric/datasources/', data)
 export const updateMetricDataSource = (id, data) => request.put(`/observability/metric/datasources/${id}/`, data)

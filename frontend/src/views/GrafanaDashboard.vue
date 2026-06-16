@@ -35,7 +35,7 @@
             <span class="hero-icon">
               <el-icon><Histogram /></el-icon>
             </span>
-            <h2>监控看板</h2>
+            <h2>仪表盘</h2>
             <p class="page-inline-desc">{{ pageDescription }}</p>
           </div>
         </div>
