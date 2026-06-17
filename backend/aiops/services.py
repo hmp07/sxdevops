@@ -40,6 +40,7 @@ from ops.models import (
     K8sCluster,
     LogDataSource,
     LogEntry,
+    MetricDataSource,
     ObservabilityDataSourceLink,
     SystemPostureSLAHistory,
     SystemPostureSystem,
@@ -297,7 +298,7 @@ BUILTIN_MCP_SERVERS = [
         'name': '可观测性 MCP',
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
         'description': '查询告警、日志、链路与最近变更。',
-        'tool_whitelist': ['query_alerts', 'query_alert_root_cause', 'query_system_posture', 'query_observability', 'query_logs', 'query_traces', 'query_dashboard_metadata', 'query_grafana_promql', 'query_dashboard_panel_data', 'query_observability_links'],
+        'tool_whitelist': ['query_alerts', 'query_alert_root_cause', 'query_alert_metrics', 'query_system_posture', 'query_observability', 'query_logs', 'query_traces', 'query_dashboard_metadata', 'query_grafana_promql', 'query_dashboard_panel_data', 'query_observability_links'],
     },
     {
         'name': '工单系统 MCP',
@@ -437,7 +438,7 @@ BUILTIN_SKILLS = [
             '这条告警可能影响哪些服务和依赖',
             '最近一小时 checkout 服务异常是不是告警引起的',
         ],
-        'builtin_tools': ['query_alerts', 'query_alert_root_cause', 'query_knowledge_graph'],
+        'builtin_tools': ['query_alerts', 'query_alert_root_cause', 'query_alert_metrics', 'query_knowledge_graph'],
         'recommended_tools': ['query_system_posture', 'query_logs', 'query_traces', 'query_recent_changes'],
         'max_iterations': 4,
         'risk_level': AIOpsSkill.RISK_READ_ONLY,
@@ -842,6 +843,7 @@ BUILTIN_ACTION_REGISTRY = [
         'allowed_tools': [
             'query_alerts',
             'query_alert_root_cause',
+            'query_alert_metrics',
             'query_logs',
             'query_traces',
             'query_recent_changes',
@@ -1048,6 +1050,7 @@ BUILTIN_ACTION_REGISTRY = [
         'allowed_tools': [
             'query_system_posture',
             'query_alerts',
+            'query_alert_metrics',
             'query_grafana_promql',
             'query_dashboard_panel_data',
             'query_traces',
@@ -1419,7 +1422,7 @@ AGENT_ORCHESTRATION_PROFILES = [
         'code': 'diagnostic_agent',
         'name': '诊断 Agent',
         'mission': '识别故障现象、影响对象和初始假设。',
-        'preferred_tools': ['query_alerts', 'query_alert_root_cause', 'query_system_posture', 'query_k8s_cluster_summary'],
+        'preferred_tools': ['query_alerts', 'query_alert_root_cause', 'query_alert_metrics', 'query_system_posture', 'query_k8s_cluster_summary'],
     },
     {
         'code': 'evidence_agent',
@@ -4680,7 +4683,26 @@ def _alert_metric_promql(alert):
     metric = str(alert.metric_name or '').strip()
     if not metric or not re.match(r'^[a-zA-Z_:][a-zA-Z0-9_:]*$', metric):
         return ''
-    labels = alert.labels if isinstance(alert.labels, dict) else {}
+    labels = dict(alert.labels if isinstance(alert.labels, dict) else {})
+    for key, value in {
+        'cluster': alert.cluster,
+        'namespace': alert.namespace,
+        'service': alert.service,
+    }.items():
+        if value and not labels.get(key):
+            labels[key] = value
+    resource = str(alert.resource or '').strip()
+    resource_type = str(alert.resource_type or '').strip().lower()
+    if resource:
+        if resource_type in {'pod', 'pods'}:
+            labels.setdefault('pod', resource)
+        elif resource_type in {'deployment', 'deployments'}:
+            labels.setdefault('deployment', resource)
+        elif resource_type in {'node', 'nodes'}:
+            labels.setdefault('node', resource)
+            labels.setdefault('instance', resource)
+        elif resource_type in {'service', 'services'}:
+            labels.setdefault('service', resource)
     selectors = []
     for key in ['cluster', 'namespace', 'pod', 'deployment', 'service', 'job', 'instance', 'node', 'container']:
         value = labels.get(key)
@@ -4690,6 +4712,510 @@ def _alert_metric_promql(alert):
     if not selectors:
         return ''
     return f'{metric}' + '{' + ','.join(selectors[:6]) + '}'
+
+
+ALERT_METRIC_QUERY_BUDGET = 8
+ALERT_METRIC_SERIES_LIMIT = 5
+ALERT_METRIC_MAX_DURATION_MINUTES = 120
+ALERT_METRIC_DEFAULT_DURATION_MINUTES = 60
+ALERT_METRIC_DEFAULT_STEP_SECONDS = 60
+
+
+def _safe_float(value, default=None):
+    try:
+        if value in (None, ''):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _promql_escape_label_value(value):
+    return str(value or '').replace('\\', '\\\\').replace('"', '\\"')
+
+
+def _promql_selector(label_values, allowed_labels=None, max_labels=6):
+    allowed = allowed_labels or ['cluster', 'namespace', 'pod', 'deployment', 'service', 'job', 'instance', 'node', 'container']
+    selectors = []
+    for key in allowed:
+        value = label_values.get(key) if isinstance(label_values, dict) else ''
+        if value not in (None, ''):
+            selectors.append(f'{key}="{_promql_escape_label_value(value)}"')
+        if len(selectors) >= max_labels:
+            break
+    return '{' + ','.join(selectors) + '}' if selectors else ''
+
+
+def _promql_regex_selector(label_values, allowed_labels=None, max_labels=4):
+    allowed = allowed_labels or ['cluster', 'namespace', 'service', 'deployment', 'pod', 'job', 'instance', 'node']
+    selectors = []
+    for key in allowed:
+        value = label_values.get(key) if isinstance(label_values, dict) else ''
+        text = str(value or '').strip()
+        if text:
+            escaped = re.escape(text)
+            selectors.append(f'{key}=~".*{escaped}.*"')
+        if len(selectors) >= max_labels:
+            break
+    return '{' + ','.join(selectors) + '}' if selectors else ''
+
+
+def _promql_with_extra_matchers(selector, extra_matchers):
+    extras = [str(item or '').strip() for item in (extra_matchers or []) if str(item or '').strip()]
+    text = str(selector or '').strip()
+    if text.startswith('{') and text.endswith('}'):
+        body = text[1:-1].strip()
+        parts = [body] if body else []
+        parts.extend(extras)
+        return '{' + ','.join(parts) + '}' if parts else ''
+    if extras:
+        return '{' + ','.join(extras) + '}'
+    return text
+
+
+def _alert_metric_label_context(alert):
+    labels = dict(alert.labels if isinstance(alert.labels, dict) else {})
+    for key, value in {
+        'cluster': alert.cluster,
+        'namespace': alert.namespace,
+        'service': alert.service,
+    }.items():
+        if value and not labels.get(key):
+            labels[key] = value
+    resource = str(alert.resource or '').strip()
+    resource_type = str(alert.resource_type or '').strip().lower()
+    if resource:
+        if resource_type in {'pod', 'pods'}:
+            labels.setdefault('pod', resource)
+        elif resource_type in {'deployment', 'deployments'}:
+            labels.setdefault('deployment', resource)
+        elif resource_type in {'node', 'nodes'}:
+            labels.setdefault('node', resource)
+            labels.setdefault('instance', resource)
+        elif resource_type in {'service', 'services'}:
+            labels.setdefault('service', resource)
+        else:
+            labels.setdefault('resource', resource)
+    return labels
+
+
+def _metric_plan_item(name, promql, category, intent, weight='medium'):
+    expression = str(promql or '').strip()
+    if not expression:
+        return None
+    return {
+        'name': name,
+        'promql': expression,
+        'category': category,
+        'intent': intent,
+        'weight': weight,
+    }
+
+
+def _dedupe_metric_plan(plan, budget=ALERT_METRIC_QUERY_BUDGET):
+    deduped = []
+    seen = set()
+    for item in plan:
+        if not item or not item.get('promql'):
+            continue
+        key = item['promql']
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+        if len(deduped) >= budget:
+            break
+    return deduped
+
+
+def _build_alert_metric_query_plan(alert, budget=ALERT_METRIC_QUERY_BUDGET):
+    labels = _alert_metric_label_context(alert)
+    plan = []
+    raw_promql = _alert_metric_promql(alert)
+    if raw_promql:
+        plan.append(_metric_plan_item('告警触发指标', raw_promql, 'trigger', '确认告警自身指标在时间窗口内是否仍异常', 'strong'))
+
+    exact_selector = _promql_selector(labels, ['cluster', 'namespace', 'service', 'deployment', 'pod', 'job', 'instance', 'node', 'container'])
+    service_selector = _promql_regex_selector(labels, ['cluster', 'namespace', 'service', 'deployment', 'pod', 'job'])
+    node_selector = _promql_regex_selector(labels, ['cluster', 'node', 'instance'])
+    alert_text = f'{alert.title} {alert.message} {alert.metric_name} {alert.service} {alert.resource_type} {alert.resource}'.lower()
+    has_service_context = bool(labels.get('service') or labels.get('deployment') or labels.get('pod') or alert.service)
+    has_k8s_context = bool(alert.cluster or alert.namespace or labels.get('pod') or labels.get('deployment') or any(
+        keyword in alert_text for keyword in ['k8s', 'kubernetes', 'pod', 'deployment', 'container', 'oom', 'restart', 'crashloop']
+    ))
+    has_node_context = bool(labels.get('node') or str(alert.resource_type or '').lower() in {'node', 'nodes', 'host', 'instance'})
+
+    if has_service_context and service_selector:
+        request_total_expr = f'sum(rate(http_requests_total{service_selector}[5m]))'
+        status_5xx_selector = _promql_with_extra_matchers(service_selector, ['status=~"5.."'])
+        code_5xx_selector = _promql_with_extra_matchers(service_selector, ['code=~"5.."'])
+        plan.extend([
+            _metric_plan_item(
+                '服务 5xx 错误率',
+                f'((sum(rate(http_requests_total{status_5xx_selector}[5m])) + sum(rate(http_requests_total{code_5xx_selector}[5m]))) / clamp_min({request_total_expr}, 0.001))',
+                'service_red',
+                '确认服务请求错误是否接近告警窗口抬升',
+                'strong',
+            ),
+            _metric_plan_item(
+                '服务 P95 延迟',
+                f'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service_selector}[5m])) by (le))',
+                'service_red',
+                '确认服务延迟是否与告警同步抬升',
+                'strong',
+            ),
+            _metric_plan_item(
+                '服务请求量',
+                f'sum(rate(http_requests_total{service_selector}[5m]))',
+                'service_red',
+                '确认流量是否突增、突降或无流量',
+                'medium',
+            ),
+        ])
+
+    if has_k8s_context:
+        k8s_selector = exact_selector or service_selector
+        plan.extend([
+            _metric_plan_item(
+                '容器重启增量',
+                f'sum(increase(kube_pod_container_status_restarts_total{k8s_selector}[10m])) by (namespace, pod)' if k8s_selector else '',
+                'k8s_runtime',
+                '确认 Pod 或容器是否在告警前后重启',
+                'strong',
+            ),
+            _metric_plan_item(
+                '容器 CPU 使用',
+                f'sum(rate(container_cpu_usage_seconds_total{k8s_selector}[5m])) by (namespace, pod)' if k8s_selector else '',
+                'k8s_runtime',
+                '确认 CPU 使用是否异常抬升',
+                'medium',
+            ),
+            _metric_plan_item(
+                '容器内存使用',
+                f'sum(container_memory_working_set_bytes{k8s_selector}) by (namespace, pod)' if k8s_selector else '',
+                'k8s_runtime',
+                '确认内存使用是否接近异常',
+                'medium',
+            ),
+        ])
+        deployment = labels.get('deployment') or (alert.resource if str(alert.resource_type or '').lower() in {'deployment', 'deployments'} else '')
+        if deployment and alert.namespace:
+            dep_selector = _promql_selector({'namespace': alert.namespace, 'deployment': deployment}, ['namespace', 'deployment'])
+            plan.append(_metric_plan_item(
+                'Deployment 可用副本',
+                f'kube_deployment_status_replicas_available{dep_selector}',
+                'k8s_runtime',
+                '确认 Deployment 可用副本是否不足',
+                'strong',
+            ))
+
+    if has_node_context and node_selector:
+        idle_selector = _promql_with_extra_matchers(node_selector, ['mode="idle"'])
+        plan.extend([
+            _metric_plan_item(
+                '节点 CPU 使用率',
+                f'1 - avg(rate(node_cpu_seconds_total{idle_selector}[5m]))',
+                'node_runtime',
+                '确认节点 CPU 是否异常',
+                'medium',
+            ),
+            _metric_plan_item(
+                '节点内存可用率',
+                f'node_memory_MemAvailable_bytes{node_selector} / node_memory_MemTotal_bytes{node_selector}',
+                'node_runtime',
+                '确认节点内存是否紧张',
+                'medium',
+            ),
+        ])
+
+    return _dedupe_metric_plan(plan, budget=budget)
+
+
+def _metric_value_from_sample(sample):
+    if isinstance(sample, (list, tuple)) and len(sample) >= 2:
+        return _safe_float(sample[1])
+    return _safe_float(sample)
+
+
+def _series_numeric_values(series):
+    values = []
+    for point in series.get('values') or []:
+        number = _metric_value_from_sample(point)
+        if number is not None:
+            values.append(number)
+    if not values:
+        number = _metric_value_from_sample(series.get('value'))
+        if number is not None:
+            values.append(number)
+    return values
+
+
+def _summarize_metric_series(series):
+    metric = series.get('metric') or {}
+    values = _series_numeric_values(series)
+    if not values:
+        return {
+            'metric': metric,
+            'points': 0,
+            'latest': None,
+            'baseline': None,
+            'maximum': None,
+            'minimum': None,
+            'trend': 'unknown',
+            'abnormal': False,
+        }
+    latest = values[-1]
+    head = values[:max(1, min(5, len(values)))]
+    baseline = sum(head) / len(head)
+    maximum = max(values)
+    minimum = min(values)
+    delta = latest - baseline
+    abs_baseline = abs(baseline)
+    if abs(delta) <= max(abs_baseline * 0.2, 0.0001):
+        trend = 'flat'
+    else:
+        trend = 'up' if delta > 0 else 'down'
+    abnormal = False
+    if trend == 'up' and latest > max(baseline * 1.5, baseline + 0.01):
+        abnormal = True
+    if baseline > 0 and latest <= baseline * 0.3:
+        abnormal = True
+    return {
+        'metric': metric,
+        'points': len(values),
+        'latest': round(latest, 6),
+        'baseline': round(baseline, 6),
+        'maximum': round(maximum, 6),
+        'minimum': round(minimum, 6),
+        'trend': trend,
+        'abnormal': abnormal,
+    }
+
+
+def _metric_label_text(metric):
+    if not isinstance(metric, dict) or not metric:
+        return 'scalar'
+    preferred = ['namespace', 'pod', 'deployment', 'service', 'job', 'instance', 'node', 'container']
+    parts = []
+    for key in preferred:
+        value = metric.get(key)
+        if value not in (None, ''):
+            parts.append(f'{key}={value}')
+        if len(parts) >= 4:
+            break
+    if not parts:
+        parts = [f'{key}={value}' for key, value in list(metric.items())[:4]]
+    return ', '.join(parts) or 'scalar'
+
+
+def _summarize_metric_query_result(plan_item, payload, series_limit=ALERT_METRIC_SERIES_LIMIT):
+    results = payload.get('result') or []
+    series_summaries = [_summarize_metric_series(item) for item in results[:series_limit]]
+    abnormal_series = [item for item in series_summaries if item.get('abnormal')]
+    has_data = bool(series_summaries)
+    status_text = 'abnormal' if abnormal_series else ('normal' if has_data else 'missing')
+    trend_counter = Counter(item.get('trend') for item in series_summaries if item.get('trend'))
+    trend = trend_counter.most_common(1)[0][0] if trend_counter else 'unknown'
+    return {
+        'name': plan_item.get('name'),
+        'category': plan_item.get('category'),
+        'intent': plan_item.get('intent'),
+        'weight': plan_item.get('weight'),
+        'promql': plan_item.get('promql'),
+        'status': status_text,
+        'trend': trend,
+        'series_count': payload.get('series_count', len(results)),
+        'source': payload.get('source'),
+        'metric_datasource': payload.get('metric_datasource'),
+        'series': series_summaries,
+    }
+
+
+def _format_metric_evidence_item(item):
+    status_map = {'abnormal': '异常', 'normal': '有数据', 'missing': '无数据', 'failed': '失败'}
+    status_text = status_map.get(item.get('status'), item.get('status') or '未知')
+    series = item.get('series') or []
+    if item.get('status') == 'failed':
+        return f"{item.get('name')}：查询失败，{item.get('error') or '未知错误'}"
+    if not series:
+        return f"{item.get('name')}：{status_text}，未返回时间序列；PromQL={item.get('promql')}"
+    first = series[0]
+    return (
+        f"{item.get('name')}：{status_text}，趋势 {first.get('trend') or 'unknown'}，"
+        f"最新 {first.get('latest')}，基线 {first.get('baseline')}，序列 {_metric_label_text(first.get('metric'))}"
+    )
+
+
+def _alert_metric_time_window(alert, duration_minutes):
+    anchor = alert.starts_at or alert.last_received_at or alert.created_at or timezone.now()
+    if timezone.is_naive(anchor):
+        anchor = timezone.make_aware(anchor, timezone.get_current_timezone())
+    duration = max(15, min(_safe_int(duration_minutes, ALERT_METRIC_DEFAULT_DURATION_MINUTES), ALERT_METRIC_MAX_DURATION_MINUTES))
+    before_minutes = min(duration // 2, 60)
+    after_minutes = max(duration - before_minutes, 15)
+    start_time = anchor - timedelta(minutes=before_minutes)
+    end_time = max(timezone.now(), anchor + timedelta(minutes=after_minutes))
+    if (end_time - start_time).total_seconds() > ALERT_METRIC_MAX_DURATION_MINUTES * 60:
+        end_time = start_time + timedelta(minutes=ALERT_METRIC_MAX_DURATION_MINUTES)
+    return start_time, end_time, duration
+
+
+def _select_alert_metric_datasource_id(knowledge_environment, alert, metric_datasource_id=''):
+    explicit_id = str(metric_datasource_id or '').strip()
+    if explicit_id:
+        return explicit_id
+    if knowledge_environment:
+        ids = knowledge_environment.get('metric_datasource_ids') or []
+        if ids:
+            return ids[0]
+    env_names = []
+    if alert.environment:
+        env_names.append(alert.environment)
+    if knowledge_environment:
+        env_names.append(knowledge_environment.get('name'))
+        env_names.extend(knowledge_environment.get('alert_environments') or [])
+    for env_name in [item for item in dict.fromkeys(env_names) if item]:
+        datasource = MetricDataSource.objects.filter(is_enabled=True, environment=env_name).order_by('-is_default', 'name').first()
+        if datasource:
+            return datasource.id
+    datasource = MetricDataSource.objects.filter(is_enabled=True, is_default=True).order_by('environment', 'name').first()
+    if datasource:
+        return datasource.id
+    return ''
+
+
+def query_alert_metrics(session, user_message, user, query='', alert_id=None, fingerprint='', latest=False, duration_minutes=60, step=60, budget=ALERT_METRIC_QUERY_BUDGET, metric_datasource_id=''):
+    started_at = time.time()
+    knowledge_environment = _resolve_knowledge_environment_for_query(query)
+    alert_id = _safe_int(alert_id, 0) or _extract_alert_id(query)
+    fingerprint = (fingerprint or _extract_alert_fingerprint(query)).strip().lower()
+    latest = bool(latest) or any(keyword in str(query or '').lower() for keyword in ['最新', '最后一条', '最近一条', 'latest', 'last'])
+    budget = max(1, min(_safe_int(budget, ALERT_METRIC_QUERY_BUDGET), ALERT_METRIC_QUERY_BUDGET))
+    step = max(15, min(_safe_int(step, ALERT_METRIC_DEFAULT_STEP_SECONDS), 3600))
+    invocation = _create_tool_invocation(
+        session,
+        user_message,
+        'query_alert_metrics',
+        {
+            'query': query,
+            'alert_id': alert_id,
+            'fingerprint': fingerprint,
+            'latest': latest,
+            'duration_minutes': duration_minutes,
+            'step': step,
+            'budget': budget,
+            'metric_datasource_id': metric_datasource_id or '',
+            'knowledge_environment': knowledge_environment.get('name') if knowledge_environment else '',
+        },
+    )
+    if not user_has_permissions(user, ['ops.metric.query']):
+        _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
+        return {'summary': {'error': '当前账号无权查询指标。'}, 'sections': [], 'citations': []}
+
+    queryset = _alert_scope_queryset(knowledge_environment)
+    alert = None
+    if alert_id:
+        alert = queryset.filter(id=alert_id).order_by('-last_received_at', '-created_at', '-id').first()
+        if not alert:
+            alert = Alert.objects.filter(id=alert_id).order_by('-last_received_at', '-created_at', '-id').first()
+    elif fingerprint:
+        alert = queryset.filter(fingerprint=fingerprint).order_by('-last_received_at', '-created_at', '-id').first()
+        if not alert:
+            alert = Alert.objects.filter(fingerprint=fingerprint).order_by('-last_received_at', '-created_at', '-id').first()
+    else:
+        alert = queryset.order_by('-last_received_at', '-created_at', '-id').first() if latest else None
+    if not alert:
+        summary = {'count': 0, 'alert_id': alert_id, 'fingerprint': fingerprint, 'planned_count': 0, 'executed_count': 0}
+        _finish_tool_invocation(invocation, summary, started_at, success=True)
+        return {
+            'summary': summary,
+            'sections': [{'title': '告警指标证据', 'items': ['没有找到可查询指标的告警。']}],
+            'citations': [{'title': '指标查询', 'path': '/observability/metrics'}],
+            'evidence': [],
+        }
+
+    plan = _build_alert_metric_query_plan(alert, budget=budget)
+    start_time, end_time, duration = _alert_metric_time_window(alert, duration_minutes)
+    selected_metric_datasource_id = _select_alert_metric_datasource_id(knowledge_environment, alert, metric_datasource_id=metric_datasource_id)
+    environment_name = knowledge_environment.get('name') if knowledge_environment else alert.environment
+    evidence = []
+    failures = []
+    for item in plan:
+        try:
+            payload = execute_promql_query(
+                item['promql'],
+                range_query=True,
+                start_time=start_time,
+                end_time=end_time,
+                step=step,
+                metric_datasource_id=selected_metric_datasource_id or '',
+                environment=environment_name or '',
+                prefer_metric_datasource=True,
+            )
+            evidence.append(_summarize_metric_query_result(item, payload))
+        except Exception as exc:
+            failure = {
+                'name': item.get('name'),
+                'category': item.get('category'),
+                'intent': item.get('intent'),
+                'weight': item.get('weight'),
+                'promql': item.get('promql'),
+                'status': 'failed',
+                'trend': 'unknown',
+                'series_count': 0,
+                'series': [],
+                'error': str(exc)[:240],
+            }
+            evidence.append(failure)
+            failures.append(failure)
+
+    abnormal_items = [item for item in evidence if item.get('status') == 'abnormal']
+    missing_items = [item for item in evidence if item.get('status') == 'missing']
+    sections = [
+        {
+            'title': '指标查询计划',
+            'items': [
+                f"{index + 1}. {item.get('name')} / {item.get('category')} / {item.get('intent')}"
+                for index, item in enumerate(plan)
+            ] or ['未生成可执行指标查询计划。'],
+        },
+        {
+            'title': '指标证据摘要',
+            'items': [_format_metric_evidence_item(item) for item in evidence] or ['未查询到指标证据。'],
+        },
+    ]
+    if missing_items or failures:
+        sections.append({
+            'title': '指标证据不足',
+            'items': [
+                *[f"{item.get('name')} 未返回时间序列，不能据此判断正常。" for item in missing_items[:4]],
+                *[f"{item.get('name')} 查询失败：{item.get('error')}" for item in failures[:4]],
+            ] or ['当前指标证据无明显缺口。'],
+        })
+    summary = {
+        'count': 1,
+        'alert_id': alert.id,
+        'fingerprint': alert.fingerprint,
+        'planned_count': len(plan),
+        'executed_count': len(evidence),
+        'abnormal_count': len(abnormal_items),
+        'missing_count': len(missing_items),
+        'failed_count': len(failures),
+        'budget': budget,
+        'duration_minutes': duration,
+        'step': step,
+        'window': {'start': start_time.isoformat(), 'end': end_time.isoformat()},
+        'metric_datasource_id': selected_metric_datasource_id or '',
+    }
+    _finish_tool_invocation(invocation, summary, started_at, success=True)
+    return {
+        'summary': summary,
+        'sections': sections,
+        'citations': [{'title': '指标查询', 'path': '/observability/metrics'}],
+        'alert': _alert_to_fact(alert),
+        'plan': plan,
+        'evidence': evidence,
+    }
 
 
 def _match_k8s_items(alert, items):
@@ -4823,12 +5349,25 @@ def _infer_alert_root_cause(
         if summary.get('error'):
             _append_unique(pending, f"指标查询失败：{summary.get('error')}", limit=10)
         else:
+            abnormal_count = _safe_int(summary.get('abnormal_count'))
+            missing_count = _safe_int(summary.get('missing_count'))
+            failed_count = _safe_int(summary.get('failed_count'))
+            executed_count = _safe_int(summary.get('executed_count'))
             series_count = _safe_int(summary.get('series_count'))
-            if series_count:
+            if abnormal_count:
+                add_evidence('指标证据', f'指标证据包发现 {abnormal_count} 项异常趋势，查询窗口 {summary.get("duration_minutes") or "-"} 分钟')
+                add_cause('指标证据', '相关指标在告警窗口内出现异常趋势，应结合日志、Trace 和 K8s 证据确认根因')
+            elif executed_count:
+                add_evidence('指标证据', f'已执行 {executed_count} 项指标查询，未发现明显异常趋势')
+            elif series_count:
                 add_evidence('Grafana/PromQL', f'告警指标查询返回 {series_count} 条时间序列')
                 add_cause('Grafana/PromQL', '告警指标仍可查询到关联时间序列，需结合趋势确认是否持续异常或已恢复')
             else:
-                _append_unique(pending, 'Grafana/PromQL 未返回关联时间序列，当前不能用指标趋势确认根因', limit=10)
+                _append_unique(pending, '指标证据包未返回关联时间序列，当前不能用指标趋势确认根因', limit=10)
+            if missing_count:
+                _append_unique(pending, f'有 {missing_count} 项指标模板无数据，不能据此判断正常', limit=10)
+            if failed_count:
+                _append_unique(pending, f'有 {failed_count} 项指标查询失败，需要检查指标数据源或 PromQL 模板', limit=10)
 
     if not evidence:
         _append_unique(
@@ -4926,19 +5465,21 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
             duration_minutes=60,
         )
     metric_result = None
-    metric_promql = _alert_metric_promql(alert)
-    if metric_promql:
-        metric_result = query_grafana_promql(
+    try:
+        metric_result = query_alert_metrics(
             session,
             user_message,
             user,
             query=scoped_query,
-            promql=metric_promql,
-            range_query=True,
+            alert_id=alert.id,
+            fingerprint=alert.fingerprint,
+            latest=False,
             duration_minutes=60,
             step=60,
-            limit=5,
+            budget=ALERT_METRIC_QUERY_BUDGET,
         )
+    except Exception as exc:
+        metric_result = {'summary': {'error': str(exc)[:200]}, 'sections': [{'title': '指标证据查询失败', 'items': [str(exc)[:200]]}]}
     analysis = _infer_alert_root_cause(
         alert,
         k8s_result=k8s_result,
@@ -7725,6 +8266,26 @@ PLATFORM_MCP_TOOL_DEFINITIONS = [
         },
     },
     {
+        'name': 'sxdevops.query_alert_metrics',
+        'title': '查询告警指标证据包',
+        'description': '按告警上下文生成受预算约束的 PromQL 查询计划，返回指标趋势和异常摘要。',
+        'permission': 'ops.metric.query',
+        'handler': 'query_alert_metrics',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'alert_id': {'type': 'integer', 'minimum': 1},
+                'fingerprint': {'type': 'string'},
+                'latest': {'type': 'boolean'},
+                'duration_minutes': {'type': 'integer', 'minimum': 15, 'maximum': 120},
+                'step': {'type': 'integer', 'minimum': 15, 'maximum': 3600},
+                'budget': {'type': 'integer', 'minimum': 1, 'maximum': ALERT_METRIC_QUERY_BUDGET},
+                'metric_datasource_id': {'type': 'integer', 'minimum': 1},
+            },
+        },
+    },
+    {
         'name': 'sxdevops.query_logs',
         'title': '查询日志',
         'description': '查询平台日志源中的只读日志样本。',
@@ -7884,6 +8445,20 @@ def _invoke_platform_mcp_handler(handler_name, session, user, arguments):
             status=str(arguments.get('status') or '').strip(),
             date_filter=str(arguments.get('date_filter') or '').strip(),
             limit=limit,
+        )
+    if handler_name == 'query_alert_metrics':
+        return query_alert_metrics(
+            session,
+            None,
+            user,
+            query=query,
+            alert_id=arguments.get('alert_id'),
+            fingerprint=str(arguments.get('fingerprint') or '').strip(),
+            latest=bool(arguments.get('latest')),
+            duration_minutes=arguments.get('duration_minutes') or ALERT_METRIC_DEFAULT_DURATION_MINUTES,
+            step=arguments.get('step') or ALERT_METRIC_DEFAULT_STEP_SECONDS,
+            budget=arguments.get('budget') or ALERT_METRIC_QUERY_BUDGET,
+            metric_datasource_id=arguments.get('metric_datasource_id') or '',
         )
     if handler_name == 'query_logs':
         return query_logs(
@@ -8209,6 +8784,8 @@ def _summarize_response_block_tool_output(tool_name, tool_output):
     if tool_name == 'query_alert_root_cause':
         alert = tool_output.get('alert') or {}
         return f"分析告警：{alert.get('title') or summary.get('alert_id') or '未定位到告警'}"
+    if tool_name == 'query_alert_metrics':
+        return f"返回 {summary.get('executed_count', 0)} 项指标证据，异常 {summary.get('abnormal_count', 0)} 项"
     if tool_name == 'query_logs':
         count = summary.get('count', len(tool_output.get('logs') or []))
         service = summary.get('service') or ''
@@ -12356,6 +12933,8 @@ def _tool_allowed(user, tool_name):
         return user_has_permissions(user, ['ops.alert.view'])
     if tool_name == 'query_alert_root_cause':
         return user_has_permissions(user, ['ops.alert.view'])
+    if tool_name == 'query_alert_metrics':
+        return user_has_permissions(user, ['ops.metric.query'])
     if tool_name == 'query_system_posture':
         return user_has_permissions(user, ['ops.observability.system_posture.view'])
     if tool_name == 'query_dashboard_metadata':
@@ -12455,6 +13034,22 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
         'query_alert_root_cause': {
             'description': '分析单条告警根因。用户给出告警 ID、告警指纹，或询问某环境最新/最近一条告警的原因、根因、为什么、怎么处理时必须使用本工具。',
             'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'alert_id': {'type': 'integer', 'minimum': 1}, 'fingerprint': {'type': 'string'}, 'latest': {'type': 'boolean'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
+        },
+        'query_alert_metrics': {
+            'description': '查询单条告警的指标证据包。后端会按告警上下文生成受预算约束的 PromQL 查询计划，并返回趋势、基线、异常和缺失摘要；用户问告警指标、指标趋势、是否有指标证据时使用。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'query': {'type': 'string'},
+                    'alert_id': {'type': 'integer', 'minimum': 1},
+                    'fingerprint': {'type': 'string'},
+                    'latest': {'type': 'boolean'},
+                    'duration_minutes': {'type': 'integer', 'minimum': 15, 'maximum': 120},
+                    'step': {'type': 'integer', 'minimum': 15, 'maximum': 3600},
+                    'budget': {'type': 'integer', 'minimum': 1, 'maximum': ALERT_METRIC_QUERY_BUDGET},
+                    'metric_datasource_id': {'type': 'integer', 'minimum': 1},
+                },
+            },
         },
         'query_events': {
             'description': '查询事件墙中的关键事件。',
@@ -12846,6 +13441,7 @@ def _scope_tool_arguments(session, tool_name, arguments):
         'query_knowledge_graph',
         'query_alerts',
         'query_alert_root_cause',
+        'query_alert_metrics',
         'query_system_posture',
         'query_observability',
         'query_logs',
@@ -12989,6 +13585,21 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
             alert_id=arguments.get('alert_id'),
             latest=bool(arguments.get('latest')),
             limit=arguments.get('limit') or 6,
+        )
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
+    if tool_name == 'query_alert_metrics':
+        result = query_alert_metrics(
+            session,
+            user_message,
+            user,
+            query=arguments.get('query', ''),
+            alert_id=arguments.get('alert_id'),
+            fingerprint=arguments.get('fingerprint', ''),
+            latest=bool(arguments.get('latest')),
+            duration_minutes=arguments.get('duration_minutes') or ALERT_METRIC_DEFAULT_DURATION_MINUTES,
+            step=arguments.get('step') or ALERT_METRIC_DEFAULT_STEP_SECONDS,
+            budget=arguments.get('budget') or ALERT_METRIC_QUERY_BUDGET,
+            metric_datasource_id=arguments.get('metric_datasource_id') or '',
         )
         return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
     if tool_name == 'query_system_posture':

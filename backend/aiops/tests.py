@@ -65,6 +65,7 @@ from .services import (
     list_model_provider_presets,
     build_markdown_answer,
     query_alerts,
+    query_alert_metrics,
     query_cost_report,
     query_cmdb_items,
     query_hosts,
@@ -206,6 +207,7 @@ class AIOpsApiTests(TestCase):
         active_skill_names = {item['name'] for item in response.data['active_skills']}
         self.assertIn('query_alerts', active_tools)
         self.assertIn('query_alert_root_cause', active_tools)
+        self.assertIn('query_alert_metrics', active_tools)
         self.assertIn('query_system_posture', active_tools)
         self.assertIn('query_grafana_promql', active_tools)
         self.assertIn('query_dashboard_panel_data', active_tools)
@@ -226,6 +228,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('category', alert_skill)
         self.assertIn('alert.root_cause', alert_skill['applicable_actions'])
         self.assertIn('query_alerts', alert_skill['builtin_tools'])
+        self.assertIn('query_alert_metrics', alert_skill['builtin_tools'])
         self.assertTrue(alert_skill['examples'])
         self.assertEqual(alert_skill['risk_level'], 'read_only')
         self.assertIn('sections', alert_skill['output_contract'])
@@ -2183,6 +2186,112 @@ class AIOpsApiTests(TestCase):
         mocked_promql.assert_called_once()
         self.assertEqual(mocked_promql.call_args.kwargs['metric_datasource_id'], metric_source.id)
         self.assertTrue(mocked_promql.call_args.kwargs['prefer_metric_datasource'])
+
+    @mock.patch('aiops.services.execute_promql_query')
+    def test_query_alert_metrics_builds_budgeted_evidence_package(self, mocked_promql):
+        metric_source = MetricDataSource.objects.create(
+            name='prod-prometheus',
+            environment='prod',
+            is_default=True,
+            config={'query_url': 'http://prometheus.prod.local:9090'},
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='prod',
+            aliases=['生产'],
+            metric_datasource_ids=[metric_source.id],
+            alert_environments=['prod'],
+            is_enabled=True,
+        )
+        alert = Alert.objects.create(
+            title='Deployment order unavailable',
+            level='critical',
+            status=Alert.STATUS_ACTIVE,
+            source='prometheus',
+            message='available replicas is too low',
+            environment='prod',
+            cluster='prod-k8s',
+            namespace='checkout',
+            service='order-api',
+            resource_type='deployment',
+            resource='order-api',
+            metric_name='kube_deployment_status_replicas_available',
+            labels={'namespace': 'checkout', 'deployment': 'order-api'},
+            starts_at=timezone.now() - timedelta(minutes=10),
+        )
+        mocked_promql.return_value = {
+            'query': 'mock',
+            'range': True,
+            'source': 'metric_datasource',
+            'metric_datasource': {'id': metric_source.id, 'name': metric_source.name},
+            'series_count': 1,
+            'result': [{
+                'metric': {'namespace': 'checkout', 'deployment': 'order-api'},
+                'values': [
+                    [1710000000, '1'],
+                    [1710000060, '1'],
+                    [1710000120, '5'],
+                ],
+            }],
+            'sample': [],
+        }
+        session = AIOpsChatSession.objects.create(user=self.user, title='alert-metrics')
+        user_message = AIOpsChatMessage.objects.create(session=session, role='user', content=f'分析告警ID {alert.id} 的指标')
+
+        result = query_alert_metrics(session, user_message, self.user, query=f'prod 分析告警ID {alert.id} 的指标', alert_id=alert.id, budget=3)
+
+        self.assertEqual(result['summary']['alert_id'], alert.id)
+        self.assertLessEqual(result['summary']['planned_count'], 3)
+        self.assertEqual(result['summary']['executed_count'], result['summary']['planned_count'])
+        self.assertGreaterEqual(result['summary']['abnormal_count'], 1)
+        self.assertEqual(result['summary']['metric_datasource_id'], metric_source.id)
+        self.assertTrue(result['plan'])
+        self.assertIn('指标证据摘要', result['sections'][1]['title'])
+        mocked_promql.assert_called()
+        self.assertEqual(mocked_promql.call_args.kwargs['metric_datasource_id'], metric_source.id)
+        self.assertTrue(mocked_promql.call_args.kwargs['prefer_metric_datasource'])
+
+    @mock.patch('aiops.services.execute_promql_query')
+    def test_query_alert_root_cause_includes_metric_evidence_package(self, mocked_promql):
+        self.ensure_prod_knowledge_environment()
+        alert = Alert.objects.create(
+            title='prod checkout 5xx high',
+            level='critical',
+            status=Alert.STATUS_ACTIVE,
+            source='prometheus',
+            message='checkout error rate high',
+            environment='prod',
+            service='checkout',
+            metric_name='http_requests_total',
+            labels={'service': 'checkout'},
+            starts_at=timezone.now() - timedelta(minutes=15),
+            is_acknowledged=False,
+        )
+        mocked_promql.return_value = {
+            'query': 'mock',
+            'range': True,
+            'source': 'metric_datasource',
+            'series_count': 1,
+            'result': [{
+                'metric': {'service': 'checkout'},
+                'values': [
+                    [1710000000, '0.01'],
+                    [1710000060, '0.01'],
+                    [1710000120, '0.20'],
+                ],
+            }],
+            'sample': [],
+        }
+        session = AIOpsChatSession.objects.create(user=self.user, title='alert-rca-metrics')
+        user_message = AIOpsChatMessage.objects.create(session=session, role='user', content=f'分析告警ID {alert.id} 的原因')
+
+        result = query_alert_root_cause(session, user_message, self.user, query=f'prod 分析告警ID {alert.id} 的原因')
+
+        self.assertEqual(result['summary']['alert_id'], alert.id)
+        self.assertIn('metrics', result)
+        self.assertEqual(result['metrics']['summary']['alert_id'], alert.id)
+        self.assertGreaterEqual(result['metrics']['summary']['executed_count'], 1)
+        self.assertIn('指标证据', '\n'.join(result['analysis']['evidence']))
+        self.assertTrue(any(section['title'] == '指标证据摘要' for section in result['sections']))
 
     def test_knowledge_graph_filters_k8s_services_by_configured_namespaces(self):
         cluster = K8sCluster.objects.create(
