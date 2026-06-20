@@ -95,15 +95,7 @@
                 <div class="detail-kv compact-kv">{{ executionModeHint(taskForm.execution_mode, taskForm.task_type) }}</div>
               </el-form-item>
             </div>
-            <div v-if="taskForm.target_type === 'host' && taskForm.task_type === 'service_status'" class="form-row">
-              <el-form-item :label="ui.serviceName" class="form-col">
-                <el-input v-model="taskForm.payload.service_name" :placeholder="ui.serviceNamePlaceholder" />
-              </el-form-item>
-              <el-form-item :label="ui.timeout" class="form-col">
-                <el-input-number v-model="taskForm.timeout_seconds" :min="5" :max="120" style="width: 100%" />
-              </el-form-item>
-            </div>
-            <div v-else-if="taskForm.target_type === 'host' && taskForm.task_type === 'run_command'" class="form-row">
+            <div v-if="taskForm.target_type === 'host' && taskForm.task_type === 'run_command'" class="form-row">
               <el-form-item :label="ui.command" class="form-col wide">
                 <el-input v-model="taskForm.payload.command" type="textarea" :rows="executionKind === 'python' ? 8 : 4" :placeholder="executionKind === 'python' ? ui.pythonPlaceholder : ui.commandPlaceholder" />
               </el-form-item>
@@ -121,7 +113,7 @@
                 <el-input v-model="taskForm.payload.playbook_content" type="textarea" :rows="9" :placeholder="ui.playbookContentPlaceholder" />
               </el-form-item>
             </div>
-            <div v-if="taskForm.target_type === 'host' && taskForm.task_type !== 'service_status' && taskForm.task_type !== 'run_playbook'" class="form-row">
+            <div v-if="taskForm.target_type === 'host' && taskForm.task_type !== 'run_playbook'" class="form-row">
               <el-form-item v-if="taskForm.task_type !== 'run_command'" :label="ui.timeout" class="form-col">
                 <el-input-number v-model="taskForm.timeout_seconds" :min="5" :max="120" style="width: 100%" />
               </el-form-item>
@@ -374,6 +366,7 @@
                       <el-dropdown-item command="copy">{{ ui.copyToDraft }}</el-dropdown-item>
                       <el-dropdown-item command="template">{{ ui.saveAsTemplate }}</el-dropdown-item>
                       <el-dropdown-item v-if="canCancelTask(row)" command="cancel">{{ ui.cancelTask }}</el-dropdown-item>
+                      <el-dropdown-item :divided="canCancelTask(row)" command="delete" :disabled="!canDeleteTask(row)">{{ ui.deleteTask }}</el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
@@ -435,15 +428,7 @@
                   <div class="detail-kv compact-kv">{{ executionModeHint(templateDraft.execution_mode, templateDraft.task_type) }}</div>
                 </el-form-item>
               </div>
-              <div v-if="templateDraft.task_type === 'service_status'" class="form-row">
-                <el-form-item :label="ui.serviceName" class="form-col">
-                  <el-input v-model="templateDraft.payload.service_name" :placeholder="ui.serviceNamePlaceholder" />
-                </el-form-item>
-                <el-form-item :label="ui.timeout" class="form-col">
-                  <el-input-number v-model="templateDraft.timeout_seconds" :min="5" :max="120" style="width: 100%" />
-                </el-form-item>
-              </div>
-              <div v-if="templateDraft.task_type !== 'service_status' && templateDraft.task_type !== 'run_command' && templateDraft.task_type !== 'run_playbook'" class="form-row">
+              <div v-if="templateDraft.task_type !== 'run_command' && templateDraft.task_type !== 'run_playbook'" class="form-row">
                 <el-form-item :label="ui.timeout" class="form-col">
                   <el-input-number v-model="templateDraft.timeout_seconds" :min="5" :max="120" style="width: 100%" />
                 </el-form-item>
@@ -521,7 +506,6 @@
                 <pre class="detail-code-block template-code-block">{{ templateDraft.payload.playbook_content || '-' }}</pre>
               </template>
               <pre v-else-if="templateDraft.task_type === 'k8s_pod_exec'" class="detail-code-block">{{ templateDraft.payload.command || '-' }}</pre>
-              <div v-else-if="templateDraft.task_type === 'service_status'" class="detail-kv">{{ ui.serviceDetail }}: {{ templateDraft.payload.service_name || '-' }}</div>
               <div v-else class="detail-kv">{{ ui.noExtraParams }}</div>
             </div>
             <div class="detail-section">
@@ -564,7 +548,6 @@
             <pre class="detail-code-block template-code-block">{{ currentTemplate.payload?.playbook_content || '-' }}</pre>
           </template>
           <pre v-else-if="currentTemplate.task_type === 'k8s_pod_exec'" class="detail-code-block">{{ currentTemplate.payload?.command || '-' }}</pre>
-          <div v-else-if="currentTemplate.task_type === 'service_status'" class="detail-kv">{{ ui.serviceDetail }}: {{ currentTemplate.payload?.service_name || '-' }}</div>
           <div v-else class="detail-kv">{{ ui.noExtraParams }}</div>
         </div>
         <div v-if="Object.keys(currentTemplate.payload || {}).length" class="detail-section">
@@ -646,11 +629,12 @@
             </div>
           </div>
           <div v-if="Object.keys(detailTask.payload || {}).length" class="detail-section">
-            <div class="detail-section-title">{{ detailTask.task_type === 'run_playbook' ? ui.playbookContent : `${ui.taskPayload} JSON` }}</div>
+            <div class="detail-section-title">{{ detailTask.task_type === 'run_playbook' ? ui.playbookContent : (detailTask.task_type === 'run_command' ? ui.command : `${ui.taskPayload} JSON`) }}</div>
             <template v-if="detailTask.task_type === 'run_playbook'">
               <div class="detail-kv">{{ ui.playbookName }}: {{ detailTask.payload?.playbook_name || '-' }}</div>
               <pre class="detail-code-block template-code-block yaml-code-block">{{ formatMultilineContent(detailTask.payload?.playbook_content) }}</pre>
             </template>
+            <pre v-else-if="detailTask.task_type === 'run_command'" class="detail-code-block">{{ formatMultilineContent(detailTask.payload?.command) }}</pre>
             <pre v-else class="detail-code-block">{{ formatPayloadJson(detailTask.payload) }}</pre>
           </div>
           <div class="detail-section">
@@ -700,6 +684,7 @@ import {
   cancelHostTask,
   createHostTask,
   createHostTaskTemplate,
+  deleteHostTask,
   updateHostTaskTemplate,
   deleteHostTaskTemplate,
   executeHostTask,
@@ -869,6 +854,9 @@ const ui = {
   saveTemplateSuccess: '\u6a21\u677f\u5df2\u4fdd\u5b58',
   deleteTemplateConfirm: '\u786e\u8ba4\u5220\u9664\u8be5\u6a21\u677f\uff1f',
   deleteTemplateSuccess: '\u6a21\u677f\u5df2\u5220\u9664',
+  deleteTask: '删除',
+  deleteTaskConfirm: '确认删除该历史任务记录？删除后将同时移除执行明细。',
+  deleteTaskSuccess: '任务记录已删除',
   templateApplySuccess: '\u5df2\u5957\u7528\u6a21\u677f',
   snippetApplySuccess: '\u5df2\u586b\u5165\u5e38\u7528\u547d\u4ee4',
   taskExecuted: '\u4efb\u52a1\u5df2\u521b\u5efa\uff0c\u6b63\u5728\u540e\u53f0\u6267\u884c',
@@ -883,6 +871,7 @@ const ui = {
   loadTaskDetailFailed: '\u52a0\u8f7d\u4efb\u52a1\u8be6\u60c5\u5931\u8d25',
   saveTemplateFailed: '\u4fdd\u5b58\u4efb\u52a1\u6a21\u677f\u5931\u8d25',
   deleteTemplateFailed: '\u5220\u9664\u4efb\u52a1\u6a21\u677f\u5931\u8d25',
+  deleteTaskFailed: '删除任务记录失败',
   taskNameRequired: '\u8bf7\u586b\u5199\u4efb\u52a1\u540d\u79f0',
   hostRequired: '请至少选择一个主机资源',
   k8sRequired: '请至少选择一个 K8s 集群',
@@ -1084,7 +1073,7 @@ function defaultTemplateDraft() { return { name: '', target_type: 'host', task_t
 function buildPresetPayload(taskType) {
   if (taskType === 'run_command') return { ...defaultPayload(), command: 'uptime && df -h && free -m' }
   if (taskType === 'run_playbook') return { ...defaultPayload(), playbook_name: 'service-health.yml', playbook_content: playbookExample }
-  if (taskType === 'service_status') return { ...defaultPayload(), service_name: 'nginx' }
+  if (taskType === 'service_status') return { ...defaultPayload(), command: buildServiceStatusScript('nginx'), service_name: 'nginx' }
   if (taskType === 'k8s_pod_exec') return { ...defaultPayload(), command: 'kubectl get deployment -A' }
   if (taskType === 'k8s_scale_workload') return { ...defaultPayload(), workload_type: 'deployment', replicas: 2 }
   return defaultPayload()
@@ -1147,6 +1136,48 @@ function extractCommandText(source = {}) {
   }
   return ''
 }
+function normalizeServiceName(value) {
+  return String(value || '').trim().replace(/^['"`]+|['"`]+$/g, '') || 'nginx'
+}
+function buildServiceStatusScript(serviceName = 'nginx') {
+  const service = normalizeServiceName(serviceName)
+  return `#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE_NAME="${service}"
+
+if [ "$(id -u)" -ne 0 ]; then
+  SUDO="sudo"
+else
+  SUDO=""
+fi
+
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "systemctl is not available on this host." >&2
+  exit 1
+fi
+
+$SUDO systemctl status "$SERVICE_NAME" --no-pager`
+}
+function normalizeScriptTaskSource(source = {}) {
+  const taskType = source.task_type || 'run_command'
+  if (taskType !== 'service_status') return source
+  const payload = isPlainObject(source.payload) ? source.payload : {}
+  const serviceName = normalizeServiceName(payload.service_name || source.service_name)
+  return {
+    ...source,
+    task_type: 'run_command',
+    execution_mode: source.execution_mode || 'ansible',
+    execution_strategy: source.execution_strategy || 'stop_on_error',
+    payload: {
+      ...payload,
+      service_name: serviceName,
+      script_kind: payload.script_kind || 'shell',
+      script_purpose: payload.script_purpose || 'inspection',
+      command: extractCommandText(payload) || buildServiceStatusScript(serviceName),
+    },
+  }
+}
 function buildEditablePayload(payload = {}, executionKindValue = 'shell') {
   const patch = isPlainObject(payload.patch) ? payload.patch : {}
   const command = extractCommandText(payload)
@@ -1165,7 +1196,7 @@ function sanitizePayload(payload = {}) {
 function normalizePayloadByType(taskType, source = {}) {
   if (taskType === 'run_command') return { command: extractCommandText(source), script_kind: source.script_kind === 'python' ? 'python' : 'shell' }
   if (taskType === 'run_playbook') return { playbook_name: (source.playbook_name || '').trim(), playbook_content: (source.playbook_content || '').trim() }
-  if (taskType === 'service_status') return { service_name: (source.service_name || '').trim() }
+  if (taskType === 'service_status') return { command: extractCommandText(source) || buildServiceStatusScript(source.service_name), script_kind: 'shell', service_name: normalizeServiceName(source.service_name) }
   if (taskType === 'k8s_pod_exec') {
     const payload = { command: (source.command || '').trim() }
     ;['resource_kind', 'service_name', 'namespace', 'patch_type'].forEach((key) => {
@@ -1191,22 +1222,23 @@ function buildK8sSubmitTargets(payload = {}) {
 function validatePayloadByType(taskType, payload) {
   if (taskType === 'run_command' && !payload.command) return ElMessage.warning(ui.commandRequired), false
   if (taskType === 'run_playbook' && !payload.playbook_content) return ElMessage.warning(ui.playbookRequired), false
-  if (taskType === 'service_status' && !payload.service_name) return ElMessage.warning(ui.serviceRequired), false
+  if (taskType === 'service_status' && !(payload.command || payload.service_name)) return ElMessage.warning(ui.commandRequired), false
   if (taskType === 'k8s_pod_exec' && !payload.command) return ElMessage.warning(ui.commandRequired), false
   return true
 }
 function normalizePayload() { return normalizePayloadByType(taskForm.value.task_type, taskForm.value.payload || {}) }
 function validateTaskPayload(payload) { return validatePayloadByType(taskForm.value.task_type, payload) }
 function templatePayloadPreview(template) {
-  if (template.task_type === 'run_command') return template.payload?.command || ''
-  if (template.task_type === 'run_playbook') return template.payload?.playbook_name || template.payload?.playbook_content || ''
-  if (template.task_type === 'service_status') return template.payload?.service_name || ''
-  if (template.task_type === 'k8s_pod_exec') return template.payload?.command || ''
+  const normalizedTemplate = normalizeScriptTaskSource(template)
+  if (normalizedTemplate.task_type === 'run_command') return normalizedTemplate.payload?.command || ''
+  if (normalizedTemplate.task_type === 'run_playbook') return normalizedTemplate.payload?.playbook_name || normalizedTemplate.payload?.playbook_content || ''
+  if (normalizedTemplate.task_type === 'k8s_pod_exec') return normalizedTemplate.payload?.command || ''
   return ''
 }
 function templatePreviewLabel(template) {
-  if (template.task_type === 'run_command') return ui.command
-  if (template.task_type === 'run_playbook') return ui.playbookContent
+  const normalizedTemplate = normalizeScriptTaskSource(template)
+  if (normalizedTemplate.task_type === 'run_command') return ui.command
+  if (normalizedTemplate.task_type === 'run_playbook') return ui.playbookContent
   return ui.serviceDetail
 }
 function formatPayloadJson(payload) { return JSON.stringify(payload || {}, null, 2) }
@@ -1270,31 +1302,33 @@ function targetSnapshotMeta(item = {}, targetType = 'host') {
   return item.ip_address || item.cluster_name || '-'
 }
 function buildTemplateDraft(source = {}) {
-  const taskType = source.task_type || 'run_command'
-  const targetType = source.target_type || (taskType.startsWith('k8s_') ? 'k8s' : 'host')
+  const normalizedSource = normalizeScriptTaskSource(source)
+  const taskType = normalizedSource.task_type || 'run_command'
+  const targetType = normalizedSource.target_type || (taskType.startsWith('k8s_') ? 'k8s' : 'host')
   return {
-    name: source.name || '',
+    name: normalizedSource.name || '',
     target_type: targetType,
     task_type: taskType,
-    description: source.description || '',
-    execution_mode: source.execution_mode || (targetType === 'k8s' ? 'k8s_api' : (['run_command', 'run_playbook'].includes(taskType) ? 'ansible' : 'ssh')),
-    execution_strategy: source.execution_strategy || 'continue',
-    timeout_seconds: source.timeout_seconds || 15,
-    payload: buildEditablePayload(source.payload || {}, detectExecutionKind(source)),
+    description: normalizedSource.description || '',
+    execution_mode: normalizedSource.execution_mode || (targetType === 'k8s' ? 'k8s_api' : (['run_command', 'run_playbook'].includes(taskType) ? 'ansible' : 'ssh')),
+    execution_strategy: normalizedSource.execution_strategy || 'continue',
+    timeout_seconds: normalizedSource.timeout_seconds || 15,
+    payload: buildEditablePayload(normalizedSource.payload || {}, detectExecutionKind(normalizedSource)),
   }
 }
 function applyTemplate(template) {
-  executionKind.value = detectExecutionKind(template)
-  const detectedExecutionKind = detectExecutionKind(template)
+  const normalizedTemplate = normalizeScriptTaskSource(template)
+  executionKind.value = detectExecutionKind(normalizedTemplate)
+  const detectedExecutionKind = detectExecutionKind(normalizedTemplate)
   taskForm.value = {
-    name: template.name,
-    target_type: template.target_type || (template.task_type?.startsWith('k8s_') ? 'k8s' : 'host'),
-    task_type: template.task_type,
-    description: template.description || '',
-    execution_mode: template.execution_mode || (template.task_type?.startsWith('k8s_') ? 'k8s_api' : (['run_command', 'run_playbook'].includes(template.task_type) ? 'ansible' : 'ssh')),
-    execution_strategy: template.execution_strategy,
-    timeout_seconds: template.timeout_seconds,
-    payload: buildEditablePayload(template.payload || {}, detectedExecutionKind),
+    name: normalizedTemplate.name,
+    target_type: normalizedTemplate.target_type || (normalizedTemplate.task_type?.startsWith('k8s_') ? 'k8s' : 'host'),
+    task_type: normalizedTemplate.task_type,
+    description: normalizedTemplate.description || '',
+    execution_mode: normalizedTemplate.execution_mode || (normalizedTemplate.task_type?.startsWith('k8s_') ? 'k8s_api' : (['run_command', 'run_playbook'].includes(normalizedTemplate.task_type) ? 'ansible' : 'ssh')),
+    execution_strategy: normalizedTemplate.execution_strategy,
+    timeout_seconds: normalizedTemplate.timeout_seconds,
+    payload: buildEditablePayload(normalizedTemplate.payload || {}, detectedExecutionKind),
   }
   clearSelection()
   fetchTargets()
@@ -1304,6 +1338,7 @@ function applyTemplate(template) {
 }
 function canCancelTask(task) { return ['pending', 'running'].includes(task.status) && !task.cancel_requested }
 function canExecuteTask(task) { return task.status === 'pending' && !task.cancel_requested }
+function canDeleteTask(task) { return !['pending', 'running'].includes(task.status) }
 function riskTagType(risk) { if (risk === 'critical' || risk === 'high') return 'danger'; if (risk === 'medium') return 'warning'; return 'success' }
 function applySourceFilter(source, targetType = '') { taskFilters.value.trigger_source = source; taskFilters.value.target_type = targetType; taskPage.value = 1; activeTab.value = 'history'; fetchTasks() }
 function handleEnvironmentChange() { targetFilters.value.system = '' }
@@ -1358,13 +1393,15 @@ function openTemplateCreateDialog() {
 function openTemplateEditDialog(template) {
   templateEditorMode.value = 'edit'
   editingTemplateId.value = template.id
-  templateDraft.value = buildTemplateDraft(template)
-  templateExecutionKind.value = detectExecutionKind(template)
+  const normalizedTemplate = normalizeScriptTaskSource(template)
+  templateDraft.value = buildTemplateDraft(normalizedTemplate)
+  templateExecutionKind.value = detectExecutionKind(normalizedTemplate)
   lastTemplateDraftType.value = templateDraft.value.task_type
   templateCreateVisible.value = true
 }
 function openTemplateDetail(template) {
-  currentTemplate.value = { ...template, payload: buildEditablePayload(template.payload || {}, detectExecutionKind(template)) }
+  const normalizedTemplate = normalizeScriptTaskSource(template)
+  currentTemplate.value = { ...normalizedTemplate, payload: buildEditablePayload(normalizedTemplate.payload || {}, detectExecutionKind(normalizedTemplate)) }
   templateDetailVisible.value = true
 }
 function resetTemplateFilters() { templateFilters.value = { search: '', execution_kind: '' } }
@@ -1490,9 +1527,10 @@ function clearSelection() {
 function resetTargetFilters() { targetFilters.value = { search: '', environment: '', system: '', status: '' }; clearSelection(); fetchTargets() }
 function resetTaskFilters() { taskFilters.value = { search: '', target_type: '', execution_kind: '', status: '', trigger_source: '', risk_level: '' }; taskPage.value = 1; selectedTaskRows.value = []; fetchTasks() }
 function buildPrefillDraftFromTask(task = {}) {
-  const taskType = task.task_type || 'run_command'
-  const targetType = task.target_type || (taskType.startsWith('k8s_') ? 'k8s' : 'host')
-  const targetSnapshot = Array.isArray(task.target_snapshot) ? task.target_snapshot : []
+  const normalizedTask = normalizeScriptTaskSource(task)
+  const taskType = normalizedTask.task_type || 'run_command'
+  const targetType = normalizedTask.target_type || (taskType.startsWith('k8s_') ? 'k8s' : 'host')
+  const targetSnapshot = Array.isArray(normalizedTask.target_snapshot) ? normalizedTask.target_snapshot : []
   const targetRefs = targetSnapshot
     .filter(item => item?.source === 'task_resource' || item?.id)
     .map(item => item?.source === 'task_resource'
@@ -1508,54 +1546,55 @@ function buildPrefillDraftFromTask(task = {}) {
     })).filter(item => item.cluster_id)
     : []
   return {
-    name: task.name || '',
-    description: task.description || '',
+    name: normalizedTask.name || '',
+    description: normalizedTask.description || '',
     target_type: targetType,
     task_type: taskType,
-    execution_mode: task.execution_mode || (targetType === 'k8s' ? 'k8s_api' : 'ansible'),
-    execution_strategy: task.execution_strategy || 'continue',
-    timeout_seconds: task.timeout_seconds || 30,
-    payload: { ...(task.payload || {}) },
+    execution_mode: normalizedTask.execution_mode || (targetType === 'k8s' ? 'k8s_api' : 'ansible'),
+    execution_strategy: normalizedTask.execution_strategy || 'continue',
+    timeout_seconds: normalizedTask.timeout_seconds || 30,
+    payload: { ...(normalizedTask.payload || {}) },
     target_refs: targetRefs,
     target_hosts: targetSnapshot,
     k8s_targets: k8sTargets,
-    trigger_source: task.trigger_source || 'manual',
+    trigger_source: normalizedTask.trigger_source || 'manual',
     source_context: {
-      ...(task.source_context || {}),
+      ...(normalizedTask.source_context || {}),
       source: 'task_history',
-      source_task_id: task.id,
-      source_task_name: task.name || '',
-      request_summary: task.description || task.summary || '',
+      source_task_id: normalizedTask.id,
+      source_task_name: normalizedTask.name || '',
+      request_summary: normalizedTask.description || normalizedTask.summary || '',
     },
   }
 }
 async function applyTaskDraft(taskDraft, sourceLabel = '任务草稿') {
   if (!taskDraft?.task_type) return
-  const normalizedTaskName = normalizeTaskDraftTitle(taskDraft)
-  const detectedExecutionKind = detectExecutionKind(taskDraft)
+  const scriptTaskDraft = normalizeScriptTaskSource(taskDraft)
+  const normalizedTaskName = normalizeTaskDraftTitle(scriptTaskDraft)
+  const detectedExecutionKind = detectExecutionKind(scriptTaskDraft)
   hostTableRef.value?.clearSelection()
   k8sTargetTableRef.value?.clearSelection()
   selectedRows.value = []
   selectedK8sRows.value = []
   executionKind.value = detectedExecutionKind
   taskForm.value = {
-    name: normalizedTaskName || taskDraft.name || '',
-    target_type: taskDraft.target_type || (taskDraft.task_type?.startsWith('k8s_') ? 'k8s' : 'host'),
-    task_type: taskDraft.task_type,
-    description: taskDraft.description || '',
-    execution_mode: taskDraft.execution_mode || (taskDraft.task_type?.startsWith('k8s_') ? 'k8s_api' : (['run_command', 'run_playbook'].includes(taskDraft.task_type) ? 'ansible' : 'ssh')),
-    execution_strategy: taskDraft.execution_strategy || 'continue',
-    timeout_seconds: taskDraft.timeout_seconds || 30,
-    payload: buildEditablePayload(taskDraft.payload || {}, detectedExecutionKind),
+    name: normalizedTaskName || scriptTaskDraft.name || '',
+    target_type: scriptTaskDraft.target_type || (scriptTaskDraft.task_type?.startsWith('k8s_') ? 'k8s' : 'host'),
+    task_type: scriptTaskDraft.task_type,
+    description: scriptTaskDraft.description || '',
+    execution_mode: scriptTaskDraft.execution_mode || (scriptTaskDraft.task_type?.startsWith('k8s_') ? 'k8s_api' : (['run_command', 'run_playbook'].includes(scriptTaskDraft.task_type) ? 'ansible' : 'ssh')),
+    execution_strategy: scriptTaskDraft.execution_strategy || 'continue',
+    timeout_seconds: scriptTaskDraft.timeout_seconds || 30,
+    payload: buildEditablePayload(scriptTaskDraft.payload || {}, detectedExecutionKind),
   }
-  prefillDraftTargetRefs.value = Array.isArray(taskDraft.target_refs) ? taskDraft.target_refs : []
-  prefillDraftTargets.value = Array.isArray(taskDraft.target_hosts) ? taskDraft.target_hosts : []
-  prefillSourceContext.value = taskDraft.source_context || null
+  prefillDraftTargetRefs.value = Array.isArray(scriptTaskDraft.target_refs) ? scriptTaskDraft.target_refs : []
+  prefillDraftTargets.value = Array.isArray(scriptTaskDraft.target_hosts) ? scriptTaskDraft.target_hosts : []
+  prefillSourceContext.value = scriptTaskDraft.source_context || null
   activeTab.value = 'dispatch'
   await fetchTargets()
-  if (taskDraft.target_type === 'k8s' && Array.isArray(taskDraft.k8s_targets) && taskDraft.k8s_targets.length) {
-    const clusterIds = new Set(taskDraft.k8s_targets.map(item => item.cluster_id))
-    const resourceIds = new Set(taskDraft.k8s_targets.map(item => item.resource_id || item.task_resource_id).filter(Boolean))
+  if (scriptTaskDraft.target_type === 'k8s' && Array.isArray(scriptTaskDraft.k8s_targets) && scriptTaskDraft.k8s_targets.length) {
+    const clusterIds = new Set(scriptTaskDraft.k8s_targets.map(item => item.cluster_id))
+    const resourceIds = new Set(scriptTaskDraft.k8s_targets.map(item => item.resource_id || item.task_resource_id).filter(Boolean))
     selectedK8sRows.value = availableK8sTargets.value.filter(item => clusterIds.has(item.cluster || item.cluster_id || item.id) || resourceIds.has(item.id))
     await nextTick()
     selectedK8sRows.value.forEach(row => k8sTargetTableRef.value?.toggleRowSelection(row, true))
@@ -1613,7 +1652,7 @@ async function openDetail(task) {
   detailLoading.value = true
   detailTask.value = task
   try {
-    detailTask.value = await getHostTask(task.id)
+    detailTask.value = normalizeScriptTaskSource(await getHostTask(task.id))
     return true
   } catch (error) {
     detailVisible.value = false
@@ -1651,9 +1690,10 @@ async function copyTaskToDraft(task) {
 }
 async function saveTaskAsTemplate(task) {
   const sourceTask = task?.executions ? task : await getHostTask(task.id)
-  const payload = normalizePayloadByType(sourceTask.task_type, sourceTask.payload || {})
-  if (!validatePayloadByType(sourceTask.task_type, payload)) return
-  let templateName = sourceTask.name || ''
+  const normalizedTask = normalizeScriptTaskSource(sourceTask)
+  const payload = normalizePayloadByType(normalizedTask.task_type, normalizedTask.payload || {})
+  if (!validatePayloadByType(normalizedTask.task_type, payload)) return
+  let templateName = normalizedTask.name || ''
   try {
     const { value } = await ElMessageBox.prompt(ui.saveTemplatePrompt, ui.saveTemplateTitle, {
       confirmButtonText: ui.saveAsTemplate,
@@ -1669,13 +1709,13 @@ async function saveTaskAsTemplate(task) {
   try {
     const created = await createHostTaskTemplate({
       name: templateName,
-      target_type: sourceTask.target_type || (sourceTask.task_type?.startsWith('k8s_') ? 'k8s' : 'host'),
-      task_type: sourceTask.task_type,
-      description: sourceTask.description || '',
+      target_type: normalizedTask.target_type || (normalizedTask.task_type?.startsWith('k8s_') ? 'k8s' : 'host'),
+      task_type: normalizedTask.task_type,
+      description: normalizedTask.description || '',
       payload: sanitizePayload(payload),
-      execution_mode: sourceTask.execution_mode,
-      execution_strategy: sourceTask.execution_strategy,
-      timeout_seconds: sourceTask.timeout_seconds,
+      execution_mode: normalizedTask.execution_mode,
+      execution_strategy: normalizedTask.execution_strategy,
+      timeout_seconds: normalizedTask.timeout_seconds,
     })
     ElMessage.success(ui.saveTemplateSuccess)
     await fetchTemplates()
@@ -1711,6 +1751,7 @@ function handleHistoryAction(command, row) {
   if (command === 'copy') return copyTaskToDraft(row)
   if (command === 'template') return saveTaskAsTemplate(row)
   if (command === 'cancel') return handleCancelTask(row)
+  if (command === 'delete') return removeTask(row)
 }
 function handleTemplateAction(command, row) {
   if (command === 'edit') return openTemplateEditDialog(row)
@@ -1729,6 +1770,21 @@ async function removeTemplate(template) {
     }
     await fetchTemplates()
   } catch (error) { ElMessage.error(ui.deleteTemplateFailed) }
+}
+async function removeTask(task) {
+  try {
+    await ElMessageBox.confirm(ui.deleteTaskConfirm, ui.deleteTask, { type: 'warning', confirmButtonText: ui.deleteTask, cancelButtonText: ui.cancel })
+  } catch (error) { return }
+  try {
+    await deleteHostTask(task.id)
+    ElMessage.success(ui.deleteTaskSuccess)
+    if (detailVisible.value && detailTask.value?.id === task.id) {
+      detailVisible.value = false
+      detailTask.value = null
+    }
+    selectedTaskRows.value = selectedTaskRows.value.filter(item => item.id !== task.id)
+    await Promise.all([fetchStats(), fetchTasks()])
+  } catch (error) { ElMessage.error(error?.response?.data?.detail || ui.deleteTaskFailed) }
 }
 async function submitTask() {
   if (!taskForm.value.name) return ElMessage.warning(ui.taskNameRequired)
@@ -2496,8 +2552,12 @@ watch(() => route.query.taskId, async (value, previousValue) => {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 4px;
+  gap: 8px;
   flex-wrap: nowrap;
+}
+
+.history-row-actions :deep(.el-button) {
+  margin-left: 0;
 }
 
 .history-name-cell {

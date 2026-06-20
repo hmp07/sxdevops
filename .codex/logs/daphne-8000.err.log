@@ -539,3 +539,11 @@ django.db.utils.OperationalError: database is locked
 2026-06-20 14:00:02,030 INFO     observability history scheduler refreshed today snapshot: {'day': '2026-06-20', 'captured': 6, 'actor': 'system-scheduler', 'force_refresh': True}
 2026-06-20 15:00:01,681 INFO     observability history scheduler refreshed today snapshot: {'day': '2026-06-20', 'captured': 6, 'actor': 'system-scheduler', 'force_refresh': True}
 2026-06-20 16:00:02,311 INFO     observability history scheduler refreshed today snapshot: {'day': '2026-06-20', 'captured': 6, 'actor': 'system-scheduler', 'force_refresh': True}
+2026-06-20 16:18:57,034 INFO     Connected (version 2.0, client OpenSSH_8.9p1)
+2026-06-20 16:18:57,258 INFO     Authentication (publickey) failed.
+2026-06-20 16:18:57,318 INFO     Authentication (password) successful!
+2026-06-20 17:00:01,976 INFO     observability history scheduler refreshed today snapshot: {'day': '2026-06-20', 'captured': 6, 'actor': 'system-scheduler', 'force_refresh': True}
+Method Not Allowed: /api/host-tasks/97/
+2026-06-20 17:49:43,671 WARNING  Method Not Allowed: /api/host-tasks/97/
+Unauthorized: /api/host-tasks/
+2026-06-20 17:50:25,289 WARNING  Unauthorized: /api/host-tasks/

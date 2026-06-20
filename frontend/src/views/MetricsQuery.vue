@@ -16,7 +16,7 @@
       </div>
     </section>
 
-    <ObservabilityRouteTabs :group="activeTab === 'datasources' ? 'datasources' : 'query'" />
+    <ObservabilityRouteTabs v-if="activeTab === 'datasources'" group="datasources" />
 
     <section v-if="activeTab === 'query'" class="metric-query-workbench">
       <div class="query-console">

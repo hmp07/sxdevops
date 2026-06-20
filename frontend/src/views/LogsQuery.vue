@@ -4,7 +4,7 @@
       <div class="release-hero-copy">
         <div class="release-hero-title-row release-hero-title-inline">
           <span class="log-header-icon"><el-icon><Search /></el-icon></span>
-          <h2>日志查询</h2>
+          <h2>日志中心</h2>
           <p class="page-desc inline-subtitle">支持 ELK、Loki、阿里云 SLS 日志查询。</p>
         </div>
       </div>
@@ -15,8 +15,6 @@
         </el-button>
       </div>
     </section>
-
-    <ObservabilityRouteTabs group="query" />
 
     <el-empty v-if="!dataSources.length && !loadingSources" description="还没有日志数据源，请先新增后再查询。">
       <el-button type="primary" @click="goToDatasources">去新增数据源</el-button>
@@ -352,7 +350,6 @@ import { ElMessage } from 'element-plus'
 import { getLogDataSources, getLogProviderCatalog, queryLogs, resolveLogToGrafana, resolveLogToTrace } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
 import { openRouteInNewTab } from '@/utils/router'
-import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 
 const route = useRoute()
 const router = useRouter()

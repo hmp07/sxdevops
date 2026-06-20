@@ -29,7 +29,7 @@
       </div>
     </section>
 
-    <ObservabilityRouteTabs v-if="!topologyOnly" :group="activeTraceTab === 'datasources' ? 'datasources' : 'query'" />
+    <ObservabilityRouteTabs v-if="!topologyOnly && activeTraceTab === 'datasources'" group="datasources" />
 
     <template v-if="activeTraceTab === 'traces' && canViewTrace">
     <div v-if="!topologyOnly" class="trace-query-layout">

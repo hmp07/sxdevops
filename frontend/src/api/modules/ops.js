@@ -22,6 +22,7 @@ export const deleteTaskResource = (id) => request.delete(`/task-resources/${id}/
 export const getHostTasks = (params) => request.get('/host-tasks/', { params })
 export const getHostTask = (id) => request.get(`/host-tasks/${id}/`)
 export const createHostTask = (data) => request.post('/host-tasks/', data)
+export const deleteHostTask = (id) => request.delete(`/host-tasks/${id}/`)
 export const executeHostTask = (id) => request.post(`/host-tasks/${id}/execute/`)
 export const rerunHostTask = (id) => request.post(`/host-tasks/${id}/rerun/`)
 export const cancelHostTask = (id) => request.post(`/host-tasks/${id}/cancel/`)

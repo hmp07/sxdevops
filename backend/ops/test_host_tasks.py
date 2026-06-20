@@ -6,7 +6,7 @@ from rest_framework.test import APIClient
 
 from aiops.models import AIOpsChatMessage, AIOpsChatSession, AIOpsPendingAction
 from ops.host_tasks import AnsibleControllerError, execute_k8s_task
-from ops.models import Host, HostTask, HostTaskTemplate, K8sCluster, TaskResource, TaskResourceGroup
+from ops.models import Host, HostTask, HostTaskExecution, HostTaskTemplate, K8sCluster, TaskResource, TaskResourceGroup
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
@@ -415,6 +415,49 @@ class HostTaskApiTests(TestCase):
         response = self.client.get('/api/host-tasks/')
 
         self.assertEqual(response.status_code, 403)
+
+    def test_delete_completed_host_task_removes_history_and_executions(self):
+        task = HostTask.objects.create(
+            name='completed-history-task',
+            task_type=HostTask.TASK_RUN_COMMAND,
+            status=HostTask.STATUS_SUCCESS,
+            lifecycle_status=HostTask.LIFECYCLE_SUCCESS,
+            payload={'command': 'uptime'},
+            target_count=1,
+            success_count=1,
+            created_by=self.user.username,
+        )
+        execution = HostTaskExecution.objects.create(
+            task=task,
+            host=self.host,
+            host_name=self.host.hostname,
+            host_ip=str(self.host.ip_address),
+            status='success',
+            command='uptime',
+            output='ok',
+        )
+
+        response = self.client.delete(f'/api/host-tasks/{task.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(HostTask.objects.filter(id=task.id).exists())
+        self.assertFalse(HostTaskExecution.objects.filter(id=execution.id).exists())
+
+    def test_delete_running_host_task_is_rejected(self):
+        task = HostTask.objects.create(
+            name='running-history-task',
+            task_type=HostTask.TASK_RUN_COMMAND,
+            status=HostTask.STATUS_RUNNING,
+            lifecycle_status=HostTask.LIFECYCLE_RUNNING,
+            payload={'command': 'uptime'},
+            target_count=1,
+            created_by=self.user.username,
+        )
+
+        response = self.client.delete(f'/api/host-tasks/{task.id}/')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(HostTask.objects.filter(id=task.id).exists())
 
     def test_k8s_pod_exec_task_records_non_host_execution(self):
         cluster = K8sCluster.objects.create(name='demo-k8s', kubeconfig='demo', status='connected')

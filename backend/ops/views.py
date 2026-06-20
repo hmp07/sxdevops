@@ -520,11 +520,12 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = HostTask.objects.prefetch_related('executions').all()
     search_fields = ['name', 'description', 'created_by']
     filterset_fields = ['target_type', 'task_type', 'status', 'created_by', 'trigger_source', 'lifecycle_status', 'risk_level']
-    http_method_names = ['get', 'post', 'head', 'options']
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
     rbac_permissions = {
         'list': ['ops.task.execute'],
         'retrieve': ['ops.task.execute'],
         'create': ['ops.task.execute'],
+        'destroy': ['ops.task.execute'],
         'rerun': ['ops.task.execute'],
         'cancel': ['ops.task.execute'],
         'batch_cancel': ['ops.task.execute'],
@@ -652,6 +653,20 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if action.status != AIOpsPendingAction.STATUS_EXECUTED:
             action.status = AIOpsPendingAction.STATUS_EXECUTED
         action.save(update_fields=['status', 'result_payload', 'updated_at'])
+
+    def destroy(self, request, *args, **kwargs):
+        task = self.get_object()
+        if task.status in [HostTask.STATUS_PENDING, HostTask.STATUS_RUNNING]:
+            return Response({'detail': '当前任务仍在待执行或执行中，请终止后再删除'}, status=status.HTTP_400_BAD_REQUEST)
+        record_task_center_event(
+            task,
+            request=request,
+            actor_username=request.user.username,
+            action='delete_task',
+            title='删除任务中心历史记录',
+            summary=f'任务 {task.name} 的历史记录已删除',
+        )
+        return super().destroy(request, *args, **kwargs)
 
     def _infer_risk_level(self, validated, hosts=None, k8s_targets=None):
         hosts = hosts or []

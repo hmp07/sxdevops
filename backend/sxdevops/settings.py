@@ -77,6 +77,251 @@ def _json_env(name, default):
         return default
 
 
+def _resolve_config_file():
+    raw_path = os.getenv('SXDEVOPS_CONFIG_FILE', 'config.json')
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path
+
+
+def _load_app_config(path):
+    if not path.exists():
+        return {}
+    try:
+        with path.open('r', encoding='utf-8') as handle:
+            config = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f'Invalid JSON in config file {path}: {exc}') from exc
+    if not isinstance(config, dict):
+        raise RuntimeError(f'Config file {path} must contain a JSON object.')
+    return config
+
+
+APP_CONFIG_FILE = _resolve_config_file()
+APP_CONFIG = _load_app_config(APP_CONFIG_FILE)
+
+
+def _app_config_section(*names):
+    for name in names:
+        section = APP_CONFIG.get(name, {})
+        if isinstance(section, dict):
+            return section
+    return {}
+
+
+def _setting_value(section, keys, env_names=(), default=None, allow_blank=False):
+    if isinstance(keys, str):
+        keys = (keys,)
+    for key in keys:
+        if key in section:
+            value = section[key]
+            if allow_blank or value not in (None, ''):
+                return value
+    for env_name in env_names:
+        value = os.getenv(env_name)
+        if value is not None and (allow_blank or value != ''):
+            return value
+    return default
+
+
+def _bool_value(value, default=False):
+    if value in (None, ''):
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on', 'y'}
+
+
+def _int_value(value, name, default=None):
+    if value in (None, ''):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f'{name} must be an integer.') from exc
+
+
+def _sqlite_database_config(section):
+    db_name = _setting_value(
+        section,
+        ('path', 'sqlite_path', 'file', 'name'),
+        ('SQLITE_NAME', 'SQLITE_PATH', 'DATABASE_NAME', 'DB_NAME'),
+        BASE_DIR / 'db.sqlite3',
+    )
+    if isinstance(db_name, str) and db_name != ':memory:':
+        db_path = Path(db_name).expanduser()
+        if not db_path.is_absolute():
+            db_path = BASE_DIR / db_path
+        db_name = db_path
+    return {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': db_name,
+    }
+
+
+def _mysql_database_config(section):
+    try:
+        import pymysql
+
+        pymysql.install_as_MySQLdb()
+    except ImportError as exc:
+        raise RuntimeError('MySQL database support requires pymysql to be installed.') from exc
+
+    db_name = _setting_value(
+        section,
+        ('database_name', 'database', 'name'),
+        ('MYSQL_DATABASE_NAME', 'MYSQL_DATABASE', 'MYSQL_DB', 'DATABASE_NAME', 'DB_NAME'),
+        '',
+    )
+    if not db_name:
+        raise RuntimeError('MySQL database is enabled but database.database_name is empty.')
+
+    options = section.get('options', {})
+    if not isinstance(options, dict):
+        raise RuntimeError('database.options must be a JSON object.')
+    options = dict(options)
+    charset = _setting_value(
+        section,
+        'charset',
+        ('MYSQL_CHARSET', 'DATABASE_CHARSET', 'DB_CHARSET'),
+        'utf8mb4',
+    )
+    options.setdefault('charset', charset)
+
+    config = {
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': db_name,
+        'USER': _setting_value(
+            section,
+            'user',
+            ('MYSQL_USER', 'DATABASE_USER', 'DB_USER'),
+            'root',
+        ),
+        'PASSWORD': _setting_value(
+            section,
+            'password',
+            ('MYSQL_PASSWORD', 'DATABASE_PASSWORD', 'DB_PASSWORD'),
+            '',
+            allow_blank=True,
+        ),
+        'HOST': _setting_value(
+            section,
+            'host',
+            ('MYSQL_HOST', 'DATABASE_HOST', 'DB_HOST'),
+            '127.0.0.1',
+        ),
+        'PORT': str(_setting_value(
+            section,
+            'port',
+            ('MYSQL_PORT', 'DATABASE_PORT', 'DB_PORT'),
+            '3306',
+        )),
+        'OPTIONS': options,
+    }
+
+    conn_max_age = _setting_value(
+        section,
+        ('conn_max_age', 'connMaxAge'),
+        ('DATABASE_CONN_MAX_AGE', 'DB_CONN_MAX_AGE'),
+        None,
+    )
+    if conn_max_age is not None:
+        config['CONN_MAX_AGE'] = _int_value(conn_max_age, 'database.conn_max_age')
+
+    test_config = section.get('test')
+    if test_config is not None:
+        if not isinstance(test_config, dict):
+            raise RuntimeError('database.test must be a JSON object.')
+        config['TEST'] = test_config
+
+    return config
+
+
+def _build_database_config():
+    section = _app_config_section('database', 'db')
+    engine = str(_setting_value(
+        section,
+        ('type', 'engine'),
+        ('DATABASE_ENGINE', 'DB_ENGINE'),
+        'sqlite',
+    ) or 'sqlite').strip().lower()
+
+    if engine in {'', 'sqlite', 'sqlite3', 'django.db.backends.sqlite3'}:
+        return {'default': _sqlite_database_config(section)}
+    if engine in {'mysql', 'mariadb', 'django.db.backends.mysql'}:
+        return {'default': _mysql_database_config(section)}
+
+    raise RuntimeError(f'Unsupported database engine: {engine}')
+
+
+def _build_cache_config():
+    section = _app_config_section('cache')
+    backend = str(_setting_value(
+        section,
+        ('type', 'backend', 'engine'),
+        ('CACHE_BACKEND',),
+        '',
+    ) or '').strip().lower()
+    redis_location = _setting_value(
+        section,
+        ('redis_url', 'location', 'url'),
+        ('REDIS_URL', 'CACHE_REDIS_URL'),
+        '',
+    )
+    timeout = _int_value(_setting_value(
+        section,
+        ('default_timeout_seconds', 'timeout_seconds', 'timeout', 'default_timeout', 'defaultTimeout'),
+        ('CACHE_DEFAULT_TIMEOUT',),
+        300,
+    ), 'cache.timeout', 300)
+    key_prefix = _setting_value(
+        section,
+        ('key_prefix', 'keyPrefix'),
+        ('CACHE_KEY_PREFIX',),
+        'sxdevops',
+        allow_blank=True,
+    )
+
+    redis_requested = backend in {'redis', 'django-redis', 'django_redis'} or (not backend and bool(redis_location))
+    if redis_requested:
+        if not redis_location:
+            raise RuntimeError('Redis cache is enabled but cache.redis_url is empty.')
+        options = section.get('options', {})
+        if not isinstance(options, dict):
+            raise RuntimeError('cache.options must be a JSON object.')
+        options = dict(options)
+        options.setdefault('CLIENT_CLASS', 'django_redis.client.DefaultClient')
+        ignore_exceptions = _setting_value(
+            section,
+            ('ignore_redis_errors', 'ignore_exceptions', 'ignoreExceptions'),
+            ('CACHE_IGNORE_EXCEPTIONS',),
+            True,
+        )
+        options.setdefault('IGNORE_EXCEPTIONS', _bool_value(ignore_exceptions, True))
+        return {
+            'default': {
+                'BACKEND': 'django_redis.cache.RedisCache',
+                'LOCATION': redis_location,
+                'TIMEOUT': timeout,
+                'KEY_PREFIX': key_prefix,
+                'OPTIONS': options,
+            },
+        }
+
+    if backend in {'', 'locmem', 'local-memory', 'local', 'memory', 'in-memory', 'django.core.cache.backends.locmem.locmemcache'}:
+        return {
+            'default': {
+                'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+                'LOCATION': 'sxdevops-local-cache',
+                'TIMEOUT': timeout,
+                'KEY_PREFIX': key_prefix,
+            },
+        }
+
+    raise RuntimeError(f'Unsupported cache backend: {backend}')
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
@@ -151,12 +396,7 @@ WSGI_APPLICATION = 'sxdevops.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
-}
+DATABASES = _build_database_config()
 
 
 # Password validation
@@ -299,32 +539,7 @@ OBSERVABILITY_CONFIG = {
     },
 }
 
-CACHE_REDIS_URL = os.getenv('REDIS_URL') or os.getenv('CACHE_REDIS_URL')
-CACHE_KEY_PREFIX = os.getenv('CACHE_KEY_PREFIX', 'sxdevops')
-CACHE_DEFAULT_TIMEOUT = int(os.getenv('CACHE_DEFAULT_TIMEOUT', '300'))
-
-if CACHE_REDIS_URL:
-    CACHES = {
-        'default': {
-            'BACKEND': 'django_redis.cache.RedisCache',
-            'LOCATION': CACHE_REDIS_URL,
-            'TIMEOUT': CACHE_DEFAULT_TIMEOUT,
-            'KEY_PREFIX': CACHE_KEY_PREFIX,
-            'OPTIONS': {
-                'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-                'IGNORE_EXCEPTIONS': os.getenv('CACHE_IGNORE_EXCEPTIONS', '1') != '0',
-            },
-        },
-    }
-else:
-    CACHES = {
-        'default': {
-            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-            'LOCATION': 'sxdevops-local-cache',
-            'TIMEOUT': CACHE_DEFAULT_TIMEOUT,
-            'KEY_PREFIX': CACHE_KEY_PREFIX,
-        },
-    }
+CACHES = _build_cache_config()
 
 # ASGI / Channels
 ASGI_APPLICATION = 'sxdevops.asgi.application'

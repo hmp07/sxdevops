@@ -221,7 +221,9 @@ const menuItems = [
     icon: 'DataLine',
     children: [
       { path: '/observability/boards', title: '可视化', icon: 'DataLine', anyPermissions: ['ops.grafana.view', 'ops.observability.system_posture.view'] },
-      { path: '/observability/query', title: '数据查询', icon: 'Search', anyPermissions: ['ops.metric.query', 'ops.log.query', 'ops.trace.view'] },
+      { path: '/observability/metrics', title: '指标查询', icon: 'DataAnalysis', permission: 'ops.metric.query' },
+      { path: '/logs/query', title: '日志中心', icon: 'Search', permission: 'ops.log.query' },
+      { path: '/observability/tracing', title: '链路追踪', icon: 'Connection', permission: 'ops.trace.view' },
       { path: '/observability/datasources', title: '数据源', icon: 'DataBoard', anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view', 'ops.trace.datasource.view', 'ops.observability.link.view'] },
       { path: '/alerts', title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
     ],
@@ -342,7 +344,8 @@ const normalizedMenuPath = computed(() => {
     return '/observability/boards'
   }
   if (observabilityQueryPaths.has(route.path) && route.query.tab !== 'datasources') {
-    return '/observability/query'
+    if (route.path === '/observability/query') return '/observability/metrics'
+    return route.path
   }
   if (observabilityDatasourcePaths.has(route.path) || (route.path === '/observability/metrics' && route.query.tab === 'datasources') || (route.path === '/observability/tracing' && route.query.tab === 'datasources')) {
     return '/observability/datasources'

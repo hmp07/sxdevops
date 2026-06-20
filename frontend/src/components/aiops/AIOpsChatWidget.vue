@@ -89,9 +89,6 @@
                   <span class="environment-chip" :class="{ empty: !currentEnvironmentName }">
                     {{ currentEnvironmentName ? `环境：${currentEnvironmentName}` : '未指定环境' }}
                   </span>
-                  <span v-if="currentPageContextTitle" class="environment-chip page-context-chip">
-                    页面：{{ currentPageContextTitle }}
-                  </span>
                   <span v-if="currentPageContextSubject" class="environment-chip page-context-chip">
                     对象：{{ currentPageContextSubject }}
                   </span>
@@ -301,8 +298,8 @@
                                   <strong>{{ metric.value }}</strong>
                                 </div>
                               </div>
-                              <div v-if="message.pending_action?.action_payload?.payload?.command" class="response-block-command">
-                                {{ message.pending_action.action_payload.payload.command }}
+                              <div v-if="getPendingActionScriptContent(message.pending_action)" class="response-block-command">
+                                {{ getPendingActionScriptContent(message.pending_action) }}
                               </div>
                             </div>
 
@@ -423,10 +420,10 @@
                           </div>
                         </div>
                         <div
-                          v-if="message.pending_action.action_payload?.payload?.command"
+                          v-if="getPendingActionScriptContent(message.pending_action)"
                           class="pending-command"
                         >
-                          {{ message.pending_action.action_payload.payload.command }}
+                          {{ getPendingActionScriptContent(message.pending_action) }}
                         </div>
                         <div v-if="message.pending_action.status === 'pending'" class="pending-actions">
                           <el-button size="small" type="primary" @click="handleConfirmAction(message.pending_action)">确认载入</el-button>
@@ -657,10 +654,6 @@ const currentEnvironmentName = computed(() => {
   return typeof value === 'string' ? value : (value.name || '')
 })
 const pageContext = computed(() => buildPageContext())
-const currentPageContextTitle = computed(() => {
-  const context = currentSession.value?.context?.page_context || pageContext.value
-  return context?.title || context?.page || ''
-})
 const currentPageContextSubject = computed(() => {
   const context = currentSession.value?.context?.page_context || pageContext.value
   const hints = context?.hints || {}
@@ -1089,6 +1082,11 @@ function buildApprovalFormBlock(pendingAction) {
     actions: [],
     _key: `pending-action-${pendingAction?.id || 'legacy'}`,
   }
+}
+
+function getPendingActionScriptContent(pendingAction) {
+  const payload = pendingAction?.action_payload?.payload || {}
+  return payload.command || payload.playbook_content || ''
 }
 
 function getMessageBlocks(message) {

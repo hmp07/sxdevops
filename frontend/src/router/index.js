@@ -209,7 +209,7 @@ const routes = [
         path: 'logs/query',
         name: 'LogsQuery',
         component: () => import('@/views/LogsQuery.vue'),
-        meta: { title: '日志查询', icon: 'Search', permission: 'ops.log.query' },
+        meta: { title: '日志中心', icon: 'Search', permission: 'ops.log.query' },
       },
       {
         path: 'logs/datasources',
@@ -228,7 +228,9 @@ const routes = [
         redirect: () => {
           const authStore = useAuthStore(pinia)
           if (authStore.hasAnyPermission(['ops.grafana.view', 'ops.observability.system_posture.view'])) return '/observability/boards'
-          if (authStore.hasAnyPermission(['ops.metric.query', 'ops.log.query', 'ops.trace.view'])) return '/observability/query'
+          if (authStore.hasPermission('ops.metric.query')) return '/observability/metrics'
+          if (authStore.hasPermission('ops.log.query')) return '/logs/query'
+          if (authStore.hasPermission('ops.trace.view')) return '/observability/tracing'
           if (authStore.hasAnyPermission(['ops.metric.datasource.view', 'ops.log.datasource.view', 'ops.trace.datasource.view', 'ops.observability.link.view'])) return '/observability/datasources'
           return '/403'
         },

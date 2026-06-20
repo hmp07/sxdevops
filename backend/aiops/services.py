@@ -6826,6 +6826,12 @@ def _is_task_generation_question(question):
         return False
     if _looks_like_k8s_task_request(question, {}):
         return True
+    if _looks_like_install_task_request(question, {}):
+        return True
+    if _looks_like_shell_task_request(question, {}):
+        return True
+    if _looks_like_playbook_generation_request(question, {}):
+        return True
     return any(keyword in text for keyword in ['生成', '创建', '新建', '安排', '巡检任务', '任务', 'task'])
 
 
@@ -6842,8 +6848,437 @@ def _looks_like_shell_task_request(question, draft_request=None):
     text = str(question or '')
     lowered = text.lower()
     has_script_word = any(keyword in lowered for keyword in ['shell', '脚本', '命令', 'command', 'cmd'])
-    has_task_word = any(keyword in lowered for keyword in ['生成', '创建', '新建', '安排', '执行', '运行', '任务', 'task'])
+    has_task_word = any(keyword in lowered for keyword in [
+        '生成', '创建', '新建', '安排', '发起', '准备', '构建', '写', '编写',
+        '执行', '运行', '任务', '帮我', '请', 'task', 'generate', 'create',
+        'write', 'run', 'execute',
+    ])
     return has_script_word and has_task_word
+
+
+INSTALL_TARGET_PROFILES = {
+    'redis': {'display': 'Redis', 'apt': 'redis-server', 'package': 'redis', 'service': 'redis', 'binary': 'redis-server'},
+    'redis-server': {'display': 'Redis', 'apt': 'redis-server', 'package': 'redis', 'service': 'redis', 'binary': 'redis-server'},
+    'nginx': {'display': 'Nginx', 'apt': 'nginx', 'package': 'nginx', 'service': 'nginx', 'binary': 'nginx'},
+    'docker': {'display': 'Docker', 'apt': 'docker.io', 'package': 'docker', 'service': 'docker', 'binary': 'docker'},
+    'docker.io': {'display': 'Docker', 'apt': 'docker.io', 'package': 'docker', 'service': 'docker', 'binary': 'docker'},
+    'mysql': {'display': 'MySQL', 'apt': 'mysql-server', 'package': 'mysql-server', 'service': 'mysqld', 'binary': 'mysql'},
+    'mariadb': {'display': 'MariaDB', 'apt': 'mariadb-server', 'package': 'mariadb-server', 'service': 'mariadb', 'binary': 'mysql'},
+    'postgresql': {'display': 'PostgreSQL', 'apt': 'postgresql', 'package': 'postgresql-server', 'service': 'postgresql', 'binary': 'psql'},
+    'git': {'display': 'Git', 'apt': 'git', 'package': 'git', 'service': '', 'binary': 'git'},
+    'nodejs': {'display': 'Node.js', 'apt': 'nodejs', 'package': 'nodejs', 'service': '', 'binary': 'node'},
+    'node': {'display': 'Node.js', 'apt': 'nodejs', 'package': 'nodejs', 'service': '', 'binary': 'node'},
+    'npm': {'display': 'npm', 'apt': 'npm', 'package': 'npm', 'service': '', 'binary': 'npm'},
+    'python3': {'display': 'Python3', 'apt': 'python3', 'package': 'python3', 'service': '', 'binary': 'python3'},
+    'python': {'display': 'Python3', 'apt': 'python3', 'package': 'python3', 'service': '', 'binary': 'python3'},
+    'java': {'display': 'OpenJDK', 'apt': 'default-jdk', 'package': 'java-17-openjdk', 'service': '', 'binary': 'java'},
+    'openjdk': {'display': 'OpenJDK', 'apt': 'default-jdk', 'package': 'java-17-openjdk', 'service': '', 'binary': 'java'},
+    'jdk': {'display': 'OpenJDK', 'apt': 'default-jdk', 'package': 'java-17-openjdk', 'service': '', 'binary': 'java'},
+    'maven': {'display': 'Maven', 'apt': 'maven', 'package': 'maven', 'service': '', 'binary': 'mvn'},
+}
+
+
+def _safe_package_token(value):
+    text = str(value or '').strip().lower()
+    if not text:
+        return ''
+    text = text.strip(' "\'`，。；;：:,')
+    return text if re.match(r'^[a-z0-9][a-z0-9_.+-]{0,63}$', text) else ''
+
+
+def _extract_install_target_from_request(question='', draft_request=None):
+    draft_request = draft_request or {}
+    for key in ['package_name', 'software_name', 'software', 'service_name', 'app_name']:
+        target = _safe_package_token(draft_request.get(key))
+        if target:
+            return target
+    text = str(question or draft_request.get('request_summary') or '')
+    lowered = text.lower()
+    for alias in sorted(INSTALL_TARGET_PROFILES, key=len, reverse=True):
+        if re.search(rf'(?<![a-z0-9_.+-]){re.escape(alias)}(?![a-z0-9_.+-])', lowered):
+            return alias
+    patterns = [
+        r'(?:安装|部署|装一下|装个|装上|配置|install|deploy|setup)\s*([A-Za-z][A-Za-z0-9_.+-]{1,63})',
+        r'([A-Za-z][A-Za-z0-9_.+-]{1,63})\s*(?:安装|部署|装一下|装个|装上|install|deploy|setup)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            target = _safe_package_token(match.group(1))
+            if target and target not in {'shell', 'ansible', 'playbook', 'script', 'command'}:
+                return target
+    return ''
+
+
+def _install_profile_for_target(target):
+    target = _safe_package_token(target)
+    profile = dict(INSTALL_TARGET_PROFILES.get(target) or {})
+    if not profile:
+        profile = {'display': target or 'software', 'apt': target, 'package': target, 'service': target, 'binary': target}
+    profile.setdefault('display', target)
+    profile.setdefault('apt', target)
+    profile.setdefault('package', target)
+    profile.setdefault('service', target)
+    profile.setdefault('binary', target)
+    return profile
+
+
+def _looks_like_install_task_request(question='', draft_request=None):
+    draft_request = draft_request or {}
+    if str(draft_request.get('script_purpose') or draft_request.get('purpose') or '').strip().lower() == 'install':
+        return True
+    text = str(question or draft_request.get('request_summary') or '').lower()
+    has_install_intent = any(keyword in text for keyword in [
+        '安装', '部署', '装一下', '装个', '装上', '初始化', 'install', 'deploy', 'setup',
+    ])
+    has_generation_intent = any(keyword in text for keyword in [
+        '帮我', '请', '生成', '创建', '新建', '安排', '发起', '任务', '脚本', 'shell', 'playbook', 'ansible',
+        'generate', 'create', 'run',
+    ])
+    return has_install_intent and has_generation_intent and bool(_extract_install_target_from_request(question, draft_request))
+
+
+def _looks_like_playbook_task_request(question='', draft_request=None):
+    draft_request = draft_request or {}
+    task_kind = _normalize_task_kind(draft_request.get('task_kind'))
+    if task_kind == HostTask.TASK_RUN_PLAYBOOK:
+        return True
+    if draft_request.get('playbook_content'):
+        return True
+    text = str(question or draft_request.get('request_summary') or '').lower()
+    return any(keyword in text for keyword in ['ansible', 'playbook'])
+
+
+def _looks_like_playbook_generation_request(question='', draft_request=None):
+    text = str(question or (draft_request or {}).get('request_summary') or '').lower()
+    if not any(keyword in text for keyword in ['ansible', 'playbook']):
+        return False
+    return any(keyword in text for keyword in [
+        '生成', '创建', '新建', '安排', '发起', '准备', '构建', '写', '编写',
+        '执行', '运行', '任务', '帮我', '请', 'task', 'generate', 'create',
+        'write', 'run', 'execute',
+    ])
+
+
+def _build_install_shell_script(target):
+    profile = _install_profile_for_target(target)
+    service = profile.get('service') or ''
+    binary = profile.get('binary') or profile.get('package') or target
+    service_block = ''
+    if service:
+        service_block = f'''
+if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "{service}.service" >/dev/null 2>&1; then
+  $SUDO systemctl enable --now "{service}"
+  $SUDO systemctl status "{service}" --no-pager
+fi
+'''
+    return f'''#!/usr/bin/env bash
+set -euo pipefail
+
+APP_NAME="{profile['display']}"
+APT_PACKAGE="{profile['apt']}"
+RPM_PACKAGE="{profile['package']}"
+BINARY_NAME="{binary}"
+
+if [ "$(id -u)" -ne 0 ]; then
+  SUDO="sudo"
+else
+  SUDO=""
+fi
+
+if command -v "$BINARY_NAME" >/dev/null 2>&1; then
+  echo "$APP_NAME already installed: $($BINARY_NAME --version 2>&1 | head -n 1 || true)"
+else
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    $SUDO apt-get update
+    $SUDO apt-get install -y "$APT_PACKAGE"
+  elif command -v dnf >/dev/null 2>&1; then
+    $SUDO dnf install -y "$RPM_PACKAGE"
+  elif command -v yum >/dev/null 2>&1; then
+    $SUDO yum install -y "$RPM_PACKAGE"
+  else
+    echo "Unsupported package manager. Install $APP_NAME manually." >&2
+    exit 1
+  fi
+fi
+{service_block}
+command -v "$BINARY_NAME" >/dev/null 2>&1
+echo "$APP_NAME install check passed."
+'''.strip()
+
+
+def _yaml_quote(value):
+    return json.dumps(str(value or ''), ensure_ascii=False)
+
+
+def _build_install_playbook_content(target):
+    profile = _install_profile_for_target(target)
+    service = profile.get('service') or ''
+    binary = profile.get('binary') or profile.get('package') or target
+    service_task = ''
+    if service:
+        service_task = f'''
+    - name: Enable and start {profile['display']}
+      ansible.builtin.service:
+        name: {_yaml_quote(service)}
+        state: started
+        enabled: true
+      ignore_errors: true
+'''
+    return f'''- hosts: targets
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Install {profile['display']} on Debian family
+      ansible.builtin.apt:
+        name: {_yaml_quote(profile['apt'])}
+        state: present
+        update_cache: true
+      when: ansible_facts.os_family == "Debian"
+
+    - name: Install {profile['display']} on non-Debian family
+      ansible.builtin.package:
+        name: {_yaml_quote(profile['package'])}
+        state: present
+      when: ansible_facts.os_family != "Debian"
+{service_task}
+    - name: Verify {profile['display']} binary
+      ansible.builtin.command: {_yaml_quote(binary + " --version")}
+      changed_when: false
+      register: install_verify
+
+    - name: Show install verification
+      ansible.builtin.debug:
+        var: install_verify.stdout
+'''.strip()
+
+
+def _safe_service_token(value):
+    text = str(value or '').strip().strip(' "\'`，。；;：:,')
+    return text if re.match(r'^[A-Za-z0-9][A-Za-z0-9_.@-]{0,63}$', text) else ''
+
+
+def _normalize_service_unit_name(value):
+    service = _safe_service_token(value)
+    if not service:
+        return ''
+    profile = INSTALL_TARGET_PROFILES.get(service.lower()) or {}
+    return profile.get('service') or service
+
+
+def _extract_service_target_from_request(question='', draft_request=None):
+    draft_request = draft_request or {}
+    for key in ['service_name', 'service', 'app_name']:
+        target = _normalize_service_unit_name(draft_request.get(key))
+        if target:
+            return target
+    payload = draft_request.get('payload')
+    if isinstance(payload, dict):
+        target = _normalize_service_unit_name(payload.get('service_name') or payload.get('service') or '')
+        if target:
+            return target
+    text = str(question or draft_request.get('request_summary') or '')
+    explicit_match = re.search(r'(?:service|服务|应用)\s*[:=：]?\s*([A-Za-z0-9_.@-]{2,64})', text, re.IGNORECASE)
+    if explicit_match:
+        target = _normalize_service_unit_name(explicit_match.group(1))
+        if target:
+            return target
+    known_match = re.search(r'(nginx|redis|rocketmq|mysql|docker|kubelet|sshd|postgresql|mariadb)', text, re.IGNORECASE)
+    if known_match:
+        return _normalize_service_unit_name(known_match.group(1))
+    trailing_match = re.search(r'([A-Za-z][A-Za-z0-9_.@-]{1,63})\s*(?:服务|service)', text, re.IGNORECASE)
+    if trailing_match:
+        return _normalize_service_unit_name(trailing_match.group(1))
+    return ''
+
+
+def _detect_service_script_action(question=''):
+    text = str(question or '').lower()
+    if any(keyword in text for keyword in ['reload', '重载', '重新加载']):
+        return 'reload'
+    if any(keyword in text for keyword in ['restart', '重启']):
+        return 'restart'
+    if any(keyword in text for keyword in ['start', '启动', '拉起']):
+        return 'start'
+    if any(keyword in text for keyword in ['stop', '停止', '停掉', '关闭']):
+        return 'stop'
+    if any(keyword in text for keyword in ['status', '状态', '检查', '巡检']):
+        return 'status'
+    return ''
+
+
+def _build_service_management_shell_script(service, action='status'):
+    service = _normalize_service_unit_name(service)
+    action = action if action in {'restart', 'reload', 'start', 'stop', 'status'} else 'status'
+    if not service:
+        return ''
+    action_block = (
+        f'$SUDO systemctl {action} "$SERVICE_NAME"\n'
+        if action != 'status'
+        else ''
+    )
+    return f'''#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE_NAME="{service}"
+
+if [ "$(id -u)" -ne 0 ]; then
+  SUDO="sudo"
+else
+  SUDO=""
+fi
+
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "systemctl is not available on this host." >&2
+  exit 1
+fi
+
+{action_block}$SUDO systemctl status "$SERVICE_NAME" --no-pager
+'''.strip()
+
+
+def _service_status_draft_command(service):
+    return _build_service_management_shell_script(service or 'nginx', 'status')
+
+
+def _convert_service_status_draft_to_shell(draft):
+    draft = dict(draft or {})
+    if draft.get('task_type') != HostTask.TASK_SERVICE_STATUS:
+        return draft
+    payload = dict(draft.get('payload') or {})
+    service = _normalize_service_unit_name(
+        payload.get('service_name')
+        or draft.get('service_name')
+        or _extract_service_target_from_request(draft.get('request_summary') or draft.get('name') or '', draft)
+        or 'nginx'
+    )
+    payload.update({
+        'command': payload.get('command') or _service_status_draft_command(service),
+        'script_kind': payload.get('script_kind') or 'shell',
+        'script_purpose': payload.get('script_purpose') or 'inspection',
+        'service_name': service,
+    })
+    draft.update({
+        'task_type': HostTask.TASK_RUN_COMMAND,
+        'payload': payload,
+        'execution_mode': draft.get('execution_mode') or HostTask.EXECUTION_MODE_ANSIBLE,
+        'execution_strategy': draft.get('execution_strategy') or HostTask.STRATEGY_STOP_ON_ERROR,
+        'risk_level': draft.get('risk_level') or AIOpsPendingAction.RISK_HIGH,
+    })
+    if not draft.get('name') or '服务状态巡检' in str(draft.get('name') or ''):
+        draft['name'] = f'{service} 服务巡检脚本任务'
+    if not draft.get('description') or '服务状态' in str(draft.get('description') or ''):
+        draft['description'] = '由 AIOps 智能助手生成的服务巡检 Shell 脚本任务草稿'
+    return draft
+
+
+def _build_host_health_shell_script(question=''):
+    text = str(question or '').lower()
+    include_disk = any(keyword in text for keyword in ['磁盘', 'disk', 'df'])
+    include_memory = any(keyword in text for keyword in ['内存', 'memory', 'free'])
+    include_process = any(keyword in text for keyword in ['进程', 'process', 'cpu', '负载', 'load'])
+    include_all = not any([include_disk, include_memory, include_process])
+    lines = [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        '',
+        'echo "== Host =="',
+        'hostname',
+        'echo "== Uptime =="',
+        'uptime',
+    ]
+    if include_all or include_disk:
+        lines.extend(['echo "== Disk =="', 'df -h'])
+    if include_all or include_memory:
+        lines.extend(['echo "== Memory =="', 'free -m'])
+    if include_all or include_process:
+        lines.extend([
+            'echo "== Top CPU Processes =="',
+            'ps -eo pid,ppid,cmd,%mem,%cpu --sort=-%cpu | head -n 10',
+        ])
+    return '\n'.join(lines)
+
+
+def _build_generic_shell_script(question='', draft_request=None):
+    service = _extract_service_target_from_request(question, draft_request)
+    action = _detect_service_script_action(question)
+    if service and action:
+        service_script = _build_service_management_shell_script(service, action)
+        if service_script:
+            return service_script
+    return _build_host_health_shell_script(question)
+
+
+def _build_generic_playbook_content(question='', draft_request=None):
+    service = _extract_service_target_from_request(question, draft_request)
+    action = _detect_service_script_action(question)
+    if service and action:
+        if action in {'restart', 'reload', 'start', 'stop'}:
+            state_map = {
+                'restart': 'restarted',
+                'reload': 'reloaded',
+                'start': 'started',
+                'stop': 'stopped',
+            }
+            verify_failed_when = 'false' if action == 'stop' else 'service_state.rc != 0'
+            return f'''- hosts: targets
+  become: true
+  gather_facts: false
+  tasks:
+    - name: {action.title()} {service}
+      ansible.builtin.service:
+        name: {_yaml_quote(service)}
+        state: {state_map[action]}
+
+    - name: Verify {service} status
+      ansible.builtin.command: {_yaml_quote("systemctl is-active " + service)}
+      changed_when: false
+      failed_when: {verify_failed_when}
+      register: service_state
+
+    - name: Show {service} status
+      ansible.builtin.debug:
+        var: service_state.stdout
+'''.strip()
+        return f'''- hosts: targets
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check {service} status
+      ansible.builtin.command: {_yaml_quote("systemctl status " + service + " --no-pager")}
+      changed_when: false
+      register: service_status
+
+    - name: Show {service} status
+      ansible.builtin.debug:
+        var: service_status.stdout_lines
+'''.strip()
+    return '''- hosts: targets
+  gather_facts: true
+  tasks:
+    - name: Collect uptime
+      ansible.builtin.command: uptime
+      changed_when: false
+      register: uptime_result
+
+    - name: Collect disk usage
+      ansible.builtin.command: df -h
+      changed_when: false
+      register: disk_result
+
+    - name: Collect memory usage
+      ansible.builtin.command: free -m
+      changed_when: false
+      register: memory_result
+
+    - name: Show health summary
+      ansible.builtin.debug:
+        msg:
+          - "{{ uptime_result.stdout }}"
+          - "{{ disk_result.stdout_lines }}"
+          - "{{ memory_result.stdout_lines }}"
+'''.strip()
 
 
 def _is_latest_alert_root_cause_question(question):
@@ -7391,6 +7826,16 @@ def _run_task_generation_evidence(session, user_message, user, question, scoped_
     )
     resource_output = resources_result.get('tool_output') or {}
     resource_ids = resource_output.get('resource_ids') or (resource_output.get('summary') or {}).get('resource_ids') or []
+    is_install_request = _looks_like_install_task_request(question, {})
+    is_playbook_generation_request = _looks_like_playbook_generation_request(question, {})
+    task_kind = _detect_k8s_task_kind_from_request(question, {}) if is_k8s_task else ''
+    if not task_kind:
+        if is_playbook_generation_request:
+            task_kind = 'run_playbook'
+        elif is_install_request or _looks_like_shell_task_request(question, {'command': shell_command}):
+            task_kind = 'run_command'
+        elif any(keyword in question for keyword in ['巡检', '检查', 'inspection']):
+            task_kind = 'run_playbook'
     draft_args = {
         'request_summary': scoped_question,
         'environment': knowledge_environment.get('name'),
@@ -7398,8 +7843,16 @@ def _run_task_generation_evidence(session, user_message, user, question, scoped_
         'resource_type': resource_type,
         'resource_status': 'active',
         'resource_ids': resource_ids,
-        'task_kind': _detect_k8s_task_kind_from_request(question, {}) if is_k8s_task else ('run_command' if _looks_like_shell_task_request(question, {'command': shell_command}) else ('run_playbook' if any(keyword in question for keyword in ['巡检', '检查', 'inspection']) else '')),
+        'task_kind': task_kind,
     }
+    if is_install_request:
+        draft_args['script_purpose'] = 'install'
+        install_target = _extract_install_target_from_request(question, {})
+        if install_target:
+            profile = _install_profile_for_target(install_target)
+            draft_args['software_name'] = profile.get('display') or install_target
+            draft_args['package_name'] = profile.get('package') or install_target
+            draft_args['service_name'] = profile.get('service') or ''
     if shell_command:
         draft_args['command'] = shell_command
         draft_args['script_kind'] = 'shell'
@@ -10530,6 +10983,10 @@ def _task_title_from_draft_payload(draft):
             payload,
             title_targets,
         )
+    if task_type == HostTask.TASK_RUN_COMMAND and payload.get('script_purpose') == 'install':
+        software_name = payload.get('software_name') or payload.get('package_name') or ''
+        if software_name:
+            return _compact_task_title(f'安装 {software_name} 脚本任务')
     if task_type == HostTask.TASK_SERVICE_STATUS and payload.get('service_name'):
         return _compact_task_title(f"{payload['service_name']} 服务状态巡检")
     if task_type == HostTask.TASK_RUN_COMMAND and payload.get('command'):
@@ -10559,6 +11016,13 @@ def _ensure_task_draft_title(draft):
 
 
 K8S_TASK_KIND_ALIASES = {
+    'shell': HostTask.TASK_RUN_COMMAND,
+    'shell_script': HostTask.TASK_RUN_COMMAND,
+    'script': HostTask.TASK_RUN_COMMAND,
+    'command': HostTask.TASK_RUN_COMMAND,
+    'ansible': HostTask.TASK_RUN_PLAYBOOK,
+    'ansible_playbook': HostTask.TASK_RUN_PLAYBOOK,
+    'playbook': HostTask.TASK_RUN_PLAYBOOK,
     'k8s_patch_service': HostTask.TASK_K8S_POD_EXEC,
     'patch_service': HostTask.TASK_K8S_POD_EXEC,
     'service_patch': HostTask.TASK_K8S_POD_EXEC,
@@ -11287,26 +11751,35 @@ def build_task_draft(user, question='', draft_request=None):
     if not target_refs:
         return {'error': '未识别到明确的目标主机，请在问题中指定主机名、应用名或 IP 后再生成任务。'}
 
-    task_kind = draft_request.get('task_kind') or ''
+    task_kind = _normalize_task_kind(draft_request.get('task_kind') or '')
     service_name = (draft_request.get('service_name') or '').strip()
     command_payload = _normalize_run_command_payload(draft_request.get('payload'), draft_request, question)
     command = (command_payload.get('command') or '').strip()
     playbook_content = (draft_request.get('playbook_content') or '').strip()
     request_summary = (draft_request.get('request_summary') or question or '').strip()
+    install_target = _extract_install_target_from_request(question, draft_request)
+    is_install_request = _looks_like_install_task_request(question, draft_request)
+    is_shell_request = _looks_like_shell_task_request(question, draft_request)
+    is_playbook_generation_request = _looks_like_playbook_generation_request(question, draft_request)
+
+    if task_kind == 'service_status' and (is_install_request or is_shell_request or is_playbook_generation_request):
+        task_kind = 'run_playbook' if is_playbook_generation_request else 'run_command'
 
     if not task_kind:
         service_match = re.search(r'(nginx|redis|rocketmq|mysql|docker|kubelet|sshd)', question or '', re.IGNORECASE)
         command_match = re.search(r'(?:执行|运行|命令)\s+([a-zA-Z0-9_\-./ ]{3,120})', question or '')
-        if service_name or service_match:
-            task_kind = 'service_status'
-            service_name = service_name or service_match.group(1)
+        if _looks_like_playbook_task_request(question, draft_request):
+            task_kind = 'run_playbook'
+        elif is_install_request or is_shell_request:
+            task_kind = 'run_command'
         elif command or command_match:
             task_kind = 'run_command'
             command = command or command_match.group(1).strip()
         elif _contains_any(question, ['连通', '连通性', 'ssh']):
             task_kind = 'check_connection'
-        elif _contains_any(question, ['playbook']):
-            task_kind = 'run_playbook'
+        elif service_name or service_match:
+            task_kind = 'service_status'
+            service_name = service_name or service_match.group(1)
         else:
             task_kind = 'refresh_metrics'
 
@@ -11319,27 +11792,68 @@ def build_task_draft(user, question='', draft_request=None):
     description = '由 AIOps 智能助手生成的任务草稿'
 
     if task_kind == 'service_status':
-        task_type = HostTask.TASK_SERVICE_STATUS
-        payload = {'service_name': service_name or 'nginx'}
-        title = f"{payload['service_name']} 服务状态巡检"
-        description = f"检查 {payload['service_name']} 服务状态"
-    elif task_kind == 'run_command':
         task_type = HostTask.TASK_RUN_COMMAND
-        payload = _normalize_run_command_payload({'command': command or 'hostname && uptime'}, draft_request, question)
+        service_name = _normalize_service_unit_name(service_name or _extract_service_target_from_request(question, draft_request) or 'nginx')
+        payload = {
+            'service_name': service_name,
+            'command': _service_status_draft_command(service_name),
+            'script_kind': 'shell',
+            'script_purpose': 'inspection',
+        }
         execution_mode = HostTask.EXECUTION_MODE_ANSIBLE
         execution_strategy = HostTask.STRATEGY_STOP_ON_ERROR
-        title = f"批量命令执行：{payload['command'][:32]}"
-        description = '由聊天助手从自然语言生成的批量命令任务'
+        title = f"{service_name} 服务巡检脚本任务"
+        description = '由 AIOps 智能助手生成的服务巡检 Shell 脚本任务草稿'
+    elif task_kind == 'run_command':
+        task_type = HostTask.TASK_RUN_COMMAND
+        if not command and is_install_request and install_target:
+            command = _build_install_shell_script(install_target)
+        if not command and is_shell_request:
+            command = _build_generic_shell_script(question, draft_request)
+        payload = _normalize_run_command_payload({'command': command or 'hostname && uptime'}, draft_request, question)
+        if is_install_request and install_target:
+            profile = _install_profile_for_target(install_target)
+            payload.update({
+                'script_purpose': 'install',
+                'software_name': profile.get('display') or install_target,
+                'package_name': profile.get('package') or install_target,
+                'service_name': profile.get('service') or '',
+            })
+        execution_mode = HostTask.EXECUTION_MODE_ANSIBLE
+        execution_strategy = HostTask.STRATEGY_STOP_ON_ERROR
+        if is_install_request and install_target:
+            title = f"安装 {payload.get('software_name') or install_target} 脚本任务"
+            description = '由 AIOps 智能助手生成的安装 Shell 脚本任务草稿'
+        else:
+            title = f"批量命令执行：{payload['command'][:32]}"
+            description = '由聊天助手从自然语言生成的批量命令任务'
     elif task_kind == 'check_connection':
         task_type = HostTask.TASK_CHECK_CONNECTION
         title = 'SSH 连通性检查'
         description = '检查目标主机 SSH 连通性'
     elif task_kind == 'run_playbook':
         task_type = HostTask.TASK_RUN_PLAYBOOK
+        if not playbook_content and is_install_request and install_target:
+            playbook_content = _build_install_playbook_content(install_target)
+            profile = _install_profile_for_target(install_target)
+            draft_request = {
+                **draft_request,
+                'name': draft_request.get('name') or f"安装 {profile.get('display') or install_target} Ansible Playbook",
+            }
+        if not playbook_content and is_playbook_generation_request:
+            playbook_content = _build_generic_playbook_content(question, draft_request)
         payload = {
-            'playbook_name': draft_request.get('playbook_name') or 'aiops_generated',
+            'playbook_name': draft_request.get('playbook_name') or ('install_' + install_target.replace('-', '_') if install_target else 'aiops_generated'),
             'playbook_content': playbook_content or '- hosts: all\n  gather_facts: false\n  tasks:\n    - name: ping\n      ping:\n',
         }
+        if is_install_request and install_target:
+            profile = _install_profile_for_target(install_target)
+            payload.update({
+                'script_purpose': 'install',
+                'software_name': profile.get('display') or install_target,
+                'package_name': profile.get('package') or install_target,
+                'service_name': profile.get('service') or '',
+            })
         execution_mode = HostTask.EXECUTION_MODE_ANSIBLE
         title = _playbook_task_title(draft_request, request_summary, question, payload, hosts)
         description = '由 AIOps 智能助手生成的 Playbook 任务'
@@ -11618,6 +12132,8 @@ def _resolve_task_targets_from_draft(question='', environment='', target_status=
 
 def _build_task_center_draft_from_aiops_draft(draft, action=None):
     payload = _ensure_task_draft_title(draft)
+    payload = _convert_service_status_draft_to_shell(payload)
+    payload = _ensure_task_draft_title(payload)
     task_type = payload.get('task_type') or HostTask.TASK_REFRESH_METRICS
     target_type = payload.get('target_type') or (HostTask.TARGET_K8S if str(task_type).startswith('k8s_') else HostTask.TARGET_HOST)
     target_refs = _dedupe_target_refs(payload.get('target_refs') or [])
@@ -11683,6 +12199,8 @@ def _build_task_center_draft_from_aiops_draft(draft, action=None):
 
 def _create_host_task_record_from_draft(draft, user, session=None, request=None):
     payload = _ensure_task_draft_title(draft)
+    payload = _convert_service_status_draft_to_shell(payload)
+    payload = _ensure_task_draft_title(payload)
     target_refs = payload.get('target_refs') or []
     if not target_refs:
         target_refs = [{'source': 'host', 'id': item} for item in (payload.get('host_ids') or [])]
@@ -11761,7 +12279,7 @@ def confirm_action(action, user, request=None):
     if not user_has_permissions(user, ['aiops.task.execute', 'ops.host.execute']):
         raise ValueError('当前账号无权执行机器人任务。')
 
-    normalized_payload = _ensure_task_draft_title(action.action_payload or {})
+    normalized_payload = _ensure_task_draft_title(_convert_service_status_draft_to_shell(action.action_payload or {}))
     action.action_payload = normalized_payload
     if normalized_payload.get('name') and (not action.title or _is_generic_task_title(action.title)):
         action.title = normalized_payload['name']
@@ -13298,6 +13816,8 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         '知识图谱里的“图谱展示命名空间”只控制拓扑图展示，不限制 query_k8s_resources 或 query_k8s_cluster_summary；只读 K8s 查询默认允许查询全部命名空间，用户显式指定命名空间时才按命名空间收窄。',
         'K8s 写操作（Service 修改、NodePort/LoadBalancer/端口调整、Pod 重启、Deployment/StatefulSet 伸缩）应生成 K8s API 类型任务草稿；不要因为 query_k8s_resources 没查到目标 Service/Pod/Deployment 就拒绝生成草稿。',
         'K8s 写操作如果用户没有明确命名空间，且无法从参数中确定目标命名空间，必须提醒用户先补充命名空间，不能默认使用 default。',
+        '安装、部署、初始化软件或中间件时，不要退化成 service_status 服务状态检查；默认调用 generate_host_task 并使用 task_kind=run_command 生成 Shell 安装脚本。如果用户明确要求 Ansible/Playbook，则使用 task_kind=run_playbook 并生成 playbook_content。',
+        '安装脚本草稿应包含包管理器探测、幂等安装、服务启动/enable（如适用）和安装后验证；如果模型不确定包名，应生成可编辑草稿并说明需要人工确认，而不是只检查服务状态。',
         '只要已经调用 generate_host_task，就要在最终回答里明确说明：是生成任务草稿，还是已经在任务中心创建真实任务。',
         '工具选择示例：',
         '- “查/分析 xxx 环境 xxx 服务最近半小时 warn/error/info 日志” => 必须调用 query_logs，并设置 service、level/levels、duration_minutes；不要先调用 query_alerts。',
@@ -13309,6 +13829,8 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         '- “某环境的系统、服务、依赖、上下游或资源关联是什么” => 调用 query_knowledge_graph，并设置 environment、system_name 或 service。',
         '- “app-prod-k8s集群有没有异常的pod” => 调用 query_k8s_cluster_summary，并传 cluster_name=app-prod-k8s。',
         '- “生成一份 Redis 巡检任务” => 调用 generate_host_task，而不是只做查询。',
+        '- “帮我在电商测试环境安装 Redis” => 先 query_task_resources 获取目标资源，再调用 generate_host_task，task_kind=run_command；不要生成 service_status。',
+        '- “生成 Ansible Playbook 安装 nginx” => 调用 generate_host_task，task_kind=run_playbook，填写 playbook_content；不要只生成 nginx 状态检查。',
         '- “修改 monitoring 命名空间下的 svc kube-prome type 为 NodePort” => 先用 query_task_resources(resource_type=k8s) 查任务资源底座，再调用 generate_host_task，task_kind=k8s_command，namespace=monitoring，service_name=kube-prome，patch={"spec":{"type":"NodePort"}}；系统会生成通用 K8s 命令任务并通过 K8s API 执行 kubectl patch。',
         '- “把 monitoring 下 deployment checkout 扩到 3 个副本 / 重启 monitoring 下 pod api-xxx” => 先查 query_task_resources(resource_type=k8s)，再调用 generate_host_task 生成 k8s_scale_workload 或 k8s_restart_pod 草稿；query_k8s_resources 不是前置条件。',
     ]
@@ -13506,13 +14028,13 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
             'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'status': {'type': 'string', 'enum': ['pending', 'running', 'success', 'partial', 'failed', 'canceled']}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
         },
         'generate_host_task': {
-            'description': '生成任务中心待执行任务草稿；当用户明确要求生成、创建、新建巡检任务、运维任务或 K8s 修改/重启/伸缩任务时必须调用。任务目标来自任务中心资源底座 query_task_resources，知识图谱只做环境辅助识别。K8s 资源修改统一生成 K8s API 类型任务；Service 修改可提供 namespace、service_name 和 patch，系统会生成 kubectl patch 命令并通过 K8s API 执行。不要因实时 query_k8s_resources 未查到目标对象而拒绝生成草稿；如果 K8s 写任务缺少 namespace 且无法明确判断，应提示用户补充命名空间。',
+            'description': '生成任务中心待执行任务草稿；当用户明确要求生成、创建、新建巡检任务、运维任务、安装/部署软件脚本或 K8s 修改/重启/伸缩任务时必须调用。安装/部署/初始化软件不要生成 service_status，应默认 task_kind=run_command 并提供 Shell 安装脚本；用户明确要求 Ansible/Playbook 时使用 task_kind=run_playbook 并提供 playbook_content。任务目标来自任务中心资源底座 query_task_resources，知识图谱只做环境辅助识别。K8s 资源修改统一生成 K8s API 类型任务；Service 修改可提供 namespace、service_name 和 patch，系统会生成 kubectl patch 命令并通过 K8s API 执行。不要因实时 query_k8s_resources 未查到目标对象而拒绝生成草稿；如果 K8s 写任务缺少 namespace 且无法明确判断，应提示用户补充命名空间。',
             'parameters': {
                 'type': 'object',
                 'required': ['request_summary'],
                 'properties': {
                     'request_summary': {'type': 'string', 'description': '原始任务诉求，例如“生成一份 Redis 巡检任务”或“修改 monitoring 命名空间 kube-prome Service type 为 NodePort”。'},
-                    'task_kind': {'type': 'string', 'enum': ['refresh_metrics', 'service_status', 'run_command', 'check_connection', 'run_playbook', 'k8s_command', 'k8s_scale_workload', 'k8s_restart_pod']},
+                    'task_kind': {'type': 'string', 'enum': ['refresh_metrics', 'service_status', 'run_command', 'check_connection', 'run_playbook', 'k8s_command', 'k8s_scale_workload', 'k8s_restart_pod'], 'description': '任务类型。安装/部署/初始化软件默认填 run_command；用户明确要求 Ansible 或 Playbook 时填 run_playbook；只有纯状态巡检才填 service_status。'},
                     'environment': {'type': 'string', 'enum': ['prod', 'test', 'dev']},
                     'target_status': {'type': 'string', 'enum': ['all', 'offline']},
                     'service_name': {'type': 'string'},
@@ -13535,7 +14057,10 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
                     'script_content': {'type': 'string', 'description': '脚本正文，command 的兼容别名。'},
                     'commands': {'type': 'array', 'items': {'type': 'string'}, 'description': '多行命令列表，系统会合并为 Shell 脚本内容。'},
                     'script_kind': {'type': 'string', 'enum': ['shell', 'python'], 'description': '主机命令脚本类型，默认 shell。'},
-                    'playbook_content': {'type': 'string'},
+                    'playbook_content': {'type': 'string', 'description': 'Ansible Playbook 正文。task_kind=run_playbook 时应填写，安装类 Playbook 应包含包安装、服务启动和验证步骤。'},
+                    'software_name': {'type': 'string', 'description': '安装/部署目标软件名称，例如 Redis、Nginx、Docker。'},
+                    'package_name': {'type': 'string', 'description': '安装包名称；不确定时可留空，由后端按常见软件名生成可编辑脚本草稿。'},
+                    'script_purpose': {'type': 'string', 'enum': ['install', 'maintenance', 'inspection'], 'description': '脚本用途；安装/部署类脚本填 install。'},
                     'target_host_ids': {'type': 'array', 'items': {'type': 'integer'}},
                     'target_resource_ids': {'type': 'array', 'items': {'type': 'integer'}, 'description': '任务中心资源底座 resource_id 列表，来自 query_task_resources.resource_ids'},
                     'resource_ids': {'type': 'array', 'items': {'type': 'integer'}, 'description': 'target_resource_ids 的兼容别名'},

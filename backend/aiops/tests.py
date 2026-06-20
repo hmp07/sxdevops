@@ -6999,6 +6999,59 @@ class AIOpsApiTests(TestCase):
         generic_draft = build_task_draft(self.user, '生成一份 Redis 巡检任务。', {'request_summary': '生成一份 Redis 巡检任务。'})
         self.assertIn('error', generic_draft)
 
+    def test_service_inspection_task_draft_exposes_shell_script(self):
+        Host.objects.create(hostname='legacy-data-sync', ip_address='10.20.30.20', environment='prod', status='offline')
+
+        draft = build_task_draft(
+            self.user,
+            '为 legacy-data-sync 生成 Redis 服务巡检任务',
+            {
+                'request_summary': '为 legacy-data-sync 生成 Redis 服务巡检任务',
+                'environment': 'prod',
+                'service_name': 'Redis',
+            },
+        )
+
+        self.assertNotIn('error', draft)
+        self.assertEqual(draft['task_type'], HostTask.TASK_RUN_COMMAND)
+        self.assertEqual(draft['payload']['script_kind'], 'shell')
+        self.assertEqual(draft['payload']['script_purpose'], 'inspection')
+        self.assertEqual(draft['payload']['service_name'], 'redis')
+        self.assertIn('SERVICE_NAME="redis"', draft['payload']['command'])
+        self.assertIn('systemctl status "$SERVICE_NAME" --no-pager', draft['payload']['command'])
+
+    def test_confirm_action_converts_legacy_service_status_to_editable_shell_script(self):
+        host = Host.objects.create(hostname='legacy-data-sync', ip_address='10.20.30.20', environment='prod', status='offline')
+        session = AIOpsChatSession.objects.create(user=self.user, title='legacy-service-status')
+        assistant_message = AIOpsChatMessage.objects.create(session=session, role='assistant', content='已生成服务巡检任务')
+        legacy_payload = {
+            'name': 'Redis 服务状态巡检',
+            'description': '检查 Redis 服务状态',
+            'task_type': HostTask.TASK_SERVICE_STATUS,
+            'payload': {'service_name': 'Redis'},
+            'host_ids': [host.id],
+            'target_refs': [{'source': 'host', 'id': host.id}],
+            'host_count': 1,
+            'execution_mode': HostTask.EXECUTION_MODE_SSH,
+            'execution_strategy': HostTask.STRATEGY_CONTINUE,
+            'timeout_seconds': 30,
+            'risk_level': AIOpsPendingAction.RISK_MEDIUM,
+            'request_summary': '为 legacy-data-sync 生成 Redis 服务巡检任务',
+        }
+        action = create_pending_task_action_from_draft(session, assistant_message, legacy_payload)
+
+        task_draft = confirm_action(action, self.user)
+
+        self.assertEqual(task_draft['task_type'], HostTask.TASK_RUN_COMMAND)
+        self.assertEqual(task_draft['payload']['script_kind'], 'shell')
+        self.assertEqual(task_draft['payload']['script_purpose'], 'inspection')
+        self.assertEqual(task_draft['payload']['service_name'], 'redis')
+        self.assertIn('SERVICE_NAME="redis"', task_draft['payload']['command'])
+        self.assertIn('systemctl status "$SERVICE_NAME" --no-pager', task_draft['payload']['command'])
+        action.refresh_from_db()
+        self.assertEqual(action.action_payload['task_type'], HostTask.TASK_RUN_COMMAND)
+        self.assertIn('SERVICE_NAME="redis"', action.action_payload['payload']['command'])
+
     def test_playbook_task_draft_title_describes_request(self):
         Host.objects.create(hostname='legacy-data-sync', ip_address='10.20.30.20', environment='prod', status='offline')
 
@@ -7347,6 +7400,199 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(draft['payload']['command'], shell_script)
         self.assertEqual(draft['payload']['script_kind'], 'shell')
 
+    def test_build_task_draft_generates_install_shell_script_instead_of_service_check(self):
+        env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        resource = TaskResource.objects.create(
+            name='tf-install-node',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            ip_address='120.26.213.190',
+            ssh_user='root',
+        )
+        question = '帮我在电商测试环境安装 Redis'
+
+        draft = build_task_draft(
+            self.user,
+            question,
+            {
+                'request_summary': question,
+                'resource_environment': '电商测试环境',
+                'target_resource_ids': [resource.id],
+            },
+        )
+
+        self.assertNotIn('error', draft)
+        self.assertEqual(draft['task_type'], HostTask.TASK_RUN_COMMAND)
+        self.assertNotEqual(draft['task_type'], HostTask.TASK_SERVICE_STATUS)
+        self.assertEqual(draft['execution_mode'], HostTask.EXECUTION_MODE_ANSIBLE)
+        self.assertEqual(draft['execution_strategy'], HostTask.STRATEGY_STOP_ON_ERROR)
+        self.assertEqual(draft['payload']['script_purpose'], 'install')
+        self.assertEqual(draft['payload']['software_name'], 'Redis')
+        self.assertEqual(draft['payload']['script_kind'], 'shell')
+        self.assertIn('apt-get install -y "$APT_PACKAGE"', draft['payload']['command'])
+        self.assertIn('dnf install -y "$RPM_PACKAGE"', draft['payload']['command'])
+        self.assertIn('yum install -y "$RPM_PACKAGE"', draft['payload']['command'])
+        self.assertIn('install check passed', draft['payload']['command'])
+        self.assertIn('安装 Redis', draft['name'])
+
+    def test_generate_host_task_tool_builds_install_script_from_request_summary(self):
+        env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        resource = TaskResource.objects.create(
+            name='tf-install-tool-node',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            ip_address='120.26.213.192',
+            ssh_user='root',
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='install-tool')
+        question = '帮我在电商测试环境安装 Redis'
+        user_message = AIOpsChatMessage.objects.create(session=session, role='user', content=question)
+
+        result = _run_tool_call(
+            session,
+            user_message,
+            self.user,
+            'generate_host_task',
+            {
+                'request_summary': question,
+                'resource_environment': '电商测试环境',
+                'target_resource_ids': [resource.id],
+            },
+        )
+
+        draft = result['pending_action_draft']
+        self.assertEqual(result['message_type'], AIOpsChatMessage.TYPE_ACTION)
+        self.assertEqual(draft['task_type'], HostTask.TASK_RUN_COMMAND)
+        self.assertEqual(draft['payload']['script_purpose'], 'install')
+        self.assertEqual(draft['payload']['software_name'], 'Redis')
+        self.assertIn('apt-get install -y "$APT_PACKAGE"', draft['payload']['command'])
+        self.assertNotIn('service_status', json.dumps(result.get('tool_output') or {}, ensure_ascii=False))
+
+    def test_build_task_draft_generates_install_ansible_playbook_when_requested(self):
+        env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        resource = TaskResource.objects.create(
+            name='tf-playbook-install-node',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            ip_address='120.26.213.191',
+            ssh_user='root',
+        )
+        question = '帮我生成 Ansible Playbook 在电商测试环境安装 nginx'
+
+        draft = build_task_draft(
+            self.user,
+            question,
+            {
+                'request_summary': question,
+                'resource_environment': '电商测试环境',
+                'target_resource_ids': [resource.id],
+            },
+        )
+
+        self.assertNotIn('error', draft)
+        self.assertEqual(draft['task_type'], HostTask.TASK_RUN_PLAYBOOK)
+        self.assertEqual(draft['execution_mode'], HostTask.EXECUTION_MODE_ANSIBLE)
+        self.assertEqual(draft['payload']['script_purpose'], 'install')
+        self.assertEqual(draft['payload']['software_name'], 'Nginx')
+        self.assertEqual(draft['payload']['service_name'], 'nginx')
+        self.assertIn('ansible.builtin.apt', draft['payload']['playbook_content'])
+        self.assertIn('ansible.builtin.package', draft['payload']['playbook_content'])
+        self.assertIn('Enable and start Nginx', draft['payload']['playbook_content'])
+        self.assertIn('Verify Nginx binary', draft['payload']['playbook_content'])
+        self.assertIn('安装 Nginx', draft['name'])
+
+    def test_install_request_overrides_wrong_service_status_task_kind(self):
+        env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        resource = TaskResource.objects.create(
+            name='tf-install-wrong-kind-node',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            ip_address='120.26.213.193',
+            ssh_user='root',
+        )
+        question = '帮我在电商测试环境安装 nginx'
+
+        draft = build_task_draft(
+            self.user,
+            question,
+            {
+                'request_summary': question,
+                'resource_environment': '电商测试环境',
+                'target_resource_ids': [resource.id],
+                'task_kind': 'service_status',
+                'service_name': 'nginx',
+            },
+        )
+
+        self.assertNotIn('error', draft)
+        self.assertEqual(draft['task_type'], HostTask.TASK_RUN_COMMAND)
+        self.assertEqual(draft['payload']['script_purpose'], 'install')
+        self.assertEqual(draft['payload']['software_name'], 'Nginx')
+        self.assertIn('apt-get install -y "$APT_PACKAGE"', draft['payload']['command'])
+        self.assertIn('systemctl enable --now "nginx"', draft['payload']['command'])
+        self.assertNotEqual(draft['task_type'], HostTask.TASK_SERVICE_STATUS)
+
+    def test_shell_script_request_for_service_action_does_not_become_status_check(self):
+        env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        resource = TaskResource.objects.create(
+            name='tf-nginx-script-node',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            ip_address='120.26.213.194',
+            ssh_user='root',
+        )
+        question = '帮我给电商测试环境写个 Shell 脚本重启 nginx'
+
+        draft = build_task_draft(
+            self.user,
+            question,
+            {
+                'request_summary': question,
+                'resource_environment': '电商测试环境',
+                'target_resource_ids': [resource.id],
+            },
+        )
+
+        self.assertNotIn('error', draft)
+        self.assertEqual(draft['task_type'], HostTask.TASK_RUN_COMMAND)
+        self.assertEqual(draft['payload']['script_kind'], 'shell')
+        self.assertIn('SERVICE_NAME="nginx"', draft['payload']['command'])
+        self.assertIn('systemctl restart "$SERVICE_NAME"', draft['payload']['command'])
+        self.assertNotEqual(draft['task_type'], HostTask.TASK_SERVICE_STATUS)
+
+    def test_playbook_generation_without_content_builds_editable_playbook(self):
+        env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        resource = TaskResource.objects.create(
+            name='tf-nginx-playbook-node',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            ip_address='120.26.213.195',
+            ssh_user='root',
+        )
+        question = '帮我给电商测试环境生成 Ansible Playbook 重启 nginx'
+
+        draft = build_task_draft(
+            self.user,
+            question,
+            {
+                'request_summary': question,
+                'resource_environment': '电商测试环境',
+                'target_resource_ids': [resource.id],
+            },
+        )
+
+        self.assertNotIn('error', draft)
+        self.assertEqual(draft['task_type'], HostTask.TASK_RUN_PLAYBOOK)
+        self.assertIn('ansible.builtin.service', draft['payload']['playbook_content'])
+        self.assertIn('state: restarted', draft['payload']['playbook_content'])
+        self.assertIn('systemctl is-active nginx', draft['payload']['playbook_content'])
+
     def test_confirm_action_repairs_legacy_shell_script_alias_payload(self):
         env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
         resource = TaskResource.objects.create(
@@ -7417,6 +7663,44 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(payload['task_type'], HostTask.TASK_RUN_COMMAND)
         self.assertEqual(payload['payload']['command'], 'df -h && free -m')
         self.assertEqual(payload['payload']['script_kind'], 'shell')
+        mocked_completion.assert_not_called()
+
+    @mock.patch('aiops.services._request_model_completion')
+    def test_install_chat_generation_without_model_creates_install_script(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        TaskResource.objects.create(
+            name='tf-install-chat-node',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            ip_address='120.26.213.196',
+            ssh_user='root',
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='电商测试环境',
+            aliases=['电商测试'],
+            task_resource_environment_ids=[env.id],
+            is_enabled=True,
+        )
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'install-chat'}, format='json')
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '帮我在电商测试环境安装 Redis'},
+            format='json',
+        )
+
+        payload = response.data['pending_action']['action_payload']
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['assistant_message']['metadata']['execution_mode'], 'deterministic_task_generation')
+        self.assertEqual(payload['task_type'], HostTask.TASK_RUN_COMMAND)
+        self.assertEqual(payload['payload']['script_purpose'], 'install')
+        self.assertEqual(payload['payload']['software_name'], 'Redis')
+        self.assertIn('apt-get install -y "$APT_PACKAGE"', payload['payload']['command'])
+        self.assertIn('install check passed', payload['payload']['command'])
         mocked_completion.assert_not_called()
 
     def test_build_task_draft_resolves_config_item_id_before_conflicting_ip(self):
@@ -7495,7 +7779,9 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(task_draft['target_hosts'][0]['hostname'], 'order-api-ecs-02')
         self.assertEqual(task_draft['target_hosts'][0]['ip_address'], '10.10.1.11')
         self.assertEqual(task_draft['request_summary'], draft['request_summary'])
-        self.assertEqual(task_draft['payload'].get('service_name'), 'Redis')
+        self.assertEqual(task_draft['task_type'], HostTask.TASK_RUN_COMMAND)
+        self.assertEqual(task_draft['payload'].get('service_name'), 'redis')
+        self.assertIn('SERVICE_NAME="redis"', task_draft['payload'].get('command') or '')
         self.assertEqual(task_draft['trigger_source'], HostTask.TRIGGER_SOURCE_AIOPS)
         self.assertEqual(task_draft['source_context']['source'], 'aiops')
         self.assertEqual(task_draft['source_context']['request_summary'], draft['request_summary'])
