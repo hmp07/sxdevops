@@ -541,10 +541,10 @@
         <el-form-item label="名称"><el-input v-model="providerForm.name" /></el-form-item>
         <el-form-item label="类型"><el-select v-model="providerForm.provider_type" style="width:100%"><el-option label="OpenAI Compatible" value="openai_compatible" /></el-select></el-form-item>
         <el-form-item label="供应商预设">
-          <el-select v-model="providerForm.provider_preset" filterable clearable placeholder="选择 DeepSeek / 智谱 GLM / MiniMax 等预设" style="width:100%" @change="applyProviderPreset">
+          <el-select v-model="providerForm.provider_preset" filterable clearable placeholder="选择 DeepSeek / 豆包 / 千问 / Kimi 等预设" style="width:100%" @change="applyProviderPreset">
             <el-option v-for="item in providerPresets" :key="item.key" :label="item.name" :value="item.key">
               <span>{{ item.name }}</span>
-              <span class="provider-preset-option">{{ item.default_model || '自定义模型' }}</span>
+              <span class="provider-preset-option">动态获取模型</span>
             </el-option>
           </el-select>
         </el-form-item>
@@ -1382,6 +1382,10 @@ function detectProviderPreset(provider = {}) {
   if (baseUrl.includes('deepseek')) return 'deepseek'
   if (baseUrl.includes('bigmodel') || /^glm-/i.test(provider.default_model || '')) return 'zhipu_glm'
   if (baseUrl.includes('minimax') || /^minimax/i.test(provider.default_model || '')) return 'minimax'
+  if (baseUrl.includes('xiaomimimo') || baseUrl.includes('mimo.mi.com')) return 'xiaomi_mimo'
+  if (baseUrl.includes('volces.com') || baseUrl.includes('volcengine') || baseUrl.includes('doubao')) return 'volcengine_doubao'
+  if (baseUrl.includes('dashscope') || baseUrl.includes('aliyuncs.com') || /^qwen/i.test(provider.default_model || '')) return 'aliyun_qwen'
+  if (baseUrl.includes('moonshot') || /^kimi/i.test(provider.default_model || '')) return 'moonshot_kimi'
   if (String(provider.provider_type || '').toLowerCase() === 'openai_compatible') return 'custom_openai_compatible'
   return ''
 }
@@ -1403,8 +1407,8 @@ function applyProviderPreset(key) {
     name: providerForm.name || preset.name,
     provider_type: preset.provider_type || 'openai_compatible',
     base_url: preset.base_url || providerForm.base_url,
-    default_model: preset.default_model || providerForm.default_model,
-    backup_model: preset.backup_model || providerForm.backup_model,
+    default_model: Object.prototype.hasOwnProperty.call(preset, 'default_model') ? preset.default_model : providerForm.default_model,
+    backup_model: Object.prototype.hasOwnProperty.call(preset, 'backup_model') ? preset.backup_model : providerForm.backup_model,
     temperature: preset.temperature ?? providerForm.temperature,
     max_tokens: preset.max_tokens || providerForm.max_tokens,
     timeout_seconds: preset.timeout_seconds || providerForm.timeout_seconds,

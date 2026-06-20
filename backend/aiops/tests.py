@@ -3033,13 +3033,29 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(presets['zhipu_glm']['base_url'], 'https://open.bigmodel.cn/api/paas/v4')
         self.assertEqual(presets['minimax']['base_url'], 'https://api.minimax.io/v1')
         self.assertGreater(presets['minimax']['temperature'], 0)
+        self.assertEqual(presets['xiaomi_mimo']['base_url'], 'https://api.xiaomimimo.com/v1')
+        self.assertEqual(presets['volcengine_doubao']['base_url'], 'https://ark.cn-beijing.volces.com/api/v3')
+        self.assertEqual(presets['aliyun_qwen']['base_url'], 'https://dashscope.aliyuncs.com/compatible-mode/v1')
+        self.assertEqual(presets['moonshot_kimi']['base_url'], 'https://api.moonshot.cn/v1')
+        self.assertEqual(presets['xiaomi_mimo']['default_model'], '')
+        self.assertEqual(presets['volcengine_doubao']['default_model'], '')
+        self.assertEqual(presets['aliyun_qwen']['default_model'], '')
+        self.assertEqual(presets['moonshot_kimi']['default_model'], '')
 
     def test_provider_presets_endpoint_returns_common_vendors(self):
         response = self.client.get('/api/aiops/admin/providers/presets/')
 
         self.assertEqual(response.status_code, 200)
         keys = {item['key'] for item in response.data['presets']}
-        self.assertTrue({'deepseek', 'zhipu_glm', 'minimax'}.issubset(keys))
+        self.assertTrue({
+            'deepseek',
+            'zhipu_glm',
+            'minimax',
+            'xiaomi_mimo',
+            'volcengine_doubao',
+            'aliyun_qwen',
+            'moonshot_kimi',
+        }.issubset(keys))
 
     def test_provider_preset_key_is_saved_and_returned(self):
         response = self.client.post(
