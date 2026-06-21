@@ -400,8 +400,8 @@
                         </div>
                         <div v-if="message.pending_action.action_payload" class="pending-detail-grid">
                           <div class="pending-detail-item">
-                            <span>目标主机</span>
-                            <strong>{{ message.pending_action.action_payload.host_count || 0 }} 台</strong>
+                            <span>{{ getActionTargetMetric(message.pending_action.action_payload).label }}</span>
+                            <strong>{{ getActionTargetMetric(message.pending_action.action_payload).value }}</strong>
                           </div>
                           <div class="pending-detail-item">
                             <span>执行方式</span>
@@ -1052,10 +1052,22 @@ function getDisplayCitations(message) {
     })
 }
 
+function isK8sActionPayload(payload) {
+  return payload?.target_type === 'k8s' || String(payload?.task_type || '').startsWith('k8s_')
+}
+
+function getActionTargetMetric(payload) {
+  const isK8s = isK8sActionPayload(payload)
+  return {
+    label: isK8s ? 'K8s 目标' : '目标主机',
+    value: `${payload?.host_count || 0} ${isK8s ? '个' : '台'}`,
+  }
+}
+
 function buildApprovalFormBlock(pendingAction) {
   const payload = pendingAction?.action_payload || {}
   const metrics = [
-    { label: '目标主机', value: `${payload.host_count || 0} 台` },
+    getActionTargetMetric(payload),
     { label: '执行方式', value: payload.execution_mode || '--' },
     { label: '执行策略', value: payload.execution_strategy || '--' },
     { label: '超时', value: `${payload.timeout_seconds || '--'}s` },

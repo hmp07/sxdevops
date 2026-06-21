@@ -1521,9 +1521,9 @@ onBeforeUnmount(() => {
 
 .summary-action-button,
 .trace-topology-button {
-  height: 36px;
+  height: 32px;
   min-width: 0;
-  padding: 0 12px;
+  padding: 0 10px;
   border-radius: 10px;
   font-size: 12px;
   font-weight: 600;
@@ -1634,7 +1634,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 7px 12px;
+  padding: 5px 11px;
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 12px;
   background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
@@ -1650,7 +1650,7 @@ onBeforeUnmount(() => {
 
 .kpi-value {
   color: #0f172a;
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 700;
   line-height: 1;
 }

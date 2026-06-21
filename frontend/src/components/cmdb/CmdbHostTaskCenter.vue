@@ -53,7 +53,13 @@
         </div>
         <div class="glass-card">
           <div class="card-head">
-            <span>{{ ui.createTask }}</span>
+            <div class="card-title-with-action">
+              <span>{{ ui.createTask }}</span>
+              <el-button v-if="executionKind === 'k8s_command'" class="k8s-logic-button" size="small" text type="primary" @click="k8sLogicVisible = true">
+                <el-icon><QuestionFilled /></el-icon>
+                {{ ui.k8sLogicButton }}
+              </el-button>
+            </div>
             <div class="task-form-head-actions">
               <el-tag size="small" type="info">{{ ui.selectedTargets }} {{ selectedTargetCount }} {{ ui.unitTarget }}</el-tag>
               <el-button size="small" :loading="savingTemplate" @click="saveCurrentAsTemplate">{{ ui.saveAsTemplate }}</el-button>
@@ -738,13 +744,24 @@
     <el-dialog v-model="outputDialogVisible" :title="outputDialogTitle" width="860px" append-to-body destroy-on-close align-center>
       <pre class="output-dialog-block">{{ outputDialogContent || '-' }}</pre>
     </el-dialog>
+    <el-dialog v-model="k8sLogicVisible" :title="ui.k8sLogicTitle" width="640px" append-to-body destroy-on-close align-center>
+      <div class="k8s-logic-panel">
+        <div v-for="item in k8sLogicItems" :key="item.title" class="k8s-logic-item">
+          <strong>{{ item.title }}</strong>
+          <span>{{ item.desc }}</span>
+        </div>
+      </div>
+      <template #footer>
+        <el-button type="primary" @click="k8sLogicVisible = false">{{ ui.close }}</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, Clock, Collection, Promotion, Search, VideoPlay } from '@element-plus/icons-vue'
+import { ArrowDown, Clock, Collection, Promotion, QuestionFilled, Search, VideoPlay } from '@element-plus/icons-vue'
 import { useRouteTabState } from '@/composables/useRouteTabState'
 import { normalizeTaskDraftTitle } from '@/utils/taskDraftTitle'
 import {
@@ -816,6 +833,8 @@ const ui = {
   deleteTemplate: '\u5220\u9664',
   noTemplates: '\u6682\u65e0\u53ef\u7528\u6a21\u677f',
   createTask: '\u65b0\u5efa\u4efb\u52a1',
+  k8sLogicButton: 'K8s 脚本执行逻辑',
+  k8sLogicTitle: 'K8s 脚本执行逻辑',
   targetType: '目标类型',
   hostResource: '主机资源',
   k8sResource: 'K8s 资源',
@@ -970,7 +989,14 @@ const executionTypeOptions = [
   { label: 'Shell 脚本', value: 'shell', targetType: 'host', taskType: 'run_command', executionMode: 'ansible', desc: '在主机资源上执行 Shell 脚本。' },
   { label: 'Python 脚本', value: 'python', targetType: 'host', taskType: 'run_command', executionMode: 'ansible', desc: '通过 Python 解释器执行诊断、巡检或自动化脚本。' },
   { label: 'Ansible Playbook', value: 'playbook', targetType: 'host', taskType: 'run_playbook', executionMode: 'ansible', desc: '执行结构化 Playbook，适合固化编排流程。' },
-  { label: 'K8s 脚本', value: 'k8s_command', targetType: 'k8s', taskType: 'k8s_pod_exec', executionMode: 'k8s_api', desc: '通过 K8s API 在目标集群执行 kubectl 脚本，适合 Service、Deployment 等资源变更。' },
+  { label: 'K8s 脚本', value: 'k8s_command', targetType: 'k8s', taskType: 'k8s_pod_exec', executionMode: 'k8s_api', desc: '在目标集群执行 kubectl/Helm 任务，适合 K8s 资源变更。' },
+]
+const k8sLogicItems = [
+  { title: '目标来源', desc: '选择 K8s 集群后，后端会读取该集群配置并为本次任务生成临时 kubeconfig。' },
+  { title: 'API 直连', desc: '部分结构化操作会直接转成 Kubernetes API 调用，例如 Pod exec、Pod 删除重启、Service patch、Deployment/StatefulSet 扩缩容。' },
+  { title: 'kubectl 任务', desc: '泛化 kubectl 命令由后端本地 kubectl 执行，并显式携带临时 kubeconfig 连接目标集群。' },
+  { title: 'Helm 任务', desc: 'Helm Release 会走后端本地 Helm 客户端执行 upgrade --install，不会先转换成 manifest 再 apply。' },
+  { title: '执行要求', desc: '真实集群需要后端执行环境安装 kubectl；Helm 部署还需要安装 helm 客户端。演示集群会返回模拟结果。' },
 ]
 const targetTypeOptions = [
   { label: ui.hostResource, value: 'host' },
@@ -1038,6 +1064,7 @@ const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detailTask = ref(null)
 const outputDialogVisible = ref(false)
+const k8sLogicVisible = ref(false)
 const outputDialogTitle = ref('')
 const outputDialogContent = ref('')
 const currentTemplate = ref(null)
@@ -2431,6 +2458,26 @@ watch(() => route.query.taskId, async (value, previousValue) => {
   color: #0f172a;
 }
 
+.card-title-with-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.k8s-logic-button {
+  min-height: 24px;
+  padding: 0 7px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.k8s-logic-button :deep(.el-icon) {
+  margin-right: 3px;
+}
+
 .compact-head {
   margin-bottom: 8px;
 }
@@ -2620,6 +2667,33 @@ watch(() => route.query.taskId, async (value, previousValue) => {
   height: 5px;
   border-radius: 50%;
   background: #60a5fa;
+}
+
+.k8s-logic-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.k8s-logic-item {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.k8s-logic-item strong {
+  display: block;
+  margin-bottom: 5px;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.k8s-logic-item span {
+  display: block;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .task-inline-tip {

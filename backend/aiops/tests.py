@@ -51,9 +51,12 @@ from .services import (
     _is_direct_log_question,
     _normalize_formatter_output,
     _normalize_mcp_input_schema,
+    _build_evidence_bundle_result,
+    _infer_alert_root_cause,
     _request_model_completion,
     _sanitize_mcp_error_text,
     _select_action_for_question,
+    _select_alert_for_metric_evidence,
     _skills_for_action,
     _summarize_external_tool_result,
     _build_runtime_tool_registry,
@@ -4672,6 +4675,313 @@ class AIOpsApiTests(TestCase):
         mocked_completion.assert_not_called()
 
     @mock.patch('aiops.services._request_model_completion')
+    def test_send_message_direct_alert_root_cause_formats_dict_alert_context(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='电商测试环境',
+            aliases=['电商测试环境-k3s'],
+            alert_environments=['ecommerce-test'],
+            is_enabled=True,
+        )
+        alert = Alert.objects.create(
+            title='api-gateway pod CPU usage is elevated',
+            level='critical',
+            status=Alert.STATUS_ACTIVE,
+            source='prometheus',
+            message='api-gateway pod CPU usage is elevated',
+            environment='ecommerce-test',
+            cluster='电商测试环境-k3s',
+            namespace='ecommerce',
+            service='api-gateway',
+            resource_type='pod',
+            resource='api-gateway',
+            is_acknowledged=False,
+        )
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'alert-id-dict-rca'}, format='json')
+        session_id = session_response.data['id']
+        AIOpsChatSession.objects.filter(pk=session_id).update(context={'current_environment': {'name': '电商测试环境'}})
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': f'帮我分析下告警id {alert.id} api-gateway pod CPU usage is elevated 这个告警的根因'},
+            format='json',
+        )
+
+        assistant_message = response.data['assistant_message']
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'direct_alert_root_cause_fastpath')
+        self.assertNotIn("'dict' object has no attribute 'level'", assistant_message['content'])
+        self.assertIn('api-gateway pod CPU usage is elevated', assistant_message['content'])
+        self.assertIn('query_alert_root_cause', assistant_message['tool_calls'])
+        mocked_completion.assert_not_called()
+
+    def test_evidence_bundle_handles_mixed_dict_and_model_tool_outputs(self):
+        env = {'name': '电商测试环境'}
+        log = LogEntry.objects.create(
+            level='error',
+            service='api-gateway',
+            message='api-gateway upstream timeout trace_id=trace-632',
+        )
+        result = _build_evidence_bundle_result(
+            question='帮我分析 api-gateway 根因',
+            scoped_question='电商测试环境 帮我分析 api-gateway 根因',
+            knowledge_environment=env,
+            analysis_scope={'summary': {'node_count': 1}},
+            provider=None,
+            active_skills=[],
+            sections=[
+                {'title': '告警事实', 'items': ['严重 / api-gateway pod CPU usage is elevated / 活跃 / prometheus', '告警ID 632 / 指纹 - / 最近接收 2026-06-21 15:20:09 / 出现次数 1']},
+                {'title': '最近日志命中', 'items': ['api-gateway upstream timeout']},
+            ],
+            citations=[{'title': '告警中心', 'path': '/alerts'}, {'title': '日志中心', 'path': '/logs/query'}],
+            tool_names=['query_alert_root_cause', 'query_logs'],
+            collected_tool_outputs=[
+                {
+                    'tool_name': 'query_alert_root_cause',
+                    'tool_output': {
+                        'summary': {'count': 1, 'alert_id': 632},
+                        'alert': {
+                            'id': 632,
+                            'title': 'api-gateway pod CPU usage is elevated',
+                            'level': 'critical',
+                            'status': Alert.STATUS_ACTIVE,
+                            'source': 'prometheus',
+                            'last_received_at': '2026-06-21 15:20:09',
+                        },
+                    },
+                },
+                {
+                    'tool_name': 'query_logs',
+                    'tool_output': {
+                        'summary': {'count': 2, 'service': 'api-gateway', 'levels': ['error', 'warning'], 'duration_minutes': 60},
+                        'logs': [
+                            log,
+                            {
+                                'timestamp': '2026-06-21 15:19:59',
+                                'level': 'warning',
+                                'source': 'loki',
+                                'message': 'api-gateway latency warning trace_id=trace-632',
+                                'attributes': {'trace_id': 'trace-632'},
+                            },
+                        ],
+                    },
+                },
+            ],
+            execution_mode='deterministic_service_rca',
+        )
+
+        self.assertIn('api-gateway pod CPU usage is elevated', result['content'])
+        self.assertIn('告警ID 632', result['content'])
+        self.assertIn('告警根因分析', result['content'])
+        self.assertIn('api-gateway upstream timeout', result['content'])
+        self.assertNotIn("'dict' object has no attribute", result['content'])
+        self.assertNotIn("'LogEntry' object has no attribute 'get'", result['content'])
+
+    def test_metric_alert_selection_accepts_dict_alerts(self):
+        selected = _select_alert_for_metric_evidence({
+            'alerts': [
+                {'id': 10, 'level': 'warning', 'status': Alert.STATUS_ACTIVE, 'last_received_at': '2026-06-21T15:00:00+08:00'},
+                {'id': 11, 'level': 'critical', 'status': Alert.STATUS_ACTIVE, 'last_received_at': '2026-06-21T15:01:00+08:00'},
+            ]
+        })
+
+        self.assertEqual(selected['id'], 11)
+
+    def test_alert_root_cause_inference_accepts_dict_evidence(self):
+        alert = Alert.objects.create(
+            title='api-gateway cpu high',
+            level='critical',
+            status=Alert.STATUS_ACTIVE,
+            source='prometheus',
+            message='api-gateway cpu high',
+            service='api-gateway',
+        )
+
+        analysis = _infer_alert_root_cause(
+            alert,
+            posture_result={
+                'summary': {'critical': 1, 'warning': 0},
+                'systems': [{'name': '电商交易系统', 'core_metric': {'value': 97.2, 'target': 99.9}}],
+            },
+            event_result={'events': [{'title': 'api-gateway rollout', 'result': 'failed'}]},
+            log_result={'logs': [{'level': 'error', 'message': 'api-gateway upstream timeout'}]},
+            trace_result={'summary': {'match_count': 1, 'error_match_count': 1}, 'traces': [{'trace_id': 'trace-632'}]},
+        )
+
+        joined = '\n'.join((analysis.get('evidence') or []) + (analysis.get('causes') or []))
+        self.assertIn('系统态势', joined)
+        self.assertIn('事件中心', joined)
+        self.assertIn('日志中心', joined)
+        self.assertIn('链路追踪', joined)
+
+    @mock.patch('aiops.services._request_model_completion')
+    def test_direct_log_analysis_accepts_local_logentry_objects(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='电商测试环境',
+            aliases=['电商测试环境-k3s'],
+            event_environments=['ecommerce-test'],
+            alert_environments=['ecommerce-test'],
+            is_enabled=True,
+        )
+        LogEntry.objects.create(
+            level='error',
+            service='api-gateway',
+            message='api-gateway upstream timeout trace_id=trace-local-001',
+        )
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'local-log-analysis'}, format='json')
+        session_id = session_response.data['id']
+        AIOpsChatSession.objects.filter(pk=session_id).update(context={'current_environment': {'name': '电商测试环境'}})
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '帮我分析电商测试环境 api-gateway 最近错误日志的原因'},
+            format='json',
+        )
+
+        assistant_message = response.data['assistant_message']
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'direct_logs_fastpath')
+        self.assertIn('api-gateway upstream timeout', assistant_message['content'])
+        self.assertNotIn("'LogEntry' object has no attribute 'get'", assistant_message['content'])
+        mocked_completion.assert_not_called()
+
+    @mock.patch('aiops.services.execute_promql_query')
+    @mock.patch('aiops.services._request_model_completion')
+    def test_root_cause_question_matrix_does_not_leak_basic_runtime_errors(self, mocked_completion, mocked_promql):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_ecommerce_knowledge_environment()
+        alert = Alert.objects.create(
+            title='api-gateway pod CPU usage is elevated',
+            level='critical',
+            status=Alert.STATUS_ACTIVE,
+            source='prometheus',
+            message='api-gateway pod CPU usage is elevated',
+            environment='电商测试',
+            cluster='ecommerce-test-k3s',
+            namespace='production',
+            service='api-gateway',
+            resource_type='pod',
+            resource='api-gateway',
+            metric_name='container_cpu_usage_seconds_total',
+            labels={'service': 'api-gateway', 'pod': 'api-gateway'},
+            is_acknowledged=False,
+        )
+        LogEntry.objects.create(
+            level='error',
+            service='api-gateway',
+            message='api-gateway upstream timeout trace_id=trace-matrix-001',
+        )
+        EventRecord.objects.create(
+            module='deploy',
+            category='release',
+            action='update',
+            title='api-gateway rollout failed',
+            result=EventRecord.RESULT_FAILED,
+            severity=EventRecord.SEVERITY_DANGER,
+            environment='ecommerce-test',
+            application='api-gateway',
+            is_demo=False,
+        )
+        mocked_promql.return_value = {
+            'query': 'mock',
+            'range': True,
+            'source': 'metric_datasource',
+            'series_count': 1,
+            'result': [{'metric': {'service': 'api-gateway'}, 'values': [[1710000000, '0.1'], [1710000060, '0.9']]}],
+            'sample': [],
+        }
+
+        cases = [
+            (f'帮我分析下告警id {alert.id} api-gateway pod CPU usage is elevated 这个告警的根因', 'direct_alert_root_cause_fastpath', {'query_alert_root_cause'}),
+            ('帮我分析下电商测试环境最新一条告警的原因', 'direct_alert_root_cause_fastpath', {'query_alert_root_cause'}),
+            ('帮我分析下电商测试环境告警', 'deterministic_alert_environment_analysis', {'query_alerts', 'query_alert_metrics'}),
+            ('分析生产电商测试环境 api-gateway 最近异常的根因', 'deterministic_service_rca', {'query_alerts', 'query_logs', 'query_traces'}),
+            ('分析下最近电商测试环境的SLO情况', 'deterministic_slo_analysis', {'query_system_posture', 'query_alerts'}),
+            ('分析下电商测试环境 k8s 集群的异常工作负载', 'deterministic_k8s_rca', {'query_k8s_resources', 'query_k8s_cluster_summary', 'query_alerts'}),
+            ('帮我分析电商测试环境 api-gateway 最近错误日志的原因', 'direct_logs_fastpath', {'query_logs'}),
+            ('分析下 api-gateway 最近发布是否导致电商测试环境异常', 'deterministic_change_correlation', {'query_knowledge_graph', 'query_alerts'}),
+            ('给电商测试环境 api-gateway 告警推荐自愈方案', 'deterministic_self_heal_recommendation', {'query_alerts', 'query_logs', 'query_traces'}),
+        ]
+        forbidden_fragments = [
+            'object has no attribute',
+            "'dict'",
+            "'LogEntry'",
+            '本次问答未完成',
+            '处理异常',
+            'Traceback',
+        ]
+
+        for index, (question, expected_mode, expected_tools) in enumerate(cases):
+            with self.subTest(question=question):
+                session_response = self.client.post('/api/aiops/sessions/', {'title': f'rca-matrix-{index}'}, format='json')
+                session_id = session_response.data['id']
+                AIOpsChatSession.objects.filter(pk=session_id).update(context={'current_environment': {'name': '电商测试环境'}})
+
+                response = self.client.post(
+                    f'/api/aiops/sessions/{session_id}/send_message/',
+                    {'content': question},
+                    format='json',
+                )
+
+                self.assertEqual(response.status_code, 201)
+                assistant_message = response.data['assistant_message']
+                self.assertNotEqual(assistant_message['message_type'], AIOpsChatMessage.TYPE_ERROR)
+                self.assertEqual(assistant_message['metadata']['execution_mode'], expected_mode)
+                self.assertTrue(expected_tools.issubset(set(assistant_message['tool_calls'])))
+                for fragment in forbidden_fragments:
+                    self.assertNotIn(fragment, assistant_message['content'])
+                self.assertTrue(assistant_message['content'].strip())
+
+    @mock.patch('aiops.services._request_model_completion')
+    def test_alert_root_cause_resolves_environment_from_followup_text(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_ecommerce_knowledge_environment()
+        alert = Alert.objects.create(
+            title='api-gateway pod CPU usage is elevated',
+            level='warning',
+            status=Alert.STATUS_ACTIVE,
+            source='prometheus',
+            message='The resource alert generator is simulating high CPU usage for api-gateway.',
+            environment='电商测试',
+            cluster='ecommerce-test-k3s',
+            namespace='production',
+            service='api-gateway',
+            resource_type='pod',
+            resource='api-gateway',
+            metric_name='container_cpu_usage_seconds_total',
+            is_acknowledged=False,
+        )
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'rca-followup-env'}, format='json')
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {
+                'content': (
+                    f'使用电商测试环境环境继续分析： 帮我分析下告警id {alert.id} '
+                    'api-gateway pod CPU usage is elevated 这个告警的根因'
+                ),
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        assistant_message = response.data['assistant_message']
+        metadata = assistant_message['metadata']
+        self.assertNotEqual(assistant_message['message_type'], AIOpsChatMessage.TYPE_ERROR)
+        self.assertEqual(metadata['execution_mode'], 'direct_alert_root_cause_fastpath')
+        self.assertEqual(metadata['alert_id'], alert.id)
+        self.assertFalse(metadata.get('environment_required'))
+        self.assertNotIn('必须先指定环境', assistant_message['content'])
+        self.assertNotIn('object has no attribute', assistant_message['content'])
+        self.assertNotIn("'dict'", assistant_message['content'])
+
+    @mock.patch('aiops.services._request_model_completion')
     def test_send_message_direct_alert_root_cause_latest_in_environment(self, mocked_completion):
         get_agent_config()
         AIOpsModelProvider.objects.all().update(is_enabled=False)
@@ -7656,6 +7966,148 @@ class AIOpsApiTests(TestCase):
         self.assertIn('apt-get install -y "$APT_PACKAGE"', draft['payload']['command'])
         self.assertNotIn('service_status', json.dumps(result.get('tool_output') or {}, ensure_ascii=False))
 
+    def test_build_task_draft_generates_k8s_install_manifest_when_k8s_scope_is_explicit(self):
+        cluster, _, _ = self.ensure_ecommerce_knowledge_environment()
+        resource = TaskResource.objects.get(resource_type=TaskResource.RESOURCE_K8S, cluster=cluster)
+        question = '帮我在电商测试环境 k8s 集群 production 命名空间部署 Redis'
+
+        draft = build_task_draft(
+            self.user,
+            question,
+            {
+                'request_summary': question,
+                'resource_environment': '电商测试环境',
+            },
+        )
+
+        self.assertNotIn('error', draft)
+        self.assertEqual(draft['target_type'], HostTask.TARGET_K8S)
+        self.assertEqual(draft['task_type'], HostTask.TASK_K8S_POD_EXEC)
+        self.assertEqual(draft['execution_mode'], HostTask.EXECUTION_MODE_K8S_API)
+        self.assertEqual(draft['resource_ids'], [resource.id])
+        self.assertEqual(draft['payload']['script_purpose'], 'install')
+        self.assertEqual(draft['payload']['software_name'], 'Redis')
+        self.assertEqual(draft['payload']['namespace'], 'production')
+        self.assertEqual(draft['payload']['deployment_strategy'], 'k8s_manifest')
+        self.assertIn('kind: Deployment', draft['payload']['manifest'])
+        self.assertIn('kind: Service', draft['payload']['manifest'])
+        self.assertIn('image: redis:7-alpine', draft['payload']['manifest'])
+        self.assertIn('kubectl apply -f -', draft['payload']['command'])
+        self.assertNotIn('apt-get install', draft['payload']['command'])
+        self.assertNotIn('yum install', draft['payload']['command'])
+        self.assertNotIn('systemctl enable', draft['payload']['command'])
+        self.assertEqual(draft['k8s_targets'][0]['kind'], 'deployment')
+        self.assertEqual(draft['k8s_targets'][0]['namespace'], 'production')
+
+    def test_generate_host_task_tool_overrides_wrong_host_kind_for_k8s_install(self):
+        cluster, _, _ = self.ensure_ecommerce_knowledge_environment()
+        resource = TaskResource.objects.get(resource_type=TaskResource.RESOURCE_K8S, cluster=cluster)
+        session = AIOpsChatSession.objects.create(user=self.user, title='k8s-install-tool')
+        question = '帮我在电商测试环境 K8s 集群 production 命名空间安装 Redis'
+        user_message = AIOpsChatMessage.objects.create(session=session, role='user', content=question)
+
+        result = _run_tool_call(
+            session,
+            user_message,
+            self.user,
+            'generate_host_task',
+            {
+                'request_summary': question,
+                'environment': '电商测试环境',
+                'resource_environment': '电商测试环境',
+                'task_kind': 'run_command',
+                'script_purpose': 'install',
+                'software_name': 'Redis',
+            },
+        )
+
+        draft = result['pending_action_draft']
+        self.assertEqual(result['message_type'], AIOpsChatMessage.TYPE_ACTION)
+        self.assertEqual(draft['target_type'], HostTask.TARGET_K8S)
+        self.assertEqual(draft['task_type'], HostTask.TASK_K8S_POD_EXEC)
+        self.assertEqual(draft['execution_mode'], HostTask.EXECUTION_MODE_K8S_API)
+        self.assertEqual(draft['resource_ids'], [resource.id])
+        self.assertIn('kubectl apply -f -', draft['payload']['command'])
+        self.assertIn('kind: Deployment', draft['payload']['manifest'])
+        self.assertNotIn('apt-get install', draft['payload']['command'])
+
+    def test_k8s_install_unknown_software_keeps_k8s_draft_and_requires_docs(self):
+        self.ensure_ecommerce_knowledge_environment()
+        question = '帮我在电商测试环境 k8s 集群 production 命名空间部署 VectorDB'
+
+        draft = build_task_draft(
+            self.user,
+            question,
+            {
+                'request_summary': question,
+                'resource_environment': '电商测试环境',
+            },
+        )
+
+        self.assertNotIn('error', draft)
+        self.assertEqual(draft['target_type'], HostTask.TARGET_K8S)
+        self.assertEqual(draft['task_type'], HostTask.TASK_K8S_POD_EXEC)
+        self.assertEqual(draft['execution_mode'], HostTask.EXECUTION_MODE_K8S_API)
+        self.assertEqual(draft['payload']['namespace'], 'production')
+        self.assertEqual(draft['payload']['deployment_strategy'], 'k8s_manifest')
+        self.assertTrue(draft['payload']['documentation_required'])
+        self.assertIn('官方 Kubernetes/Helm 部署文档', draft['payload']['documentation_hint'])
+        self.assertIn('kubectl apply -f -', draft['payload']['command'])
+        self.assertIn('kind: Deployment', draft['payload']['manifest'])
+        self.assertNotIn('apt-get install', draft['payload']['command'])
+        self.assertNotIn('yum install', draft['payload']['command'])
+        self.assertNotIn('systemctl enable', draft['payload']['command'])
+
+    def test_k8s_install_helm_request_generates_helm_release_draft(self):
+        self.ensure_ecommerce_knowledge_environment()
+        question = '帮我在电商测试环境 k8s 集群 production 命名空间用 Helm 部署 Redis chart bitnami/redis'
+
+        draft = build_task_draft(
+            self.user,
+            question,
+            {
+                'request_summary': question,
+                'resource_environment': '电商测试环境',
+            },
+        )
+
+        self.assertNotIn('error', draft)
+        self.assertEqual(draft['target_type'], HostTask.TARGET_K8S)
+        self.assertEqual(draft['task_type'], HostTask.TASK_K8S_POD_EXEC)
+        self.assertEqual(draft['execution_mode'], HostTask.EXECUTION_MODE_K8S_API)
+        self.assertEqual(draft['payload']['deployment_strategy'], 'helm')
+        self.assertEqual(draft['payload']['resource_kind'], 'helm_release')
+        self.assertEqual(draft['payload']['namespace'], 'production')
+        self.assertEqual(draft['payload']['release_name'], 'redis')
+        self.assertEqual(draft['payload']['chart'], 'bitnami/redis')
+        self.assertFalse(draft['payload']['documentation_required'])
+        self.assertIn('helm upgrade --install redis bitnami/redis', draft['payload']['command'])
+        self.assertNotIn('kubectl apply -f -', draft['payload']['command'])
+        self.assertNotIn('apt-get install', draft['payload']['command'])
+        self.assertEqual(draft['k8s_targets'][0]['kind'], 'helm_release')
+
+    def test_k8s_install_helm_request_without_chart_requires_official_docs(self):
+        self.ensure_ecommerce_knowledge_environment()
+        question = '帮我在电商测试环境 k8s 集群 production 命名空间用 Helm 部署 VectorDB'
+
+        draft = build_task_draft(
+            self.user,
+            question,
+            {
+                'request_summary': question,
+                'resource_environment': '电商测试环境',
+            },
+        )
+
+        self.assertNotIn('error', draft)
+        self.assertEqual(draft['payload']['deployment_strategy'], 'helm')
+        self.assertEqual(draft['payload']['resource_kind'], 'helm_release')
+        self.assertTrue(draft['payload']['documentation_required'])
+        self.assertIn('官方 Helm Chart/repo/values 文档', draft['payload']['documentation_hint'])
+        self.assertIn('<chart>', draft['payload']['command'])
+        self.assertIn('helm upgrade --install', draft['payload']['command'])
+        self.assertNotIn('kubectl apply -f -', draft['payload']['command'])
+
     def test_build_task_draft_generates_install_ansible_playbook_when_requested(self):
         env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
         resource = TaskResource.objects.create(
@@ -7887,6 +8339,43 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(payload['payload']['software_name'], 'Redis')
         self.assertIn('apt-get install -y "$APT_PACKAGE"', payload['payload']['command'])
         self.assertIn('install check passed', payload['payload']['command'])
+        mocked_completion.assert_not_called()
+
+    @mock.patch('aiops.services._request_model_completion')
+    def test_k8s_install_chat_generation_creates_k8s_manifest_not_host_script(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        cluster, _, _ = self.ensure_ecommerce_knowledge_environment()
+        resource = TaskResource.objects.get(resource_type=TaskResource.RESOURCE_K8S, cluster=cluster)
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'k8s-install-chat'}, format='json')
+        session_id = session_response.data['id']
+        question = '帮我在电商测试环境 k8s 集群 production 命名空间部署 Redis'
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': question},
+            format='json',
+        )
+
+        assistant_message = response.data['assistant_message']
+        payload = response.data['pending_action']['action_payload']
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'deterministic_task_generation')
+        self.assertEqual(assistant_message['tool_calls'], ['query_task_resources', 'generate_host_task'])
+        self.assertEqual(payload['target_type'], HostTask.TARGET_K8S)
+        self.assertEqual(payload['task_type'], HostTask.TASK_K8S_POD_EXEC)
+        self.assertEqual(payload['execution_mode'], HostTask.EXECUTION_MODE_K8S_API)
+        self.assertEqual(payload['resource_ids'], [resource.id])
+        self.assertEqual(payload['payload']['script_purpose'], 'install')
+        self.assertEqual(payload['payload']['software_name'], 'Redis')
+        self.assertEqual(payload['payload']['namespace'], 'production')
+        self.assertIn('kubectl apply -f -', payload['payload']['command'])
+        self.assertIn('kind: Deployment', payload['payload']['manifest'])
+        self.assertIn('image: redis:7-alpine', payload['payload']['manifest'])
+        self.assertNotIn('apt-get install', payload['payload']['command'])
+        self.assertNotIn('yum install', payload['payload']['command'])
+        self.assertNotIn('systemctl enable', payload['payload']['command'])
+        self.assertFalse(HostTask.objects.filter(trigger_source=HostTask.TRIGGER_SOURCE_AIOPS).exists())
         mocked_completion.assert_not_called()
 
     def _create_aiops_task_resource_fixture(self):

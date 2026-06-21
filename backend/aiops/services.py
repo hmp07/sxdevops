@@ -5529,27 +5529,30 @@ def _infer_alert_root_cause(
             add_evidence('系统态势', f'严重系统 {critical} 个，风险系统 {warning} 个')
             add_cause('系统态势', '该环境系统态势已出现健康或 SLA 风险，告警可能已影响系统级目标')
         for system in systems[:3]:
-            core_metric = system.core_metric if isinstance(system.core_metric, dict) else {}
+            system_name = _value_from_record(system, 'name') or '-'
+            raw_core_metric = _value_from_record(system, 'core_metric', {})
+            core_metric = raw_core_metric if isinstance(raw_core_metric, dict) else {}
             sla = core_metric.get('value')
             target = core_metric.get('target')
             if sla is not None or target is not None:
-                add_evidence('系统态势', f"{system.name} SLA {sla if sla is not None else '--'}，目标 {target if target is not None else '--'}")
+                add_evidence('系统态势', f"{system_name} SLA {sla if sla is not None else '--'}，目标 {target if target is not None else '--'}")
 
     if event_result:
         events = event_result.get('events') or []
         if events:
             add_evidence('事件中心', f'匹配到 {len(events)} 条关联事件')
             first = events[0]
-            add_cause('事件中心', f'最近关联事件为“{first.title} / {first.result}”，需要核对该变更或外部事件与告警时间是否重叠')
+            add_cause('事件中心', f"最近关联事件为“{_value_from_record(first, 'title', '-')} / {_value_from_record(first, 'result', '-')}”，需要核对该变更或外部事件与告警时间是否重叠")
         else:
             _append_unique(pending, '事件中心未查到关联事件，当前不能把事件作为根因证据', limit=10)
 
     if log_result:
         logs = log_result.get('logs') or []
-        error_logs = [item for item in logs if str(item.level or '').lower() in {'error', 'warning'}]
+        log_samples = [_log_to_sample_dict(item) for item in logs]
+        error_logs = [item for item in log_samples if str((item.get('attributes') or {}).get('detected_level') or item.get('level') or '').lower() in {'error', 'warning'}]
         if error_logs:
             add_evidence('日志中心', f'匹配到 {len(error_logs)} 条 ERROR/WARNING 日志')
-            add_cause('日志中心', f'服务日志存在错误或告警级别记录，需优先查看最近一条：{error_logs[0].message[:120]}')
+            add_cause('日志中心', f"服务日志存在错误或告警级别记录，需优先查看最近一条：{str(error_logs[0].get('message') or '')[:120]}")
         elif logs:
             add_evidence('日志中心', f'匹配到 {len(logs)} 条日志，但未发现 ERROR/WARNING 级别')
         else:
@@ -6173,7 +6176,10 @@ def query_logs(session, user_message, user, query='', service='', level='', leve
     resolved_duration = _detect_log_duration_minutes(query, duration_minutes)
     cleaned_search_query = _strip_common_query_phrases(
         search_query,
-        ['最近', '近', '过去', '半小时', '分钟', '小时', '日志', '错误日志', '错误', '异常', '分析', '帮我', '看下', '查询', '环境', '测试环境'],
+        [
+            '最近', '近', '过去', '半小时', '分钟', '小时', '日志', '错误日志', '错误', '异常',
+            '分析', '根因', '原因', '为什么', '问题', '排查', '帮我', '看下', '查询', '环境', '测试环境',
+        ],
     )
     tokens = [
         token for token in _clean_tokens(cleaned_search_query)
@@ -6727,6 +6733,7 @@ def _build_log_fallback_content(log_result, knowledge_environment, log_arguments
     lines.append('日志样本：')
     if logs:
         for item in logs[:8]:
+            item = _log_to_sample_dict(item)
             sample = _compact_log_sample(item, max_message_length=220)
             lines.append(f"- {sample['timestamp'] or '-'} / {str(sample['level'] or '-').upper()} / {sample['source'] or '-'} / {sample['message']}")
     else:
@@ -6742,7 +6749,8 @@ def _build_direct_log_result(log_result, question, knowledge_environment, analys
     service = summary.get('service') or log_arguments.get('service') or '-'
     duration = summary.get('duration_minutes') or log_arguments.get('duration_minutes') or '-'
     citations = _dedupe_citations(log_result.get('citations', []))
-    log_samples = [_compact_log_sample(item) for item in logs[:8]]
+    normalized_logs = [_log_to_sample_dict(item) for item in logs[:8]]
+    log_samples = [_compact_log_sample(item) for item in normalized_logs]
     sections = [
         {
             'title': '日志查询事实',
@@ -6779,7 +6787,7 @@ def _build_direct_log_result(log_result, question, knowledge_environment, analys
         'tool_output': {
             'summary': summary,
             'datasources': datasources,
-            'logs': logs[:8],
+            'logs': normalized_logs,
             'log_samples': log_samples,
             'sections': sections,
         },
@@ -7131,8 +7139,8 @@ def _extract_install_target_from_request(question='', draft_request=None):
         if re.search(rf'(?<![a-z0-9_.+-]){re.escape(alias)}(?![a-z0-9_.+-])', lowered):
             return alias
     patterns = [
-        r'(?:安装|部署|装一下|装个|装上|配置|install|deploy|setup)\s*([A-Za-z][A-Za-z0-9_.+-]{1,63})',
-        r'([A-Za-z][A-Za-z0-9_.+-]{1,63})\s*(?:安装|部署|装一下|装个|装上|install|deploy|setup)',
+        r'(?:安装|部署|装一下|装个|装上|配置|\binstall\b|\bdeploy\b|\bsetup\b)\s*([A-Za-z][A-Za-z0-9_.+-]{1,63})',
+        r'([A-Za-z][A-Za-z0-9_.+-]{1,63})\s*(?:安装|部署|装一下|装个|装上|\binstall\b|\bdeploy\b|\bsetup\b)',
     ]
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
@@ -7161,14 +7169,47 @@ def _looks_like_install_task_request(question='', draft_request=None):
     if str(draft_request.get('script_purpose') or draft_request.get('purpose') or '').strip().lower() == 'install':
         return True
     text = str(question or draft_request.get('request_summary') or '').lower()
-    has_install_intent = any(keyword in text for keyword in [
-        '安装', '部署', '装一下', '装个', '装上', '初始化', 'install', 'deploy', 'setup',
-    ])
+    has_install_intent = (
+        any(keyword in text for keyword in ['安装', '部署', '装一下', '装个', '装上', '初始化'])
+        or bool(re.search(r'\b(?:install|deploy|setup)\b', text, flags=re.IGNORECASE))
+    )
     has_generation_intent = any(keyword in text for keyword in [
         '帮我', '请', '生成', '创建', '新建', '安排', '发起', '任务', '脚本', 'shell', 'playbook', 'ansible',
         'generate', 'create', 'run',
     ])
     return has_install_intent and has_generation_intent and bool(_extract_install_target_from_request(question, draft_request))
+
+
+def _looks_like_k8s_deployment_scope(question='', draft_request=None):
+    draft_request = draft_request or {}
+    resource_type = str(draft_request.get('resource_type') or draft_request.get('target_type') or '').strip().lower()
+    if resource_type == TaskResource.RESOURCE_K8S or resource_type == HostTask.TARGET_K8S:
+        return True
+    task_kind = _normalize_task_kind(draft_request.get('task_kind'))
+    if task_kind in K8S_WRITE_TASK_KINDS:
+        return True
+    text = str(question or draft_request.get('request_summary') or '').lower()
+    k8s_keywords = [
+        'k8s', 'kubernetes', 'kubectl', 'helm', 'chart', 'manifest', 'yaml', 'yml',
+        '命名空间', 'namespace', '集群', 'cluster',
+        '容器编排', '容器化',
+    ]
+    return any(keyword in text for keyword in k8s_keywords)
+
+
+def _looks_like_k8s_install_task_request(question='', draft_request=None):
+    return _looks_like_install_task_request(question, draft_request) and _looks_like_k8s_deployment_scope(question, draft_request)
+
+
+def _looks_like_helm_install_task_request(question='', draft_request=None):
+    draft_request = draft_request or {}
+    strategy = str(draft_request.get('deployment_strategy') or draft_request.get('strategy') or '').strip().lower()
+    if strategy == 'helm':
+        return True
+    if draft_request.get('chart') or draft_request.get('chart_ref') or draft_request.get('helm_chart'):
+        return True
+    text = str(question or draft_request.get('request_summary') or '').lower()
+    return any(keyword in text for keyword in ['helm', 'chart'])
 
 
 def _looks_like_playbook_task_request(question='', draft_request=None):
@@ -7239,6 +7280,182 @@ fi
 command -v "$BINARY_NAME" >/dev/null 2>&1
 echo "$APP_NAME install check passed."
 '''.strip()
+
+
+def _k8s_install_profile_for_target(target):
+    profile = _install_profile_for_target(target)
+    key = _safe_package_token(target)
+    k8s_defaults = {
+        'redis': {'image': 'redis:7-alpine', 'port': 6379},
+        'redis-server': {'image': 'redis:7-alpine', 'port': 6379},
+        'nginx': {'image': 'nginx:stable-alpine', 'port': 80},
+        'mysql': {'image': 'mysql:8.4', 'port': 3306},
+        'mariadb': {'image': 'mariadb:11', 'port': 3306},
+        'postgresql': {'image': 'postgres:16-alpine', 'port': 5432},
+        'postgres': {'image': 'postgres:16-alpine', 'port': 5432},
+    }
+    defaults = k8s_defaults.get(key) or {}
+    image = str(defaults.get('image') or profile.get('k8s_image') or key or 'busybox:latest').strip()
+    try:
+        port = int(defaults.get('port') or profile.get('port') or 8080)
+    except (TypeError, ValueError):
+        port = 8080
+    profile.update({
+        'image': image,
+        'port': port,
+        'container_name': _safe_k8s_name(key or profile.get('display') or 'app'),
+    })
+    return profile
+
+
+def _safe_k8s_name(value, fallback='app'):
+    text = str(value or '').strip().lower()
+    text = re.sub(r'[^a-z0-9-]+', '-', text)
+    text = re.sub(r'-+', '-', text).strip('-')
+    if not text:
+        text = fallback
+    if not re.match(r'^[a-z0-9]', text):
+        text = f'{fallback}-{text}'
+    return text[:63].rstrip('-') or fallback
+
+
+def _build_k8s_install_manifest(target, namespace='default', draft_request=None):
+    draft_request = draft_request or {}
+    profile = _k8s_install_profile_for_target(target)
+    app_name = _safe_k8s_name(draft_request.get('app_name') or draft_request.get('name') or target)
+    namespace = _safe_k8s_name(namespace or 'default', fallback='default')
+    image = str(draft_request.get('image') or draft_request.get('container_image') or profile.get('image')).strip()
+    display = profile.get('display') or target or app_name
+    port = int(draft_request.get('container_port') or draft_request.get('port') or profile.get('port') or 8080)
+    replicas = int(draft_request.get('replicas') or 1)
+    container_name = _safe_k8s_name(profile.get('container_name') or app_name)
+    label_block = f'''app.kubernetes.io/name: {app_name}
+    app.kubernetes.io/instance: {app_name}
+    app.kubernetes.io/managed-by: sxdevops-aiops'''
+    return f'''apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {app_name}
+  namespace: {namespace}
+  labels:
+    {label_block}
+spec:
+  replicas: {replicas}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {app_name}
+      app.kubernetes.io/instance: {app_name}
+  template:
+    metadata:
+      labels:
+        {label_block}
+    spec:
+      containers:
+        - name: {container_name}
+          image: {image}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: tcp
+              containerPort: {port}
+          readinessProbe:
+            tcpSocket:
+              port: {port}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: {port}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {app_name}
+  namespace: {namespace}
+  labels:
+    {label_block}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {app_name}
+    app.kubernetes.io/instance: {app_name}
+  ports:
+    - name: tcp
+      port: {port}
+      targetPort: {port}
+'''.strip()
+
+
+def _safe_helm_token(value, fallback=''):
+    text = str(value or '').strip()
+    text = text.strip(' "\'`，。；;：:,')
+    if not text:
+        return fallback
+    if re.match(r'^[A-Za-z0-9][A-Za-z0-9_.+/@:-]{0,160}$', text):
+        return text
+    return fallback
+
+
+def _extract_helm_chart_from_request(question='', draft_request=None):
+    draft_request = draft_request or {}
+    for key in ['chart', 'chart_ref', 'helm_chart']:
+        chart = _safe_helm_token(draft_request.get(key))
+        if chart:
+            return chart
+    text = str(question or draft_request.get('request_summary') or '')
+    patterns = [
+        r'(?:chart|helm\s+chart)\s*(?:为|是|=|:|：)?\s*([A-Za-z0-9][A-Za-z0-9_.+/@:-]{1,160})',
+        r'([A-Za-z0-9][A-Za-z0-9_.+/-]{1,80}/[A-Za-z0-9][A-Za-z0-9_.+-]{1,80})',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            chart = _safe_helm_token(match.group(1))
+            if chart and chart.lower() not in {'helm', 'chart'}:
+                return chart
+    return ''
+
+
+def _extract_helm_repo_from_request(question='', draft_request=None):
+    draft_request = draft_request or {}
+    repo_name = _safe_helm_token(draft_request.get('repo_name') or draft_request.get('helm_repo_name'))
+    repo_url = str(draft_request.get('repo_url') or draft_request.get('helm_repo_url') or '').strip()
+    text = str(question or draft_request.get('request_summary') or '')
+    if not repo_url:
+        match = re.search(r'(https?://[^\s，。；;]+)', text, flags=re.IGNORECASE)
+        if match:
+            repo_url = match.group(1).strip()
+    if not repo_name and repo_url:
+        repo_name = _safe_k8s_name(draft_request.get('repo_alias') or draft_request.get('software_name') or draft_request.get('package_name') or 'chart')
+    return repo_name, repo_url
+
+
+def _build_helm_install_command(payload):
+    namespace = payload.get('namespace') or 'default'
+    release_name = payload.get('release_name') or payload.get('app_name') or '<release>'
+    chart = payload.get('chart') or '<chart>'
+    lines = []
+    if payload.get('repo_name') and payload.get('repo_url'):
+        lines.append(f"helm repo add {shlex.quote(payload['repo_name'])} {shlex.quote(payload['repo_url'])}")
+        lines.append('helm repo update')
+    lines.append(
+        ' '.join([
+            'helm',
+            'upgrade',
+            '--install',
+            shlex.quote(release_name),
+            shlex.quote(chart),
+            '--namespace',
+            shlex.quote(namespace),
+            '--create-namespace',
+        ])
+    )
+    if payload.get('chart_version'):
+        lines[-1] = f"{lines[-1]} --version {shlex.quote(str(payload['chart_version']))}"
+    if payload.get('values_yaml'):
+        lines[-1] = f"{lines[-1]} -f values.yaml"
+    return '\n'.join(lines)
 
 
 def _yaml_quote(value):
@@ -7895,13 +8112,21 @@ def _select_alert_for_metric_evidence(alert_result):
         return None
     level_rank = {'critical': 0, 'warning': 1, 'info': 2}
     status_rank = {Alert.STATUS_ACTIVE: 0, Alert.STATUS_MUTED: 1, Alert.STATUS_RESOLVED: 2, Alert.STATUS_CLOSED: 3}
+
+    def alert_timestamp(alert):
+        value = _value_from_record(alert, 'last_received_at') or _value_from_record(alert, 'starts_at') or _value_from_record(alert, 'created_at')
+        if hasattr(value, 'timestamp'):
+            return value.timestamp()
+        parsed = parse_datetime(str(value or ''))
+        return parsed.timestamp() if parsed else 0
+
     return sorted(
         alerts,
         key=lambda alert: (
-            level_rank.get(alert.level, 9),
-            status_rank.get(alert.status, 9),
-            -(alert.last_received_at.timestamp() if alert.last_received_at else 0),
-            -alert.id,
+            level_rank.get(_value_from_record(alert, 'level'), 9),
+            status_rank.get(_value_from_record(alert, 'status'), 9),
+            -alert_timestamp(alert),
+            -_safe_int(_value_from_record(alert, 'id')),
         ),
     )[0]
 
@@ -7948,8 +8173,8 @@ def _run_alert_environment_analysis_evidence(session, user_message, user, questi
             'query_alert_metrics',
             {
                 'query': alert_query,
-                'alert_id': metric_alert.id,
-                'fingerprint': metric_alert.fingerprint,
+                'alert_id': _value_from_record(metric_alert, 'id'),
+                'fingerprint': _value_from_record(metric_alert, 'fingerprint'),
                 'duration_minutes': max(60, duration_minutes or 60),
                 'step': ALERT_METRIC_DEFAULT_STEP_SECONDS,
                 'budget': ALERT_METRIC_QUERY_BUDGET,
@@ -7992,7 +8217,7 @@ def _run_alert_environment_analysis_evidence(session, user_message, user, questi
             'service': service,
             'duration_minutes': duration_minutes,
             'alert_filters': alert_args,
-            'metric_alert_id': metric_alert.id if metric_alert else None,
+            'metric_alert_id': _value_from_record(metric_alert, 'id') if metric_alert else None,
             'metric_query': {
                 'called': metric_context.get('called'),
                 'planned_count': metric_context.get('planned_count'),
@@ -8064,10 +8289,13 @@ def _run_task_generation_evidence(session, user_message, user, question, scoped_
     resource_output = resources_result.get('tool_output') or {}
     resource_ids = resource_output.get('resource_ids') or (resource_output.get('summary') or {}).get('resource_ids') or []
     is_install_request = _looks_like_install_task_request(question, {})
+    is_k8s_install_request = _looks_like_k8s_install_task_request(question, {})
     is_playbook_generation_request = _looks_like_playbook_generation_request(question, {})
     task_kind = _detect_k8s_task_kind_from_request(question, {}) if is_k8s_task else ''
     if not task_kind:
-        if is_playbook_generation_request:
+        if is_k8s_install_request:
+            task_kind = 'k8s_command'
+        elif is_playbook_generation_request:
             task_kind = 'run_playbook'
         elif is_install_request or _looks_like_shell_task_request(question, {'command': shell_command}):
             task_kind = 'run_command'
@@ -8090,6 +8318,9 @@ def _run_task_generation_evidence(session, user_message, user, question, scoped_
             draft_args['software_name'] = profile.get('display') or install_target
             draft_args['package_name'] = profile.get('package') or install_target
             draft_args['service_name'] = profile.get('service') or ''
+            if is_k8s_install_request:
+                draft_args['package_name'] = install_target
+                draft_args['namespace'] = _extract_k8s_namespace(question, {}) or 'default'
     if shell_command:
         draft_args['command'] = shell_command
         draft_args['script_kind'] = 'shell'
@@ -9893,8 +10124,11 @@ def _build_pending_action_response_block(draft, pending_action=None, disabled=Fa
     status = pending_action.status if pending_action else ('disabled' if disabled else 'draft')
     status_display = pending_action.get_status_display() if pending_action else ('只分析' if disabled_by_analysis_only else ('已关闭' if disabled else '待确认'))
     disabled_summary = '当前仅分析，不会生成待执行动作。' if disabled_by_analysis_only else '管理员已关闭动作执行，当前只保留分析和任务草稿能力。'
+    is_k8s_task = draft.get('target_type') == HostTask.TARGET_K8S or str(draft.get('task_type') or '').startswith('k8s_')
+    target_label = 'K8s 目标' if is_k8s_task else '目标主机'
+    target_unit = '个' if is_k8s_task else '台'
     metrics = [
-        {'label': '目标主机', 'value': f"{draft.get('host_count') or 0} 台"},
+        {'label': target_label, 'value': f"{draft.get('host_count') or 0} {target_unit}"},
         {'label': '执行方式', 'value': draft.get('execution_mode') or '--'},
         {'label': '执行策略', 'value': draft.get('execution_strategy') or '--'},
         {'label': '超时', 'value': f"{draft.get('timeout_seconds') or '--'}s"},
@@ -9960,26 +10194,67 @@ def _collect_alert_context(collected_tool_outputs, sections):
     latest_received_at = ''
     total_count = 0
 
+    def alert_value(alert, key, default=''):
+        if isinstance(alert, dict):
+            return alert.get(key, default)
+        return getattr(alert, key, default)
+
+    def alert_level_display(alert):
+        if isinstance(alert, dict):
+            level = str(alert.get('level') or '').strip()
+            return dict(Alert.LEVEL_CHOICES).get(level, level or '-')
+        return alert.get_level_display()
+
+    def alert_status_display(alert):
+        if isinstance(alert, dict):
+            status_value = str(alert.get('status') or '').strip()
+            return dict(Alert.STATUS_CHOICES).get(status_value, status_value or '-')
+        return alert.get_status_display()
+
+    def alert_host_name(alert):
+        if isinstance(alert, dict):
+            return alert.get('host') or alert.get('host_name') or '无主机关联'
+        return alert.host.hostname if getattr(alert, 'host', None) else '无主机关联'
+
+    def alert_received_at(alert):
+        if not isinstance(alert, dict):
+            return _alert_display_time(alert)
+        return (
+            alert.get('last_received_at')
+            or alert.get('starts_at')
+            or alert.get('created_at')
+            or '-'
+        )
+
     for item in collected_tool_outputs or []:
-        if item.get('tool_name') != 'query_alerts':
+        if item.get('tool_name') not in {'query_alerts', 'query_alert_root_cause'}:
             continue
         tool_output = item.get('tool_output') or {}
         alerts = tool_output.get('alerts') or []
+        if item.get('tool_name') == 'query_alert_root_cause' and tool_output.get('alert'):
+            alerts = [tool_output.get('alert')]
         summary = tool_output.get('summary') or {}
         try:
             total_count = max(total_count, int(summary.get('count', len(alerts))))
         except (TypeError, ValueError):
             total_count = max(total_count, len(alerts))
         for alert in alerts:
-            host_name = alert.host.hostname if getattr(alert, 'host', None) else '无主机关联'
-            received_at = _alert_display_time(alert)
-            line = f'{alert.get_level_display()} / {alert.title} / {alert.source} / {host_name} / {alert.get_status_display()} / {received_at}'
+            host_name = alert_host_name(alert)
+            received_at = alert_received_at(alert)
+            title = alert_value(alert, 'title') or '-'
+            source = alert_value(alert, 'source') or '-'
+            status_value = alert_value(alert, 'status') or ''
+            level = alert_value(alert, 'level') or ''
+            alert_id = alert_value(alert, 'id') or ''
+            line = f'{alert_level_display(alert)} / {title} / {source} / {host_name} / {alert_status_display(alert)} / {received_at}'
+            if alert_id:
+                line = f'告警ID {alert_id} / {line}'
             entries.append(line)
-            sources[alert.source] += 1
+            sources[source] += 1
             hosts[host_name] += 1
-            title_counter[alert.title] += 1
-            statuses[alert.status] += 1
-            levels[alert.level] += 1
+            title_counter[title] += 1
+            statuses[status_value] += 1
+            levels[level] += 1
             if received_at and received_at != '-' and (not latest_received_at or received_at > latest_received_at):
                 latest_received_at = received_at
 
@@ -9997,6 +10272,8 @@ def _collect_alert_context(collected_tool_outputs, sections):
             total_count = len(entries)
             for line in entries:
                 parts = [item.strip() for item in line.split('/')]
+                if parts and parts[0].startswith('告警ID '):
+                    parts = parts[1:]
                 if len(parts) >= 4:
                     title_counter[parts[1]] += 1
                     sources[parts[2]] += 1
@@ -10184,6 +10461,35 @@ def _extract_log_message_text(message):
     return raw
 
 
+def _value_from_record(record, key, default=''):
+    if isinstance(record, dict):
+        return record.get(key, default)
+    return getattr(record, key, default)
+
+
+def _record_display_value(record, method_name, fallback_key, default=''):
+    if isinstance(record, dict):
+        return record.get(fallback_key, default)
+    method = getattr(record, method_name, None)
+    if callable(method):
+        return method()
+    return getattr(record, fallback_key, default)
+
+
+def _log_to_sample_dict(item):
+    if isinstance(item, dict):
+        return item
+    host = getattr(item, 'host', None)
+    return {
+        'timestamp': timezone.localtime(item.timestamp).strftime('%Y-%m-%d %H:%M:%S') if getattr(item, 'timestamp', None) else '',
+        'level': getattr(item, 'level', ''),
+        'source': getattr(host, 'hostname', '') or 'local_log_entry',
+        'service': getattr(item, 'service', ''),
+        'message': getattr(item, 'message', ''),
+        'attributes': getattr(item, 'attributes', {}) if isinstance(getattr(item, 'attributes', {}), dict) else {},
+    }
+
+
 def _normalize_log_message_pattern(message):
     text = _extract_log_message_text(message)
     if not text:
@@ -10231,8 +10537,7 @@ def _collect_log_context(collected_tool_outputs):
             if not context['query'] and isinstance(datasource, dict):
                 context['query'] = datasource.get('query') or ''
         for log_item in logs[:10]:
-            if not isinstance(log_item, dict):
-                continue
+            log_item = _log_to_sample_dict(log_item)
             sample = _compact_log_sample(log_item, max_message_length=500)
             context['samples'].append(sample)
             level = str(sample.get('level') or '').upper()
@@ -10340,6 +10645,13 @@ def _should_prefer_structured_alert_answer(content, structured_answer, collected
 
 
 def _build_fallback_answer(sections, citations, pending_action_draft=None, question='', collected_tool_outputs=None):
+    if any(item.get('tool_name') == 'query_alert_root_cause' for item in collected_tool_outputs or []):
+        return build_markdown_answer(
+            '告警根因分析',
+            sections,
+            citations,
+            intro='已查询告警中心并关联环境证据，以下结论仅基于当前平台证据。',
+        )
     structured_alert_answer = _build_alert_structured_answer(question, sections, citations, collected_tool_outputs or [])
     if structured_alert_answer and any(keyword in str(question or '').lower() for keyword in ['告警', 'alert', 'alerts']):
         return structured_alert_answer
@@ -10397,7 +10709,7 @@ def _formatter_template_for_profile(profile):
             '结论：',
             '明确当前是任务草稿、待确认创建，还是已在任务中心创建待执行任务。',
             '执行概要：',
-            '列出目标主机、任务类型、执行方式、风险等级。',
+            '列出目标范围、任务类型、执行方式、风险等级；K8s 任务必须写“K8s 目标”，不要写“目标主机”。',
             '下一步：',
             '说明用户接下来要确认、查看或执行什么。',
             '可继续查看：',
@@ -10499,6 +10811,7 @@ def _build_formatter_fact_digest(collected_tool_outputs, citations=None, pending
             level_counter = Counter()
             message_terms = []
             for log_item in logs[:8]:
+                log_item = _log_to_sample_dict(log_item)
                 attrs = log_item.get('attributes') if isinstance(log_item.get('attributes'), dict) else {}
                 level = attrs.get('detected_level') or attrs.get('level') or log_item.get('level') or ''
                 if level:
@@ -10521,11 +10834,23 @@ def _build_formatter_fact_digest(collected_tool_outputs, citations=None, pending
             labels = [f"{resource.get('name')}({resource.get('ip_address') or '-'})" for resource in resources[:3]]
             lines.append(f"- 资源底座目标：{'、'.join(labels)}")
     if pending_action_draft:
-        target_hosts = pending_action_draft.get('target_hosts') or []
-        lines.append(f"- 任务事实：目标主机 {pending_action_draft.get('host_count') or len(target_hosts)} 台，任务类型 {pending_action_draft.get('task_type') or '未说明'}。")
-        if target_hosts:
-            host_labels = [f"{item.get('hostname')}({item.get('ip_address')})" for item in target_hosts[:3]]
-            lines.append(f"- 任务目标：{'、'.join(host_labels)}")
+        is_k8s_task = (
+            pending_action_draft.get('target_type') == HostTask.TARGET_K8S
+            or str(pending_action_draft.get('task_type') or '').startswith('k8s_')
+        )
+        targets = pending_action_draft.get('k8s_targets') or pending_action_draft.get('target_hosts') or []
+        target_label = 'K8s 目标' if is_k8s_task else '目标主机'
+        target_unit = '个' if is_k8s_task else '台'
+        lines.append(f"- 任务事实：{target_label} {pending_action_draft.get('host_count') or len(targets)} {target_unit}，任务类型 {pending_action_draft.get('task_type') or '未说明'}。")
+        if targets:
+            if is_k8s_task:
+                target_labels = [
+                    f"{item.get('cluster_name') or item.get('resource_name') or item.get('cluster_id')} / {item.get('namespace') or '-'} / {item.get('kind') or '-'} / {item.get('name') or '-'}"
+                    for item in targets[:3]
+                ]
+            else:
+                target_labels = [f"{item.get('hostname')}({item.get('ip_address')})" for item in targets[:3]]
+            lines.append(f"- 任务目标：{'、'.join(target_labels)}")
     if citations:
         lines.append(f"- 相关入口：{'、'.join(item.get('title') for item in _dedupe_citations(citations)[:4] if item.get('title'))}")
     return '\n'.join(lines) if lines else '- 当前没有额外摘要，请严格依据事实对象输出。'
@@ -11372,6 +11697,7 @@ def _looks_like_k8s_task_request(text, draft_request=None):
         _looks_like_k8s_service_patch_request(text, draft_request)
         or _looks_like_k8s_scale_request(text, draft_request)
         or _looks_like_k8s_restart_pod_request(text, draft_request)
+        or _looks_like_k8s_install_task_request(text, draft_request)
     )
 
 
@@ -11385,6 +11711,8 @@ def _detect_k8s_task_kind_from_request(text='', draft_request=None):
     if _looks_like_k8s_restart_pod_request(text, draft_request):
         return HostTask.TASK_K8S_RESTART_POD
     if _looks_like_k8s_service_patch_request(text, draft_request):
+        return HostTask.TASK_K8S_POD_EXEC
+    if _looks_like_k8s_install_task_request(text, draft_request):
         return HostTask.TASK_K8S_POD_EXEC
     return ''
 
@@ -11865,6 +12193,128 @@ def _build_k8s_service_patch_draft(user, question='', draft_request=None):
     })
 
 
+def _build_k8s_install_draft(user, question='', draft_request=None):
+    draft_request = draft_request or {}
+    if not user_has_permissions(user, ['ops.k8s.view']):
+        return {'error': '当前账号无权生成 K8s 任务草稿。'}
+    install_target = _extract_install_target_from_request(question, draft_request)
+    if not install_target:
+        return {'error': '未识别到需要部署的软件名称，请补充例如 Redis、Nginx 或具体镜像名称。'}
+    environment = draft_request.get('environment') or _resource_environment_name_from_text(question)
+    max_targets = draft_request.get('max_hosts') or draft_request.get('max_targets') or 20
+    namespace = _extract_k8s_namespace(question, draft_request) or draft_request.get('namespace') or 'default'
+    k8s_sources, knowledge_environment = _resolve_k8s_task_resource_targets(
+        question=question,
+        environment=environment,
+        draft_request=draft_request,
+        max_targets=max_targets,
+    )
+    if not k8s_sources:
+        return {'error': '未识别到目标 K8s 集群，请在问题中指定集群或先配置任务中心 K8s 资源底座。'}
+    profile = _k8s_install_profile_for_target(install_target)
+    app_name = _safe_k8s_name(draft_request.get('app_name') or draft_request.get('name') or install_target)
+    is_helm_request = _looks_like_helm_install_task_request(question, draft_request)
+    if is_helm_request:
+        chart = _extract_helm_chart_from_request(question, draft_request)
+        repo_name, repo_url = _extract_helm_repo_from_request(question, draft_request)
+        release_name = _safe_k8s_name(draft_request.get('release_name') or draft_request.get('app_name') or draft_request.get('name') or install_target)
+        payload = {
+            'command': '',
+            'resource_kind': 'helm_release',
+            'namespace': namespace,
+            'workload_type': 'helm_release',
+            'workload_name': release_name,
+            'app_name': release_name,
+            'release_name': release_name,
+            'chart': chart,
+            'repo_name': repo_name,
+            'repo_url': repo_url,
+            'chart_version': draft_request.get('chart_version') or draft_request.get('version') or '',
+            'values_yaml': draft_request.get('values_yaml') or draft_request.get('values') or '',
+            'script_purpose': 'install',
+            'software_name': profile.get('display') or install_target,
+            'package_name': install_target,
+            'deployment_strategy': 'helm',
+            'documentation_required': not bool(chart),
+            'documentation_hint': '该软件按 Helm 部署处理；请先查阅官方 Helm Chart/repo/values 文档，补齐 chart/repo/values 后再确认执行。',
+            'execution_prerequisite': '后端执行环境必须安装 helm 客户端，并能通过集群 kubeconfig 访问目标 K8s 集群。',
+        }
+        payload['command'] = _build_helm_install_command(payload)
+        k8s_targets = _build_k8s_target_items(k8s_sources, namespace=namespace, name=release_name, kind='helm_release')
+        request_summary = (draft_request.get('request_summary') or question or '').strip()
+        return _ensure_task_draft_title({
+            'name': f"Helm 部署 {payload['software_name']}",
+            'description': '由 AIOps 智能助手生成的 Helm/K8s 安装部署任务草稿',
+            'target_type': HostTask.TARGET_K8S,
+            'task_type': HostTask.TASK_K8S_POD_EXEC,
+            'payload': payload,
+            'host_ids': [],
+            'resource_ids': [item.id for item in k8s_sources if isinstance(item, TaskResource)],
+            'target_refs': [],
+            'target_hosts': _build_k8s_target_snapshot_for_draft(k8s_targets),
+            'k8s_targets': k8s_targets,
+            'execution_mode': HostTask.EXECUTION_MODE_K8S_API,
+            'execution_strategy': HostTask.STRATEGY_STOP_ON_ERROR,
+            'timeout_seconds': draft_request.get('timeout_seconds') or 300,
+            'host_count': len(k8s_targets),
+            'risk_level': AIOpsPendingAction.RISK_HIGH,
+            'request_summary': request_summary,
+            'reason': '用户明确指定 Helm 部署，已生成 Helm release 任务草稿；执行时通过 Helm 客户端访问 K8s API，不退化为宿主机安装脚本。',
+            'knowledge_environment': (knowledge_environment or {}).get('name'),
+        })
+    manifest = (
+        draft_request.get('manifest')
+        or draft_request.get('k8s_manifest')
+        or draft_request.get('yaml')
+        or _build_k8s_install_manifest(install_target, namespace=namespace, draft_request=draft_request)
+    )
+    command = draft_request.get('command') or (
+        "kubectl apply -f - <<'EOF'\n"
+        f"{manifest}\n"
+        "EOF\n"
+        f"kubectl rollout status deployment/{shlex.quote(app_name)} -n {shlex.quote(namespace)} --timeout=120s\n"
+        f"kubectl get deploy,svc -n {shlex.quote(namespace)} -l app.kubernetes.io/instance={shlex.quote(app_name)}"
+    )
+    k8s_targets = _build_k8s_target_items(k8s_sources, namespace=namespace, name=app_name, kind='deployment')
+    request_summary = (draft_request.get('request_summary') or question or '').strip()
+    payload = {
+        'command': command,
+        'resource_kind': 'deployment',
+        'namespace': namespace,
+        'workload_type': 'deployment',
+        'workload_name': app_name,
+        'app_name': app_name,
+        'manifest': manifest,
+        'script_purpose': 'install',
+        'software_name': profile.get('display') or install_target,
+        'package_name': install_target,
+        'image': draft_request.get('image') or draft_request.get('container_image') or profile.get('image'),
+        'deployment_strategy': 'k8s_manifest',
+        'documentation_required': install_target not in INSTALL_TARGET_PROFILES,
+        'documentation_hint': '如需生产级参数，请先联网查阅该软件官方 Kubernetes/Helm 部署文档后再确认执行。',
+    }
+    return _ensure_task_draft_title({
+        'name': f"K8s 部署 {payload['software_name']}",
+        'description': '由 AIOps 智能助手生成的 K8s 安装部署任务草稿',
+        'target_type': HostTask.TARGET_K8S,
+        'task_type': HostTask.TASK_K8S_POD_EXEC,
+        'payload': payload,
+        'host_ids': [],
+        'resource_ids': [item.id for item in k8s_sources if isinstance(item, TaskResource)],
+        'target_refs': [],
+        'target_hosts': _build_k8s_target_snapshot_for_draft(k8s_targets),
+        'k8s_targets': k8s_targets,
+        'execution_mode': HostTask.EXECUTION_MODE_K8S_API,
+        'execution_strategy': HostTask.STRATEGY_STOP_ON_ERROR,
+        'timeout_seconds': draft_request.get('timeout_seconds') or 180,
+        'host_count': len(k8s_targets),
+        'risk_level': AIOpsPendingAction.RISK_HIGH,
+        'request_summary': request_summary,
+        'reason': '用户明确指定 K8s 部署，已生成 Kubernetes manifest / kubectl apply 类型任务，避免退化为宿主机安装脚本。',
+        'knowledge_environment': (knowledge_environment or {}).get('name'),
+    })
+
+
 def _build_k8s_scale_workload_draft(user, question='', draft_request=None):
     draft_request = draft_request or {}
     if not user_has_permissions(user, ['ops.k8s.view']):
@@ -11977,6 +12427,8 @@ def build_task_draft(user, question='', draft_request=None):
     question = draft_request.get('request_summary') or question
     if _looks_like_k8s_service_patch_request(question, draft_request):
         return _build_k8s_service_patch_draft(user, question=question, draft_request=draft_request)
+    if _looks_like_k8s_install_task_request(question, draft_request):
+        return _build_k8s_install_draft(user, question=question, draft_request=draft_request)
     if _looks_like_k8s_scale_request(question, draft_request):
         return _build_k8s_scale_workload_draft(user, question=question, draft_request=draft_request)
     if _looks_like_k8s_restart_pod_request(question, draft_request):
@@ -14069,7 +14521,8 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         '知识图谱里的“图谱展示命名空间”只控制拓扑图展示，不限制 query_k8s_resources 或 query_k8s_cluster_summary；只读 K8s 查询默认允许查询全部命名空间，用户显式指定命名空间时才按命名空间收窄。',
         'K8s 写操作（Service 修改、NodePort/LoadBalancer/端口调整、Pod 重启、Deployment/StatefulSet 伸缩）应生成 K8s API 类型任务草稿；不要因为 query_k8s_resources 没查到目标 Service/Pod/Deployment 就拒绝生成草稿。',
         'K8s 写操作如果用户没有明确命名空间，且无法从参数中确定目标命名空间，必须提醒用户先补充命名空间，不能默认使用 default。',
-        '安装、部署、初始化软件或中间件时，不要退化成 service_status 服务状态检查；默认调用 generate_host_task 并使用 task_kind=run_command 生成 Shell 安装脚本。如果用户明确要求 Ansible/Playbook，则使用 task_kind=run_playbook 并生成 playbook_content。',
+        '安装、部署、初始化软件或中间件时，不要退化成 service_status 服务状态检查；如果用户明确说明 K8s/Kubernetes/集群/命名空间/Deployment/Helm/kubectl 部署，必须调用 generate_host_task 并使用 task_kind=k8s_command 生成 Kubernetes manifest、kubectl apply 或 Helm 风格 K8s 草稿，不能生成宿主机 yum/apt/systemctl 脚本。',
+        'K8s 安装部署类请求如果不确定软件的生产级参数，应在草稿中标记需查阅官方 Kubernetes/Helm 文档并生成可编辑 K8s 清单草稿；不要因此退回主机安装脚本。非 K8s 安装才默认 task_kind=run_command 生成 Shell 安装脚本；用户明确要求 Ansible/Playbook 时使用 task_kind=run_playbook。',
         '安装脚本草稿应包含包管理器探测、幂等安装、服务启动/enable（如适用）和安装后验证；如果模型不确定包名，应生成可编辑草稿并说明需要人工确认，而不是只检查服务状态。',
         '只要已经调用 generate_host_task，就要在最终回答里明确说明：是生成任务草稿，还是已经在任务中心创建真实任务。',
         '工具选择示例：',
@@ -14082,7 +14535,8 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         '- “某环境的系统、服务、依赖、上下游或资源关联是什么” => 调用 query_knowledge_graph，并设置 environment、system_name 或 service。',
         '- “app-prod-k8s集群有没有异常的pod” => 调用 query_k8s_cluster_summary，并传 cluster_name=app-prod-k8s。',
         '- “生成一份 Redis 巡检任务” => 调用 generate_host_task，而不是只做查询。',
-        '- “帮我在电商测试环境安装 Redis” => 先 query_task_resources 获取目标资源，再调用 generate_host_task，task_kind=run_command；不要生成 service_status。',
+        '- “帮我在电商测试环境安装 Redis” => 如果未提 K8s，先 query_task_resources 获取主机资源，再调用 generate_host_task，task_kind=run_command；不要生成 service_status。',
+        '- “帮我在电商测试环境 K8s 集群部署 Redis / 在 production 命名空间安装 Redis” => 先 query_task_resources(resource_type=k8s)，再调用 generate_host_task，task_kind=k8s_command，script_purpose=install，namespace=production，software_name=Redis；生成 Kubernetes manifest/kubectl apply 草稿，不能生成宿主机安装脚本。',
         '- “生成 Ansible Playbook 安装 nginx” => 调用 generate_host_task，task_kind=run_playbook，填写 playbook_content；不要只生成 nginx 状态检查。',
         '- “修改 monitoring 命名空间下的 svc kube-prome type 为 NodePort” => 先用 query_task_resources(resource_type=k8s) 查任务资源底座，再调用 generate_host_task，task_kind=k8s_command，namespace=monitoring，service_name=kube-prome，patch={"spec":{"type":"NodePort"}}；系统会生成通用 K8s 命令任务并通过 K8s API 执行 kubectl patch。',
         '- “把 monitoring 下 deployment checkout 扩到 3 个副本 / 重启 monitoring 下 pod api-xxx” => 先查 query_task_resources(resource_type=k8s)，再调用 generate_host_task 生成 k8s_scale_workload 或 k8s_restart_pod 草稿；query_k8s_resources 不是前置条件。',
@@ -14283,13 +14737,13 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
             'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'status': {'type': 'string', 'enum': ['pending', 'running', 'success', 'partial', 'failed', 'canceled']}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
         },
         'generate_host_task': {
-            'description': '生成任务中心待执行任务草稿；当用户明确要求生成、创建、新建巡检任务、运维任务、安装/部署软件脚本或 K8s 修改/重启/伸缩任务时必须调用。安装/部署/初始化软件不要生成 service_status，应默认 task_kind=run_command 并提供 Shell 安装脚本；用户明确要求 Ansible/Playbook 时使用 task_kind=run_playbook 并提供 playbook_content。任务目标来自任务中心资源底座 query_task_resources，知识图谱只做环境辅助识别。K8s 资源修改统一生成 K8s API 类型任务；Service 修改可提供 namespace、service_name 和 patch，系统会生成 kubectl patch 命令并通过 K8s API 执行。不要因实时 query_k8s_resources 未查到目标对象而拒绝生成草稿；如果 K8s 写任务缺少 namespace 且无法明确判断，应提示用户补充命名空间。',
+            'description': '生成任务中心待执行任务草稿；当用户明确要求生成、创建、新建巡检任务、运维任务、安装/部署软件脚本或 K8s 修改/重启/伸缩任务时必须调用。安装/部署/初始化软件不要生成 service_status；用户明确说明 K8s/Kubernetes/集群/命名空间/Deployment/Helm/kubectl 部署时，必须 task_kind=k8s_command 并生成 Kubernetes manifest/kubectl apply/Helm 风格 K8s 草稿，不能生成宿主机 yum/apt/systemctl 脚本。不确定具体软件的 K8s 参数时，在草稿中提示需查阅官方 Kubernetes/Helm 文档并生成可编辑清单。非 K8s 安装才默认 task_kind=run_command；用户明确要求 Ansible/Playbook 时使用 task_kind=run_playbook。任务目标来自任务中心资源底座 query_task_resources，知识图谱只做环境辅助识别。K8s 资源修改统一生成 K8s API 类型任务；Service 修改可提供 namespace、service_name 和 patch，系统会生成 kubectl patch 命令并通过 K8s API 执行。',
             'parameters': {
                 'type': 'object',
                 'required': ['request_summary'],
                 'properties': {
                     'request_summary': {'type': 'string', 'description': '原始任务诉求，例如“生成一份 Redis 巡检任务”或“修改 monitoring 命名空间 kube-prome Service type 为 NodePort”。'},
-                    'task_kind': {'type': 'string', 'enum': ['refresh_metrics', 'service_status', 'run_command', 'check_connection', 'run_playbook', 'k8s_command', 'k8s_scale_workload', 'k8s_restart_pod'], 'description': '任务类型。安装/部署/初始化软件默认填 run_command；用户明确要求 Ansible 或 Playbook 时填 run_playbook；只有纯状态巡检才填 service_status。'},
+                    'task_kind': {'type': 'string', 'enum': ['refresh_metrics', 'service_status', 'run_command', 'check_connection', 'run_playbook', 'k8s_command', 'k8s_scale_workload', 'k8s_restart_pod'], 'description': '任务类型。K8s/Kubernetes/集群/命名空间/Deployment/Helm/kubectl 安装部署必须填 k8s_command；非 K8s 安装才填 run_command；用户明确要求 Ansible 或 Playbook 时填 run_playbook；只有纯状态巡检才填 service_status。'},
                     'environment': {'type': 'string', 'enum': ['prod', 'test', 'dev']},
                     'target_status': {'type': 'string', 'enum': ['all', 'offline']},
                     'service_name': {'type': 'string'},
@@ -14306,14 +14760,16 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
                     'labels': {'type': 'object', 'description': '要写入 metadata.labels 的键值对。'},
                     'annotations': {'type': 'object', 'description': '要写入 metadata.annotations 的键值对。'},
                     'selector': {'type': 'object', 'description': '要写入 spec.selector 的键值对。'},
-                    'command': {'type': 'string', 'description': 'Shell 或 kubectl 命令内容；Shell 脚本任务必须填写，系统会保存到 payload.command。'},
+                    'command': {'type': 'string', 'description': 'Shell 或 kubectl 命令内容；K8s 安装部署使用 kubectl apply/helm/kubectl 命令，非 K8s Shell 脚本任务保存为 payload.command。'},
                     'script': {'type': 'string', 'description': 'Shell 脚本内容，command 的兼容别名。'},
                     'shell_script': {'type': 'string', 'description': 'Shell 脚本内容，command 的兼容别名。'},
                     'script_content': {'type': 'string', 'description': '脚本正文，command 的兼容别名。'},
                     'commands': {'type': 'array', 'items': {'type': 'string'}, 'description': '多行命令列表，系统会合并为 Shell 脚本内容。'},
                     'script_kind': {'type': 'string', 'enum': ['shell', 'python'], 'description': '主机命令脚本类型，默认 shell。'},
                     'playbook_content': {'type': 'string', 'description': 'Ansible Playbook 正文。task_kind=run_playbook 时应填写，安装类 Playbook 应包含包安装、服务启动和验证步骤。'},
-                    'software_name': {'type': 'string', 'description': '安装/部署目标软件名称，例如 Redis、Nginx、Docker。'},
+                    'software_name': {'type': 'string', 'description': '安装/部署目标软件名称，例如 Redis、Nginx、Docker；K8s 安装部署也必须填写。'},
+                    'image': {'type': 'string', 'description': 'K8s 安装部署可选镜像，例如 redis:7-alpine；不确定时可留空由后端生成可编辑清单。'},
+                    'manifest': {'type': 'string', 'description': 'K8s YAML manifest；K8s 安装部署可填写，未填写时后端生成可编辑 Deployment/Service 清单。'},
                     'package_name': {'type': 'string', 'description': '安装包名称；不确定时可留空，由后端按常见软件名生成可编辑脚本草稿。'},
                     'script_purpose': {'type': 'string', 'enum': ['install', 'maintenance', 'inspection'], 'description': '脚本用途；安装/部署类脚本填 install。'},
                     'target_host_ids': {'type': 'array', 'items': {'type': 'integer'}},

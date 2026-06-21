@@ -551,6 +551,70 @@ class HostTaskApiTests(TestCase):
         self.assertEqual(payload['executions'][0]['target_kind'], 'cluster')
         self.assertEqual(payload['executions'][0]['target_name'], cluster.name)
 
+    def test_k8s_helm_release_runs_as_helm_command_not_kubectl(self):
+        cluster = K8sCluster.objects.create(name='demo-k8s-helm', kubeconfig='demo', status='connected')
+
+        response = self.client.post(
+            '/api/host-tasks/',
+            {
+                'name': 'helm-redis-release',
+                'target_type': HostTask.TARGET_K8S,
+                'task_type': HostTask.TASK_K8S_POD_EXEC,
+                'k8s_targets': [
+                    {
+                        'cluster_id': cluster.id,
+                        'namespace': 'production',
+                        'name': 'redis',
+                        'kind': 'helm_release',
+                    },
+                ],
+                'payload': {
+                    'deployment_strategy': 'helm',
+                    'resource_kind': 'helm_release',
+                    'release_name': 'redis',
+                    'chart': 'bitnami/redis',
+                    'namespace': 'production',
+                    'command': 'helm upgrade --install redis bitnami/redis --namespace production --create-namespace',
+                },
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload['status'], HostTask.STATUS_SUCCESS)
+        execution = payload['executions'][0]
+        self.assertEqual(execution['target_kind'], 'helm_release')
+        self.assertEqual(execution['command'], 'helm upgrade --install redis bitnami/redis --namespace production --create-namespace')
+        self.assertNotIn('kubectl helm', execution['command'])
+        self.assertIn('Helm release redis', execution['output'])
+
+    @patch('ops.host_tasks.shutil.which', return_value=None)
+    def test_k8s_helm_release_requires_helm_client_for_real_cluster(self, _mock_which):
+        cluster = K8sCluster.objects.create(name='real-k8s-helm', kubeconfig='apiVersion: v1\nclusters: []\n', status='connected')
+        task = HostTask.objects.create(
+            name='helm-real-release',
+            target_type=HostTask.TARGET_K8S,
+            task_type=HostTask.TASK_K8S_POD_EXEC,
+            execution_mode=HostTask.EXECUTION_MODE_K8S_API,
+            payload={
+                'deployment_strategy': 'helm',
+                'resource_kind': 'helm_release',
+                'release_name': 'redis',
+                'chart': 'bitnami/redis',
+                'namespace': 'production',
+                'command': 'helm upgrade --install redis bitnami/redis --namespace production --create-namespace',
+            },
+        )
+
+        execute_k8s_task(task, [{'cluster_id': cluster.id, 'namespace': 'production', 'name': 'redis', 'kind': 'helm_release'}])
+        task.refresh_from_db()
+        execution = task.executions.first()
+
+        self.assertEqual(task.status, HostTask.STATUS_FAILED)
+        self.assertEqual(execution.command, 'helm upgrade --install redis bitnami/redis --namespace production --create-namespace')
+        self.assertIn('未安装 Helm 客户端', execution.error_message)
+
     def test_k8s_service_patch_runs_as_generic_k8s_command(self):
         cluster = K8sCluster.objects.create(name='demo-k8s-service-patch', kubeconfig='demo', status='connected')
 

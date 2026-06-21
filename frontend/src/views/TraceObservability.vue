@@ -2321,7 +2321,7 @@ onUnmounted(() => {
 }
 
 .observability-page.is-embedded .topology-layout {
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) 260px;
 }
 
 .observability-page.is-embedded .topology-chart,

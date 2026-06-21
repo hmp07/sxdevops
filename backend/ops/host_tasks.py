@@ -861,6 +861,127 @@ def _run_k8s_cluster_command(task, cluster):
             pass
 
 
+def _is_helm_deployment_payload(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    strategy = str(payload.get('deployment_strategy') or payload.get('strategy') or '').strip().lower()
+    command = str(payload.get('command') or '').strip().lower()
+    return strategy == 'helm' or command.startswith('helm ')
+
+
+def _helm_release_name(payload):
+    return str(payload.get('release_name') or payload.get('app_name') or payload.get('workload_name') or '').strip()
+
+
+def _helm_command_text(payload, kubeconfig_path=''):
+    payload = payload if isinstance(payload, dict) else {}
+    namespace = str(payload.get('namespace') or 'default').strip() or 'default'
+    release_name = _helm_release_name(payload) or '<release>'
+    chart = str(payload.get('chart') or payload.get('chart_ref') or payload.get('helm_chart') or '<chart>').strip()
+    args = ['helm', 'upgrade', '--install', release_name, chart, '--namespace', namespace, '--create-namespace']
+    if kubeconfig_path:
+        args.extend(['--kubeconfig', kubeconfig_path])
+    version = str(payload.get('chart_version') or payload.get('version') or '').strip()
+    if version:
+        args.extend(['--version', version])
+    values_path = str(payload.get('values_file') or '').strip()
+    if values_path:
+        args.extend(['-f', values_path])
+    for item in payload.get('set_values') or []:
+        if item:
+            args.extend(['--set', str(item)])
+    return ' '.join(shlex.quote(item) for item in args)
+
+
+def _run_k8s_helm_release(task, cluster):
+    from . import k8s_views
+
+    payload = task.payload or {}
+    namespace = str(payload.get('namespace') or 'default').strip() or 'default'
+    release_name = _helm_release_name(payload)
+    chart = str(payload.get('chart') or payload.get('chart_ref') or payload.get('helm_chart') or '').strip()
+    if not release_name:
+        raise RuntimeError('缺少 Helm release_name，请先补充 Release 名称。')
+    if not chart:
+        raise RuntimeError('缺少 Helm chart，请先查阅软件官方 Helm 文档并补充 chart/repo/values 后再执行。')
+
+    rendered_command = _helm_command_text(payload)
+    if k8s_views._is_demo(cluster):
+        return '\n'.join([
+            f'$ {rendered_command}',
+            f'Helm release {release_name} 已部署到 {cluster.name}/{namespace} [演示模式]',
+        ])
+
+    helm_bin = shutil.which('helm')
+    if not helm_bin:
+        raise RuntimeError('当前执行器未安装 Helm 客户端，无法执行 Helm 部署。请先在后端执行环境安装 helm，或改用 manifest/kubectl 路径。')
+
+    from .k8s_views import _prepare_kubeconfig
+
+    temp_paths = []
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8') as tmp:
+        tmp.write(_prepare_kubeconfig(cluster))
+        kubeconfig_path = tmp.name
+    temp_paths.append(kubeconfig_path)
+    try:
+        repo_name = str(payload.get('repo_name') or payload.get('helm_repo_name') or '').strip()
+        repo_url = str(payload.get('repo_url') or payload.get('helm_repo_url') or '').strip()
+        if repo_name and repo_url:
+            repo_process = subprocess.run(
+                [helm_bin, 'repo', 'add', repo_name, repo_url],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=max(int(task.timeout_seconds or 30), 10),
+            )
+            if repo_process.returncode != 0:
+                raise RuntimeError((repo_process.stderr or repo_process.stdout or '').strip() or 'helm repo add failed')
+            update_process = subprocess.run(
+                [helm_bin, 'repo', 'update'],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=max(int(task.timeout_seconds or 30), 10),
+            )
+            if update_process.returncode != 0:
+                raise RuntimeError((update_process.stderr or update_process.stdout or '').strip() or 'helm repo update failed')
+
+        args = [helm_bin, 'upgrade', '--install', release_name, chart, '--namespace', namespace, '--create-namespace', '--kubeconfig', kubeconfig_path]
+        version = str(payload.get('chart_version') or payload.get('version') or '').strip()
+        if version:
+            args.extend(['--version', version])
+        values_yaml = str(payload.get('values_yaml') or payload.get('values') or '').strip()
+        if values_yaml:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.values.yaml', delete=False, encoding='utf-8') as values_file:
+                values_file.write(values_yaml)
+                values_path = values_file.name
+            temp_paths.append(values_path)
+            args.extend(['-f', values_path])
+        for item in payload.get('set_values') or []:
+            if item:
+                args.extend(['--set', str(item)])
+        process = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=max(int(task.timeout_seconds or 180), 30),
+        )
+        output = (process.stdout or '').strip()
+        error_output = (process.stderr or '').strip()
+        if process.returncode != 0:
+            raise RuntimeError(error_output or output or f'helm exited with code {process.returncode}')
+        return output or error_output or f'Helm release {release_name} 部署完成'
+    finally:
+        for path in temp_paths:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
 def _create_k8s_execution(task, target, status_value, command, output='', error_message='', started_at=None, finished_at=None):
     started_at = started_at or timezone.now()
     finished_at = finished_at or timezone.now()
@@ -993,6 +1114,8 @@ def _run_k8s_pod_exec(task, cluster, target):
 
     payload = task.payload or {}
     command = payload.get('command') or 'pwd'
+    if _is_helm_deployment_payload(payload):
+        return _run_k8s_helm_release(task, cluster)
     if (payload.get('resource_kind') or target.get('kind') or '').lower() == 'service' and payload.get('patch'):
         return _run_k8s_service_patch(task, cluster, target)
     if str(command).strip().startswith('kubectl') or (payload.get('resource_kind') or target.get('kind') or '').lower() not in ('', 'pod'):
@@ -1072,6 +1195,8 @@ def _k8s_command_text(task, target):
     if task.task_type == HostTask.TASK_K8S_RESTART_POD:
         return f"kubectl delete pod {target.get('name')} -n {target.get('namespace') or 'default'}"
     if task.task_type == HostTask.TASK_K8S_POD_EXEC:
+        if _is_helm_deployment_payload(payload):
+            return _helm_command_text(payload)
         command = str(payload.get('command') or '').strip()
         target_kind = (payload.get('resource_kind') or target.get('kind') or '').lower()
         if not (target.get('name') or '').strip() or command.startswith('kubectl') or target_kind not in ('', 'pod'):
