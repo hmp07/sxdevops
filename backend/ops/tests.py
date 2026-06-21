@@ -3435,6 +3435,65 @@ class ContainerManagementTests(TestCase):
         self.assertEqual(payload['pods_total'], 10)
         self.assertIn('cached snapshot', payload['alerts'][0]['message'])
 
+    @patch('ops.k8s_views._build_live_summary')
+    def test_k8s_summary_does_not_cache_unreliable_zero_snapshot(self, mock_build_live_summary):
+        cluster = K8sCluster.objects.create(
+            name='summary-zero-degraded-k8s',
+            kubeconfig='apiVersion: v1\nkind: Config\nclusters: []\ncontexts: []\n',
+            status='connected',
+        )
+        cached_summary = {
+            'cluster_name': cluster.name,
+            'status': 'connected',
+            'nodes_total': 2,
+            'nodes_ready': 2,
+            'pods_total': 8,
+            'pods_abnormal': 1,
+            'pods_restarting': 1,
+            'total_restarts': 3,
+            'services_total': 4,
+            'ingresses_total': 1,
+            'workloads_total': 5,
+            'workloads_degraded': 0,
+            'pvcs_total': 2,
+            'pvcs_pending': 0,
+            'configmaps_total': 5,
+            'secrets_total': 4,
+            'alerts': [{'level': 'success', 'message': 'cached'}],
+        }
+        mock_build_live_summary.return_value = {
+            'cluster_name': cluster.name,
+            'status': 'connected',
+            'namespaces_total': 0,
+            'nodes_total': 0,
+            'nodes_ready': 0,
+            'pods_total': 0,
+            'pods_abnormal': 0,
+            'pods_restarting': 0,
+            'total_restarts': 0,
+            'services_total': 0,
+            'ingresses_total': 0,
+            'workloads_total': 0,
+            'workloads_degraded': 0,
+            'pvcs_total': 0,
+            'pvcs_pending': 0,
+            'configmaps_total': 0,
+            'secrets_total': 0,
+            'degraded': True,
+            'unavailable_resources': ['pods', 'deployments'],
+            'alerts': [{'level': 'warning', 'message': 'partial collection failed'}],
+        }
+        cache.set(_summary_stale_cache_key(cluster.id), cached_summary, 300)
+
+        response = self.client.get(f'/api/k8s/clusters/{cluster.id}/summary/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['degraded'])
+        self.assertEqual(payload['pods_total'], 8)
+        self.assertEqual(payload['workloads_total'], 5)
+        self.assertIn('cached snapshot', payload['alerts'][0]['message'])
+
     @patch('ops.k8s_views._get_k8s_client')
     def test_k8s_pod_logs_degrade_to_empty_payload_on_timeout(self, mock_get_client):
         cluster = K8sCluster.objects.create(

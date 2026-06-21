@@ -1003,6 +1003,15 @@ function createEmptySummary() {
 }
 
 const summary = ref(createEmptySummary())
+const lastNonZeroSummaryByCluster = ref({})
+const effectiveSummary = computed(() => {
+  const cachedSummary = lastNonZeroSummaryByCluster.value[selectedClusterId.value]
+  const base = isZeroRuntimeSummary(summary.value) && cachedSummary
+    ? { ...cachedSummary, degraded: true, alerts: summary.value.alerts || cachedSummary.alerts || [] }
+    : { ...summary.value }
+  mergeLoadedResourceSummary(base)
+  return base
+})
 const summaryCards = computed(() => {
   if (activeTab.value === 'clusters') {
     const connected = clusters.value.filter(item => item.status === 'connected').length
@@ -1014,10 +1023,10 @@ const summaryCards = computed(() => {
     ]
   }
   return [
-    { label: 'Ready 节点', value: `${summary.value.nodes_ready}/${summary.value.nodes_total}`, meta: '节点健康度', tone: '' },
-    { label: 'Pod 总数', value: summary.value.pods_total, meta: '运行实例', tone: 'success-card' },
-    { label: '异常 Pod', value: summary.value.pods_abnormal, meta: '需要处理', tone: 'warning-card' },
-    { label: '工作负载', value: summary.value.workloads_total, meta: 'Deployment / Job 等', tone: 'danger-card' },
+    { label: 'Ready 节点', value: `${effectiveSummary.value.nodes_ready}/${effectiveSummary.value.nodes_total}`, meta: '节点健康度', tone: '' },
+    { label: 'Pod 总数', value: effectiveSummary.value.pods_total, meta: '运行实例', tone: 'success-card' },
+    { label: '异常 Pod', value: effectiveSummary.value.pods_abnormal, meta: '需要处理', tone: 'warning-card' },
+    { label: '工作负载', value: effectiveSummary.value.workloads_total, meta: 'Deployment / Job 等', tone: 'danger-card' },
   ]
 })
 const podSearchFields = [
@@ -1140,6 +1149,63 @@ function filterRows(rows, fields = []) {
 function summaryAlertType(level) {
   const mapping = { success: 'success', warning: 'warning', danger: 'error' }
   return mapping[level] || 'info'
+}
+
+function safeInt(value) {
+  const number = Number(value || 0)
+  return Number.isFinite(number) ? number : 0
+}
+
+function runtimeSummaryTotal(payload) {
+  return [
+    'nodes_total',
+    'pods_total',
+    'services_total',
+    'ingresses_total',
+    'workloads_total',
+    'pvcs_total',
+    'configmaps_total',
+    'secrets_total',
+  ].reduce((total, key) => total + safeInt(payload?.[key]), 0)
+}
+
+function isZeroRuntimeSummary(payload) {
+  return Boolean(payload?.degraded) && runtimeSummaryTotal(payload) === 0
+}
+
+function rememberUsableSummary(payload) {
+  if (!payload || isZeroRuntimeSummary(payload) || runtimeSummaryTotal(payload) === 0) return
+  if (!selectedClusterId.value) return
+  lastNonZeroSummaryByCluster.value = {
+    ...lastNonZeroSummaryByCluster.value,
+    [selectedClusterId.value]: { ...payload },
+  }
+}
+
+function podStatusAbnormal(row) {
+  return !['Running', 'Succeeded'].includes(String(row?.status || ''))
+}
+
+function mergeLoadedResourceSummary(target) {
+  if (nodes.value.length) {
+    target.nodes_total = Math.max(safeInt(target.nodes_total), nodes.value.length)
+    target.nodes_ready = Math.max(
+      safeInt(target.nodes_ready),
+      nodes.value.filter((item) => item.status === 'Ready').length,
+    )
+  }
+  if (pods.value.length) {
+    target.pods_total = Math.max(safeInt(target.pods_total), pods.value.length)
+    target.pods_abnormal = Math.max(safeInt(target.pods_abnormal), pods.value.filter(podStatusAbnormal).length)
+    target.total_restarts = Math.max(
+      safeInt(target.total_restarts),
+      pods.value.reduce((total, item) => total + safeInt(item.restarts), 0),
+    )
+  }
+  const loadedWorkloads = deployments.value.length + statefulsets.value.length + daemonsets.value.length + jobs.value.length + cronjobs.value.length
+  if (loadedWorkloads) {
+    target.workloads_total = Math.max(safeInt(target.workloads_total), loadedWorkloads)
+  }
 }
 
 function normalizeNamespaceItem(item) {
@@ -1297,9 +1363,15 @@ async function fetchSummary(options = {}) {
   }
   try {
     summary.value = await getK8sSummary(selectedClusterId.value)
+    rememberUsableSummary(summary.value)
     setClusterStatus(selectedClusterId.value, summary.value.status || 'connected')
     return true
   } catch (e) {
+    const cachedSummary = lastNonZeroSummaryByCluster.value[selectedClusterId.value]
+    if (cachedSummary) {
+      summary.value = { ...cachedSummary, degraded: true }
+      return true
+    }
     summary.value = createEmptySummary()
     setClusterStatus(selectedClusterId.value, 'error')
     return false

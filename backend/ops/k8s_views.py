@@ -439,16 +439,17 @@ def get_k8s_summary_snapshot(cluster):
     cache_key = _summary_cache_key(cluster.id)
     cached = cache.get(cache_key)
     if cached:
-        return cached
+        if _is_unreliable_zero_summary(cached):
+            cache.delete(cache_key)
+        else:
+            return cached
     try:
         summary = _build_demo_summary(cluster) if _is_demo(cluster) else _build_live_summary(cluster)
         if cluster.status != 'connected':
             cluster.status = 'connected'
             cluster.save(update_fields=['status'])
             summary['status'] = cluster.status
-        cache.set(cache_key, summary, K8S_SUMMARY_CACHE_TTL)
-        cache.set(_summary_stale_cache_key(cluster.id), summary, K8S_STALE_SUMMARY_CACHE_TTL)
-        return summary
+        return _cache_summary_snapshot(cluster, summary)
     except Exception as exc:
         if cluster.status != 'error':
             cluster.status = 'error'
@@ -843,6 +844,65 @@ def _build_unavailable_summary(cluster, reason=''):
     }
 
 
+def _summary_int(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _summary_runtime_total(summary):
+    return sum(
+        _summary_int(summary.get(key))
+        for key in (
+            'nodes_total',
+            'pods_total',
+            'services_total',
+            'ingresses_total',
+            'workloads_total',
+            'pvcs_total',
+            'configmaps_total',
+            'secrets_total',
+        )
+    )
+
+
+def _is_unreliable_zero_summary(summary):
+    if not isinstance(summary, dict):
+        return False
+    if not summary.get('degraded'):
+        return False
+    if _summary_runtime_total(summary) > 0:
+        return False
+    return bool(summary.get('unavailable_resources'))
+
+
+def _summary_stale_payload(cluster, fallback):
+    return {
+        **fallback,
+        'degraded': True,
+        'status': fallback.get('status') or 'connected',
+        'alerts': [{'level': 'warning', 'message': 'K8s API is temporarily unavailable; returning the latest cached snapshot'}],
+    }
+
+
+def _fallback_for_unreliable_zero_summary(cluster, summary):
+    fallback = cache.get(_summary_stale_cache_key(cluster.id))
+    if fallback is not None:
+        return _summary_stale_payload(cluster, fallback)
+    return summary
+
+
+def _cache_summary_snapshot(cluster, summary, *, update_stale=True):
+    payload = _fallback_for_unreliable_zero_summary(cluster, summary)
+    if _is_unreliable_zero_summary(payload):
+        return payload
+    cache.set(_summary_cache_key(cluster.id), payload, K8S_SUMMARY_CACHE_TTL)
+    if update_stale:
+        cache.set(_summary_stale_cache_key(cluster.id), payload, K8S_STALE_SUMMARY_CACHE_TTL)
+    return payload
+
+
 def _build_demo_summary(cluster):
     ready_nodes = _count_ready_nodes(DEMO_NODES)
     abnormal_pods, restarting_pods, total_restarts = _pod_status_summary(DEMO_PODS)
@@ -1037,16 +1097,17 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         cache_key = _summary_cache_key(cluster.id)
         cached = cache.get(cache_key)
         if cached:
-            return Response(cached)
+            if _is_unreliable_zero_summary(cached):
+                cache.delete(cache_key)
+            else:
+                return Response(cached)
         try:
             summary = _build_demo_summary(cluster) if _is_demo(cluster) else _build_live_summary(cluster)
             if cluster.status != 'connected':
                 cluster.status = 'connected'
                 cluster.save(update_fields=['status'])
                 summary['status'] = cluster.status
-            cache.set(cache_key, summary, K8S_SUMMARY_CACHE_TTL)
-            cache.set(_summary_stale_cache_key(cluster.id), summary, K8S_STALE_SUMMARY_CACHE_TTL)
-            return Response(summary)
+            return Response(_cache_summary_snapshot(cluster, summary))
         except Exception as e:
             if cluster.status != 'error':
                 cluster.status = 'error'
@@ -1054,15 +1115,11 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             _clear_summary_cache(cluster)
             fallback = cache.get(_summary_stale_cache_key(cluster.id))
             if fallback is not None:
-                payload = {
-                    **fallback,
-                    'degraded': True,
-                    'status': cluster.status or 'error',
-                    'alerts': [{'level': 'warning', 'message': 'K8s API is temporarily unavailable; returning the latest cached snapshot'}],
-                }
+                payload = _summary_stale_payload(cluster, fallback)
             else:
                 payload = _build_unavailable_summary(cluster, str(e))
-            cache.set(cache_key, payload, K8S_SUMMARY_CACHE_TTL)
+            if not _is_unreliable_zero_summary(payload):
+                cache.set(cache_key, payload, K8S_SUMMARY_CACHE_TTL)
             return Response(payload)
 
     @action(detail=True, methods=['get'])
