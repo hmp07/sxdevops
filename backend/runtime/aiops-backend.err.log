@@ -4,3 +4,6 @@
 2026-06-21 21:47:38,769 INFO     HTTP/2 support not enabled (install the http2 and tls Twisted extras)
 2026-06-21 21:47:38,770 INFO     Configuring endpoint tcp:port=8000:interface=0.0.0.0
 2026-06-21 21:47:38,772 INFO     Listening on TCP address 0.0.0.0:8000
+Unauthorized: /api/
+2026-06-21 21:58:47,244 WARNING  Unauthorized: /api/
+2026-06-21 22:00:02,928 INFO     observability history scheduler refreshed today snapshot: {'day': '2026-06-21', 'captured': 6, 'actor': 'system-scheduler', 'force_refresh': True}
