@@ -16,6 +16,38 @@
       </article>
     </div>
 
+    <section v-if="systemPostureEnabled" class="focus-strip" :class="`is-${overallStatus}`">
+      <div class="focus-strip__signal">
+        <span class="focus-strip__icon" :class="`is-${overallStatus}`">
+          <el-icon><component :is="focusIcon" /></el-icon>
+        </span>
+        <span class="focus-strip__label">{{ focusBadge }}</span>
+      </div>
+      <div class="focus-strip__body">
+        <strong>{{ focusTitle }}</strong>
+        <el-tooltip
+          v-if="focusTooltip"
+          effect="light"
+          placement="top"
+          popper-class="dashboard-focus-popper"
+        >
+          <template #content>
+            <div class="dashboard-focus-tip">{{ focusTooltip }}</div>
+          </template>
+          <span class="focus-strip__text">{{ focusText }}</span>
+        </el-tooltip>
+        <span v-else class="focus-strip__text">{{ focusText }}</span>
+      </div>
+      <div class="focus-strip__actions">
+        <el-button size="small" type="primary" @click="recalculateToday">
+          <el-icon><RefreshRight /></el-icon>
+          重算今日
+        </el-button>
+        <el-button size="small" @click="openOverview('system-posture')">查看系统态势</el-button>
+        <el-button size="small" text @click="openOverview('posture-history')">查看完整历史</el-button>
+      </div>
+    </section>
+
     <section v-if="systemPostureEnabled" class="panel dashboard-history-shell">
       <div class="dashboard-history-shell__head">
         <div class="dashboard-history-shell__title">
@@ -35,6 +67,7 @@
       </div>
       <ObservabilityPostureHistory
         v-if="ObservabilityPostureHistory"
+        :key="historyPanelKey"
         :initial-date-range="selectedDateRange"
         embedded
         @range-change="handleHistoryRangeChange"
@@ -60,16 +93,19 @@
 <script setup>
 import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Calendar, CircleCheck, QuestionFilled, WarningFilled } from '@element-plus/icons-vue'
+import { Calendar, CircleCheck, QuestionFilled, RefreshRight, WarningFilled } from '@element-plus/icons-vue'
+import { useRouter } from 'vue-router'
 import { getObservabilitySystemPostureHistory } from '@/api/modules/ops'
 import { SYSTEM_POSTURE_ENABLED } from '@/config/features'
 
+const router = useRouter()
 const systemPostureEnabled = SYSTEM_POSTURE_ENABLED
 const ObservabilityPostureHistory = systemPostureEnabled
   ? defineAsyncComponent(() => import('@/views/ObservabilityPostureHistory.vue'))
   : null
 
 const loading = ref(false)
+const historyPanelKey = ref(0)
 const dashboardHistory = ref({ days: [], systems: [], summary: {}, context: {} })
 const selectedDateRange = ref(defaultHistoryDateRange())
 
@@ -92,6 +128,21 @@ const statusCounts = computed(() => latestSystems.value.reduce((acc, system) => 
   acc[system.status] += 1
   return acc
 }, { healthy: 0, critical: 0, unknown: 0 }))
+
+const failureSystems = computed(() => latestSystems.value.filter(system => system.status === 'critical'))
+const unknownSystems = computed(() => latestSystems.value.filter(system => system.status === 'unknown'))
+
+const overallStatus = computed(() => {
+  if (failureSystems.value.length) return 'critical'
+  if (unknownSystems.value.length) return 'unknown'
+  return 'healthy'
+})
+
+const focusIcon = computed(() => {
+  if (overallStatus.value === 'critical') return WarningFilled
+  if (overallStatus.value === 'unknown') return QuestionFilled
+  return CircleCheck
+})
 
 const selectedRangeDays = computed(() => inclusiveDays(selectedDateRange.value))
 const selectedRangeLabel = computed(() => {
@@ -137,6 +188,38 @@ const summaryCards = computed(() => [
   },
 ])
 
+const failureInline = computed(() => failureSystems.value
+  .map(system => `${system.environment} / ${system.name}`)
+  .join('、'))
+
+const unknownInline = computed(() => unknownSystems.value
+  .map(system => `${system.environment} / ${system.name}`)
+  .join('、'))
+
+const focusTitle = computed(() => {
+  if (failureSystems.value.length) return '优先处理故障系统'
+  if (unknownSystems.value.length) return '补齐未知系统数据'
+  return '当前系统运行稳定'
+})
+
+const focusBadge = computed(() => {
+  if (failureSystems.value.length) return '故障优先'
+  if (unknownSystems.value.length) return '数据待补'
+  return '整体稳定'
+})
+
+const focusText = computed(() => {
+  if (failureSystems.value.length) return truncateText(failureInline.value, 92)
+  if (unknownSystems.value.length) return truncateText(`当前暂无可用数据：${unknownInline.value}`, 92)
+  return '首页趋势区保留完整历史条视图，可继续查看近阶段状态波动。'
+})
+
+const focusTooltip = computed(() => {
+  if (failureSystems.value.length) return failureInline.value
+  if (unknownSystems.value.length) return `当前暂无可用数据：${unknownInline.value}`
+  return ''
+})
+
 function latestSystemRecord(system, dayKey = '') {
   const records = Array.isArray(system?.records) ? system.records : []
   if (!records.length) return null
@@ -155,6 +238,11 @@ function resolveDashboardStatus(record, target, dayKey = '') {
   if (!Number.isFinite(sla)) return 'unknown'
   if (Number.isFinite(slo)) return sla >= slo ? 'healthy' : 'critical'
   return record.status === 'healthy' ? 'healthy' : record.status === 'critical' ? 'critical' : 'unknown'
+}
+
+function truncateText(text = '', maxLength = 0) {
+  if (!text || !maxLength || text.length <= maxLength) return text
+  return `${text.slice(0, maxLength)}...`
 }
 
 function daysAgo(count) {
@@ -202,6 +290,13 @@ function handleHistoryRangeChange(payload = {}) {
   selectedDateRange.value = normalizeRange(payload.range)
 }
 
+function openOverview(tab) {
+  router.push({
+    name: 'ObservabilityOverview',
+    query: { tab },
+  })
+}
+
 async function loadDashboardSummary(showMessage = false, refresh = false) {
   if (!systemPostureEnabled) return
   loading.value = true
@@ -214,6 +309,11 @@ async function loadDashboardSummary(showMessage = false, refresh = false) {
   } finally {
     loading.value = false
   }
+}
+
+async function recalculateToday() {
+  await loadDashboardSummary(true, true)
+  historyPanelKey.value += 1
 }
 
 onMounted(() => {
@@ -234,6 +334,10 @@ onMounted(() => {
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
 }
 
+.focus-strip,
+.focus-strip__signal,
+.focus-strip__body,
+.focus-strip__actions,
 .summary-card__head {
   display: flex;
   gap: 10px;
@@ -349,6 +453,147 @@ onMounted(() => {
   font-size: 10px;
   line-height: 1.4;
   margin-top: 5px;
+}
+
+.focus-strip {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  position: relative;
+}
+
+.focus-strip.is-critical {
+  background: linear-gradient(180deg, #fff8f9 0%, #ffffff 100%);
+  border-color: #f4cdd6;
+}
+
+.focus-strip.is-unknown {
+  background: linear-gradient(180deg, #fafbfc 0%, #ffffff 100%);
+  border-color: #e5e7eb;
+}
+
+.focus-strip.is-healthy {
+  background: linear-gradient(180deg, #f8fcfa 0%, #ffffff 100%);
+  border-color: #dcefe3;
+}
+
+.focus-strip::before {
+  border-radius: 14px 0 0 14px;
+  content: '';
+  inset: 0 auto 0 0;
+  position: absolute;
+  width: 4px;
+}
+
+.focus-strip.is-critical::before {
+  background: #f31260;
+}
+
+.focus-strip.is-unknown::before {
+  background: #c9ced6;
+}
+
+.focus-strip.is-healthy::before {
+  background: #18c964;
+}
+
+.focus-strip__signal {
+  align-items: center;
+  flex: 0 0 auto;
+  padding-top: 1px;
+}
+
+.focus-strip__icon {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+
+.focus-strip__icon.is-critical {
+  background: #fff1f3;
+  color: #e11d48;
+}
+
+.focus-strip__icon.is-unknown {
+  background: #f2f4f7;
+  color: #98a2b3;
+}
+
+.focus-strip__icon.is-healthy {
+  background: #ecfdf3;
+  color: #16a34a;
+}
+
+.focus-strip__label {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.78);
+  border-radius: 999px;
+  color: #475467;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  min-height: 24px;
+  padding: 0 9px;
+}
+
+.focus-strip__body {
+  align-items: baseline;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.focus-strip__body strong {
+  color: #111827;
+  flex: 0 0 auto;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.focus-strip__text {
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.4;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focus-strip__actions {
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.focus-strip__actions :deep(.el-button) {
+  border-color: #dfe6e2;
+  border-radius: 9px;
+  color: #475467;
+  min-height: 28px;
+  padding: 0 10px;
+}
+
+.focus-strip__actions :deep(.el-button--primary) {
+  background: #edf8f1;
+  border-color: #d4e8da;
+  color: #166534;
+}
+
+.focus-strip__actions :deep(.el-button--default) {
+  background: #ffffff;
+}
+
+.focus-strip__actions :deep(.el-button--text) {
+  color: #667085;
 }
 
 .dashboard-history-shell {
@@ -582,6 +827,20 @@ onMounted(() => {
   padding: 7px;
 }
 
+:global(.dashboard-focus-popper) {
+  border: 1px solid #dfe3ea !important;
+  border-radius: 12px !important;
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.1) !important;
+  max-width: 420px;
+}
+
+.dashboard-focus-tip {
+  color: #475467;
+  font-size: 12px;
+  line-height: 1.7;
+  padding: 2px 4px;
+}
+
 @media (max-width: 1180px) {
   .dashboard-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -593,13 +852,33 @@ onMounted(() => {
     padding-bottom: 16px;
   }
 
+  .focus-strip,
   .dashboard-history-shell {
     padding-left: 14px;
     padding-right: 14px;
   }
 
+  .focus-strip {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .focus-strip__actions {
+    width: 100%;
+  }
+
   .dashboard-stats {
     grid-template-columns: 1fr;
+  }
+
+  .focus-strip__body {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .focus-strip__text {
+    white-space: normal;
   }
 
   .dashboard-history-shell__meta {

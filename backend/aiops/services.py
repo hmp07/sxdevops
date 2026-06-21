@@ -52,6 +52,7 @@ from ops.models import (
 from ops.tracing_providers import (
     DEMO_TRACES,
     ObservabilityError,
+    _build_topology_from_trace_details,
     _provider_handlers,
     _resolve_provider,
     load_tracing_catalog,
@@ -6325,6 +6326,152 @@ def _format_trace_item(item):
     return f"{item.get('service_name') or item.get('service_id') or '-'} / {item.get('state') or '-'} / {item.get('duration_ms') or 0}ms / {item.get('start') or '-'} / {endpoints} / {short_trace_id}"
 
 
+def _trace_topology_match_values(service=None, trace_query=''):
+    values = set()
+    if isinstance(service, dict):
+        for key in ['id', 'name', 'short_name', 'shortName']:
+            value = str(service.get(key) or '').strip()
+            if value:
+                values.add(value)
+    trace_query = str(trace_query or '').strip()
+    if trace_query:
+        values.add(trace_query)
+    return values
+
+
+def _node_matches_trace_service(node, match_values):
+    node_values = [
+        str(node.get('id') or '').strip(),
+        str(node.get('name') or '').strip(),
+        str(node.get('short_name') or node.get('shortName') or '').strip(),
+    ]
+    lowered_values = [value.lower() for value in match_values if value]
+    for value in node_values:
+        lowered = value.lower()
+        if lowered and any(lowered == target or lowered in target or target in lowered for target in lowered_values):
+            return True
+    return False
+
+
+def _focus_trace_topology(topology, service=None, trace_query='', max_calls=12):
+    if not isinstance(topology, dict):
+        return {'node_count': 0, 'call_count': 0, 'nodes': [], 'calls': [], 'selected_node_id': ''}
+    nodes = [item for item in (topology.get('nodes') or []) if isinstance(item, dict)]
+    calls = [item for item in (topology.get('calls') or topology.get('links') or []) if isinstance(item, dict)]
+    match_values = _trace_topology_match_values(service, trace_query)
+    selected_ids = {
+        str(node.get('id') or '').strip()
+        for node in nodes
+        if _node_matches_trace_service(node, match_values)
+    }
+    selected_ids.discard('')
+    if not selected_ids:
+        selected_ids = {
+            str(call.get('source') or '').strip()
+            for call in calls
+            if _node_matches_trace_service({'id': call.get('source'), 'name': call.get('source')}, match_values)
+        } | {
+            str(call.get('target') or '').strip()
+            for call in calls
+            if _node_matches_trace_service({'id': call.get('target'), 'name': call.get('target')}, match_values)
+        }
+        selected_ids.discard('')
+
+    if selected_ids:
+        focused_calls = [
+            call for call in calls
+            if str(call.get('source') or '').strip() in selected_ids
+            or str(call.get('target') or '').strip() in selected_ids
+        ][:max_calls]
+        related_node_ids = set(selected_ids)
+        for call in focused_calls:
+            source = str(call.get('source') or '').strip()
+            target = str(call.get('target') or '').strip()
+            if source:
+                related_node_ids.add(source)
+            if target:
+                related_node_ids.add(target)
+        focused_nodes = [node for node in nodes if str(node.get('id') or '').strip() in related_node_ids]
+    else:
+        focused_calls = calls[:max_calls]
+        related_node_ids = set()
+        for call in focused_calls:
+            source = str(call.get('source') or '').strip()
+            target = str(call.get('target') or '').strip()
+            if source:
+                related_node_ids.add(source)
+            if target:
+                related_node_ids.add(target)
+        focused_nodes = [node for node in nodes if str(node.get('id') or '').strip() in related_node_ids] or nodes[:max_calls]
+
+    return {
+        **topology,
+        'node_count': len(focused_nodes),
+        'call_count': len(focused_calls),
+        'nodes': focused_nodes,
+        'calls': focused_calls,
+        'selected_node_id': next(iter(selected_ids), ''),
+        'source_node_count': topology.get('node_count', len(nodes)),
+        'source_call_count': topology.get('call_count', len(calls)),
+    }
+
+
+def _format_trace_topology_call(call, node_by_id):
+    source_id = str(call.get('source') or '').strip()
+    target_id = str(call.get('target') or '').strip()
+    source = node_by_id.get(source_id) or {}
+    target = node_by_id.get(target_id) or {}
+    source_name = source.get('name') or source_id or '-'
+    target_name = target.get('name') or target_id or '-'
+    count = call.get('count')
+    call_type = call.get('type') or call.get('detect_point') or call.get('role') or ''
+    suffix = []
+    if count not in (None, ''):
+        suffix.append(f'次数 {count}')
+    if call_type:
+        suffix.append(str(call_type))
+    return f"{source_name} -> {target_name}" + (f"（{' / '.join(suffix)}）" if suffix else '')
+
+
+def _trace_topology_sections(topology):
+    if not topology or not topology.get('call_count'):
+        return []
+    node_by_id = {str(node.get('id') or '').strip(): node for node in topology.get('nodes') or []}
+    return [{
+        'title': '服务调用拓扑',
+        'items': [
+            f"相关节点 {topology.get('node_count', 0)} 个，调用关系 {topology.get('call_count', 0)} 条。",
+            *[_format_trace_topology_call(call, node_by_id) for call in (topology.get('calls') or [])[:8]],
+        ],
+    }]
+
+
+def _build_trace_query_topology(provider_id, config, handlers, traces, service=None, trace_query='', fallback_topology=None):
+    provider_handlers = handlers.get(provider_id) or {}
+    detail_handler = provider_handlers.get('detail') if isinstance(provider_handlers, dict) else None
+    details = []
+    if detail_handler:
+        for item in (traces or [])[:5]:
+            trace_id = item.get('trace_id')
+            if not trace_id:
+                continue
+            try:
+                details.append(detail_handler(config, trace_id))
+            except Exception:
+                continue
+    topology = _build_topology_from_trace_details(details) if details else None
+    if not topology or not topology.get('call_count'):
+        topology_handler = provider_handlers.get('topology') if isinstance(provider_handlers, dict) else None
+        if topology_handler:
+            try:
+                topology = topology_handler(config)
+            except Exception:
+                topology = None
+    if (not topology or not topology.get('nodes')) and fallback_topology:
+        topology = fallback_topology
+    return _focus_trace_topology(topology or {}, service=service, trace_query=trace_query)
+
+
 def _query_live_traces(query='', errors_only=False, limit=6, duration_minutes=60, datasource_ids=None):
     datasource_queryset = TracingDataSource.objects.filter(is_enabled=True)
     if datasource_ids:
@@ -6378,20 +6525,30 @@ def _query_live_traces(query='', errors_only=False, limit=6, duration_minutes=60
     }
     if provider_id == 'demo':
         catalog = load_tracing_catalog(provider='demo')
+        topology = _focus_trace_topology(catalog.get('topology') or {}, service=service, trace_query=trace_query)
         result = {
             'tracing': catalog.get('tracing') or tracing_meta,
-            'summary': catalog.get('summary') or {},
+            'summary': {
+                **(catalog.get('summary') or {}),
+                'topology_node_count': topology.get('node_count', 0),
+                'topology_call_count': topology.get('call_count', 0),
+            },
             'traces': [item for item in (catalog.get('recent_traces') or []) if (not errors_only or item.get('is_error'))][:limit],
+            'topology': topology,
         }
     else:
         traces = handlers[provider_id]['search'](config, payload, services)
+        topology = _build_trace_query_topology(provider_id, config, handlers, traces, service=service, trace_query=trace_query)
         result = {
             'tracing': tracing_meta,
             'summary': {
                 'match_count': len(traces),
                 'error_match_count': len([item for item in traces if item.get('is_error')]),
+                'topology_node_count': topology.get('node_count', 0),
+                'topology_call_count': topology.get('call_count', 0),
             },
             'traces': traces,
+            'topology': topology,
     }
     return result, service, trace_query
 
@@ -8335,6 +8492,7 @@ def query_traces(session, user_message, user, query='', errors_only=False, limit
         traces = (live_result.get('traces') or [])[:limit]
         tracing_meta = live_result.get('tracing') or {}
         summary = live_result.get('summary') or {}
+        topology = live_result.get('topology') or {}
         service_name = (matched_service or {}).get('name') or trace_query or '全部服务'
         if traces:
             title = '链路追踪异常' if errors_only else '链路追踪'
@@ -8355,12 +8513,14 @@ def query_traces(session, user_message, user, query='', errors_only=False, limit
                 'title': '链路追踪服务未匹配',
                 'items': [f"未在当前链路数据源中匹配到服务：{trace_query or query or '-'}。"],
             }]
+        sections.extend(_trace_topology_sections(topology))
         _finish_tool_invocation(
             invocation,
             {
                 'count': len(traces),
                 'match_count': summary.get('match_count', len(traces)),
                 'error_match_count': summary.get('error_match_count', len([item for item in traces if item.get('is_error')])),
+                'topology_call_count': summary.get('topology_call_count', topology.get('call_count', 0)),
                 'provider': tracing_meta.get('provider'),
                 'datasource_id': tracing_meta.get('datasource_id'),
                 'service': service_name,
@@ -8375,6 +8535,7 @@ def query_traces(session, user_message, user, query='', errors_only=False, limit
             'summary': summary,
             'service': matched_service,
             'tracing': tracing_meta,
+            'topology': topology,
         }
     except Exception as exc:
         if not isinstance(exc, ObservabilityError):
@@ -9679,7 +9840,9 @@ def _summarize_response_block_tool_output(tool_name, tool_output):
     if tool_name in {'query_events', 'query_event_wall', 'query_recent_changes'}:
         return f"返回 {summary.get('count', len(tool_output.get('events') or []))} 条事件/变更"
     if tool_name == 'query_traces':
-        return f"返回 {summary.get('match_count', len(tool_output.get('traces') or []))} 条 Trace"
+        trace_count = summary.get('match_count', len(tool_output.get('traces') or []))
+        call_count = summary.get('topology_call_count', (tool_output.get('topology') or {}).get('call_count', 0))
+        return f"返回 {trace_count} 条 Trace" + (f'，调用关系 {call_count} 条' if call_count else '')
     if tool_name in {'query_grafana_promql', 'query_dashboard_panel_data'}:
         return f"返回 {summary.get('series_count', summary.get('count', 0))} 条指标序列"
     if summary.get('count') not in (None, ''):

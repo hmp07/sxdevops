@@ -4186,6 +4186,67 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(result['tracing']['provider'], 'skywalking')
         self.assertTrue(any('bcp-server@梧桐港-SaaS-PRO' in item for item in result['sections'][0]['items']))
 
+    @mock.patch('aiops.services._provider_handlers')
+    @mock.patch('aiops.services._resolve_provider')
+    def test_query_traces_returns_related_call_topology(self, mocked_resolve_provider, mocked_provider_handlers):
+        TracingDataSource.objects.create(
+            name='Tracing Tempo',
+            provider='tempo',
+            is_enabled=True,
+            is_default=True,
+            config={'query_url': ''},
+        )
+        mocked_resolve_provider.return_value = ('tempo', {})
+
+        trace = {
+            'trace_id': 'trace-topology-1',
+            'segment_id': '',
+            'service_id': 'order-service',
+            'service_name': 'order-service',
+            'instance_name': '',
+            'endpoint_names': ['POST /orders'],
+            'duration_ms': 121,
+            'start': '2026-06-21T12:00:00+08:00',
+            'is_error': True,
+            'state': 'ERROR',
+            'summary': '',
+            'source_provider': 'tempo',
+        }
+        detail = {
+            'trace_id': 'trace-topology-1',
+            'spans': [
+                {'span_id': 'root', 'parent_span_id': '', 'service_code': 'api-gateway', 'endpoint_name': 'POST /orders', 'layer': 'HTTP'},
+                {'span_id': 'order', 'parent_span_id': 'root', 'service_code': 'order-service', 'endpoint_name': 'OrderService.create', 'layer': 'RPC_FRAMEWORK'},
+                {'span_id': 'inventory', 'parent_span_id': 'order', 'service_code': 'inventory-service', 'endpoint_name': 'Inventory.reserve', 'layer': 'RPC_FRAMEWORK'},
+            ],
+        }
+        mocked_provider_handlers.return_value = {
+            'tempo': {
+                'services': lambda config: [{'id': 'order-service', 'name': 'order-service', 'short_name': 'order-service'}],
+                'search': lambda config, payload, services: [trace],
+                'detail': lambda config, trace_id: detail,
+            }
+        }
+
+        session = AIOpsChatSession.objects.create(user=self.user, title='trace-topology')
+        user_message = AIOpsChatMessage.objects.create(session=session, role='user', content='check order-service trace topology')
+
+        result = query_traces(
+            session,
+            user_message,
+            self.user,
+            query='order-service',
+            errors_only=True,
+            limit=5,
+            duration_minutes=60,
+        )
+
+        call_pairs = {(call['source'], call['target']) for call in result['topology']['calls']}
+        self.assertIn(('api-gateway', 'order-service'), call_pairs)
+        self.assertIn(('order-service', 'inventory-service'), call_pairs)
+        self.assertEqual(result['summary']['topology_call_count'], 2)
+        self.assertTrue(any(section['title'] == '服务调用拓扑' for section in result['sections']))
+
     def test_send_message_creates_session_messages(self):
         session_response = self.client.post('/api/aiops/sessions/', {'title': '测试会话'}, format='json')
         self.assertEqual(session_response.status_code, 201)
