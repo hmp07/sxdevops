@@ -75,15 +75,15 @@
                   <span class="kpi-label">中间件 / DB</span>
                   <span class="kpi-value">{{ visibleSummary.runtime_component_count }}</span>
                 </div>
+                <el-button class="trace-topology-button" :disabled="!traceTopologyDatasourceId" @click="openTraceTopology">
+                  <el-icon><Connection /></el-icon>
+                  查看服务链路拓扑
+                </el-button>
               </div>
               <div class="topology-summary-actions">
                 <el-button class="summary-action-button" @click="adoptionDocVisible = true">
                   <el-icon><InfoFilled /></el-icon>
                   图谱自建说明
-                </el-button>
-                <el-button class="trace-topology-button" :disabled="!traceTopologyDatasourceId" @click="openTraceTopology">
-                  <el-icon><Connection /></el-icon>
-                  查看服务链路拓扑
                 </el-button>
               </div>
             </div>
@@ -288,7 +288,7 @@
 
     <el-dialog
       v-model="traceTopologyDialogVisible"
-      width="84vw"
+      width="76vw"
       class="trace-topology-dialog"
       append-to-body
       destroy-on-close
@@ -1504,7 +1504,7 @@ onBeforeUnmount(() => {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 .toolbar-actions {
@@ -1521,7 +1521,7 @@ onBeforeUnmount(() => {
 
 .summary-action-button,
 .trace-topology-button {
-  height: 32px;
+  height: 36px;
   min-width: 0;
   padding: 0 12px;
   border-radius: 10px;
@@ -1543,15 +1543,18 @@ onBeforeUnmount(() => {
 }
 
 .trace-topology-button {
-  border-color: rgba(20, 184, 166, 0.24);
-  color: #0f766e;
-  background: rgba(240, 253, 250, 0.62);
+  margin-left: 8px;
+  border-color: rgba(51, 112, 255, 0.16);
+  color: #3370ff;
+  background: rgba(232, 240, 255, 0.42);
+  box-shadow: 0 6px 14px rgba(36, 91, 219, 0.05);
 }
 
 .trace-topology-button:not(.is-disabled):hover {
-  border-color: rgba(15, 118, 110, 0.34);
-  color: #115e59;
-  background: rgba(204, 251, 241, 0.72);
+  border-color: rgba(51, 112, 255, 0.26);
+  color: #245bdb;
+  background: rgba(219, 234, 254, 0.64);
+  box-shadow: 0 8px 18px rgba(36, 91, 219, 0.08);
 }
 
 .trace-topology-button.is-disabled,
@@ -1563,7 +1566,7 @@ onBeforeUnmount(() => {
 }
 
 :global(.trace-topology-dialog.el-dialog) {
-  max-width: 1280px;
+  max-width: 1120px;
   border-radius: 18px;
   overflow: hidden;
 }
@@ -1607,7 +1610,7 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 .topology-kpis {
@@ -1655,7 +1658,7 @@ onBeforeUnmount(() => {
 .graph-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 248px;
-  gap: 14px;
+  gap: 10px;
   min-height: 640px;
 }
 

@@ -171,7 +171,10 @@
 
     <section class="panel">
       <div class="section-head">
-        <h3>调用拓扑</h3>
+        <div class="section-title-inline">
+          <h3>{{ embeddedMode ? '服务调用拓扑' : '调用拓扑' }}</h3>
+          <span v-if="embeddedMode" class="section-title-desc">服务调用链路从链路追踪获取，请关联好链路追踪</span>
+        </div>
         <div class="section-head-tags">
           <el-tag size="small" type="success">节点 {{ focusedTopology.node_count || 0 }}</el-tag>
           <el-tag size="small" type="warning">调用 {{ focusedTopology.call_count || 0 }}</el-tag>
@@ -2334,6 +2337,22 @@ onUnmounted(() => {
 .observability-page.is-embedded .section-head h3 {
   font-size: 20px;
   font-weight: 800;
+}
+
+.section-title-inline {
+  display: inline-flex;
+  align-items: baseline;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.section-title-desc {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .panel {
