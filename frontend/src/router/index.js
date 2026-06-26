@@ -436,6 +436,29 @@ const routes = [
         },
       },
       {
+        path: 'cmdb',
+        redirect: '/cmdb/dashboard',
+        meta: { hidden: true, anyPermissions: ['cmdb.dashboard.view', 'cmdb.ci.view', 'cmdb.topology.view'] },
+      },
+      {
+        path: 'cmdb/dashboard',
+        name: 'CmdbDashboard',
+        component: () => import('@/views/CmdbDashboard.vue'),
+        meta: { title: 'CMDB 总览', icon: 'DataLine', permission: 'cmdb.dashboard.view' },
+      },
+      {
+        path: 'cmdb/config-items',
+        name: 'CmdbConfigItems',
+        component: () => import('@/views/CmdbConfigItems.vue'),
+        meta: { title: '配置项', icon: 'Monitor', permission: 'cmdb.ci.view' },
+      },
+      {
+        path: 'cmdb/topology',
+        name: 'CmdbTopology',
+        component: () => import('@/views/CmdbTopology.vue'),
+        meta: { title: '资源拓扑', icon: 'Share', permission: 'cmdb.topology.view' },
+      },
+      {
         path: 'sql',
         redirect: (to) => ({ path: '/workorders/sql', query: to.query }),
         meta: { hidden: true },

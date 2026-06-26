@@ -269,6 +269,16 @@ const menuItems = [
     ],
   },
   {
+    moduleKey: 'cmdb',
+    title: 'CMDB',
+    icon: 'Coin',
+    children: [
+      { path: '/cmdb/dashboard', title: 'CMDB 总览', icon: 'DataLine', permission: 'cmdb.dashboard.view' },
+      { path: '/cmdb/config-items', title: '配置项', icon: 'Monitor', permission: 'cmdb.ci.view' },
+      { path: '/cmdb/topology', title: '资源拓扑', icon: 'Share', permission: 'cmdb.topology.view' },
+    ],
+  },
+  {
     moduleKey: 'system',
     title: '系统管理',
     icon: 'User',
