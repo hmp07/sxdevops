@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -9,7 +10,7 @@ from kubernetes.client.exceptions import ApiException
 from marketplace import deployer
 from marketplace.models import ServiceDeployment, ServiceTemplate
 from ops.models import Host, K8sCluster
-from ops.management.commands.seed_data import seed_marketplace_demo
+from ops.management.commands.seed_data import create_marketplace_deployment, seed_marketplace_demo
 
 
 class MarketplaceDeployApiTests(TestCase):
@@ -245,3 +246,36 @@ class MarketplaceSeedTemplatesTests(TestCase):
         self.assertGreaterEqual(ServiceDeployment.objects.count(), 7)
         self.assertTrue(ServiceDeployment.objects.filter(deploy_mode='docker_compose').exists())
         self.assertTrue(ServiceDeployment.objects.filter(deploy_mode='k8s').exists())
+
+    @patch('ops.management.commands.seed_data.connection.introspection.get_table_description')
+    def test_create_marketplace_deployment_uses_backend_introspection(self, mock_table_description):
+        template = ServiceTemplate.objects.create(
+            name='Redis',
+            icon='redis',
+            category='cache',
+            description='cache',
+            versions=['7.0'],
+            docker_compose_template='services:\n  redis:\n    image: redis:{{version}}\n',
+        )
+        host = Host.objects.create(hostname='redis-01', ip_address='192.168.1.40')
+        db_columns = [
+            field.column
+            for field in ServiceDeployment._meta.concrete_fields
+            if field.column != ServiceDeployment._meta.pk.column
+        ]
+        mock_table_description.return_value = [SimpleNamespace(name=name) for name in db_columns]
+
+        create_marketplace_deployment({
+            'template': template,
+            'deploy_mode': 'docker_compose',
+            'host': host,
+            'version': '7.0',
+            'status': 'running',
+            'env_config': {'port': '6379'},
+            'deployer': 'ops-demo',
+            'deploy_dir': '/opt/sxdevops/redis',
+            'deploy_log': '[INFO] Docker Compose deploy succeeded',
+        })
+
+        mock_table_description.assert_called_once()
+        self.assertEqual(ServiceDeployment.objects.get().host_id, host.id)
