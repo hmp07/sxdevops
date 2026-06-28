@@ -206,6 +206,7 @@ def sync_host_to_config_item(host):
     config_item = matching_items[0] if matching_items else None
     ci_type = ensure_host_ci_type()
 
+    SYNC_MANAGED_FIELDS = {'ip_address', 'os_type', 'description', 'source', 'sync_origin'}
     attributes = dict((config_item.attributes or {}) if config_item else {})
     attributes.update({
         'ip_address': host.ip_address,
@@ -214,7 +215,10 @@ def sync_host_to_config_item(host):
         'source': attributes.get('source') or 'host_center',
         'sync_origin': 'host_center',
     })
-    attributes = {key: value for key, value in attributes.items() if value not in (None, '')}
+    # Only clean up sync-managed fields; preserve all other custom attributes
+    for key in list(attributes.keys()):
+        if key in SYNC_MANAGED_FIELDS and attributes[key] in (None, ''):
+            del attributes[key]
 
     with suspend_cmdb_host_sync():
         if config_item is None:
@@ -267,7 +271,16 @@ def sync_config_item_to_host(config_item):
 
     with suspend_cmdb_host_sync():
         if host is None:
-            host = Host.objects.create(hostname=config_item.name, **defaults)
+            host, _created = Host.objects.get_or_create(
+                hostname=config_item.name,
+                defaults=defaults,
+            )
+            if not _created:
+                # Race: another process created this host between our check and now.
+                # Update it with our defaults.
+                for field, value in defaults.items():
+                    setattr(host, field, value)
+                host.save()
         else:
             host.hostname = config_item.name
             for field, value in defaults.items():

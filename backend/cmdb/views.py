@@ -8,7 +8,8 @@ from rest_framework.decorators import api_view, action, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.db import transaction
-from django.db.models import Count, F, Q
+from django.db.models import Count, F, Q, Value, IntegerField
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from .models import CIType, ConfigItem, CIRelation, CostRecord, ResourceRequest, ResourceNode
 from .serializers import (
@@ -110,7 +111,14 @@ def _provider_for_attributes(attributes):
     )[:50]
 
 
+# Request-level cache to avoid repeated cost queries within the same request
+_cost_rows_cache = {}
+
 def _cost_rows_for_month(month):
+    month = _normalize_month(month)
+    if _cost_rows_cache.get(month) is not None:
+        return _cost_rows_cache[month]
+
     if month == _current_month():
         existing_rows = list(
             CostRecord.objects.filter(month=month)
@@ -130,7 +138,9 @@ def _cost_rows_for_month(month):
                 if not row_map[row.ci_id]['provider'] and row.provider:
                     row_map[row.ci_id]['provider'] = row.provider
 
-        for ci in ConfigItem.objects.select_related('ci_type').all():
+        for ci in ConfigItem.objects.select_related('ci_type').exclude(
+            attributes__monthly_cost__isnull=True
+        ).exclude(attributes__monthly_cost__exact=0):
             if ci.id in row_map:
                 continue
             amount = _to_decimal((ci.attributes or {}).get('monthly_cost')) or Decimal('0')
@@ -142,9 +152,11 @@ def _cost_rows_for_month(month):
                 'provider': _provider_for_attributes(ci.attributes or {}),
             }
 
-        return list(row_map.values())
+        result = list(row_map.values())
+        _cost_rows_cache[month] = result
+        return result
 
-    return [
+    result = [
         {
             'ci': record.ci,
             'amount': record.amount or Decimal('0'),
@@ -154,6 +166,9 @@ def _cost_rows_for_month(month):
         .select_related('ci__ci_type')
         .order_by('-amount', 'ci__name')
     ]
+    _cost_rows_cache[month] = result
+    return result
+
 
 
 def _month_cost_map(month):
@@ -311,7 +326,9 @@ def _build_optimization(month):
 
     suggestions = []
     total_monthly_cost = Decimal('0')
-    for ci in ConfigItem.objects.select_related('ci_type').all():
+    for ci in ConfigItem.objects.select_related('ci_type').exclude(
+        attributes__monthly_cost__isnull=True
+    ).exclude(attributes__monthly_cost__exact=0):
         monthly_cost = _cost_amount_for_ci(ci, month_costs)
         if monthly_cost <= 0:
             continue
@@ -590,7 +607,13 @@ class CITypeViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
 class ConfigItemViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     """配置项管理"""
-    queryset = ConfigItem.objects.select_related('ci_type').all().order_by('-updated_at', '-id')
+    queryset = ConfigItem.objects.select_related('ci_type').annotate(
+        _relation_count=Coalesce(
+            Count('outgoing_relations', distinct=True) + Count('incoming_relations', distinct=True),
+            Value(0),
+            output_field=IntegerField(),
+        )
+    ).order_by('-updated_at', '-id')
     serializer_class = ConfigItemSerializer
     search_fields = [
         'name',
@@ -951,14 +974,13 @@ def cmdb_topology(request):
     matched_ids = set(filtered_qs.values_list('id', flat=True))
     node_ids = set(matched_ids)
     relations = CIRelation.objects.none()
-    if matched_ids:
+    if matched_ids and include_neighbors:
         relations = CIRelation.objects.filter(
             Q(source_id__in=matched_ids) | Q(target_id__in=matched_ids)
         ).select_related('source', 'target')
-        if include_neighbors:
-            for relation in relations:
-                node_ids.add(relation.source_id)
-                node_ids.add(relation.target_id)
+        for relation in relations:
+            node_ids.add(relation.source_id)
+            node_ids.add(relation.target_id)
 
     node_qs = ConfigItem.objects.select_related('ci_type').filter(id__in=node_ids).order_by(
         'business_line',

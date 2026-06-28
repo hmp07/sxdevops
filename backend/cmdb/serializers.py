@@ -22,7 +22,7 @@ class ConfigItemSerializer(serializers.ModelSerializer):
     ci_type_name = serializers.SerializerMethodField()
     ci_type_icon = serializers.SerializerMethodField()
     ci_type_color = serializers.SerializerMethodField()
-    relation_count = serializers.SerializerMethodField()
+    relation_count = serializers.IntegerField(source='_relation_count', read_only=True, default=0)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     environment_display = serializers.CharField(source='get_environment_display', read_only=True)
 
@@ -38,9 +38,6 @@ class ConfigItemSerializer(serializers.ModelSerializer):
 
     def get_ci_type_color(self, obj):
         return resolve_config_item_type_meta(obj)['color']
-
-    def get_relation_count(self, obj):
-        return obj.outgoing_relations.count() + obj.incoming_relations.count()
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

@@ -4,8 +4,9 @@ class CIType(models.Model):
     name = models.CharField("模型名称", max_length=50, unique=True)
     icon = models.CharField("内置图标", max_length=50, blank=True)
     color = models.CharField("主题色", max_length=20, default="#9c27b0")
-    description = models.CharField("描述", max_length=200, blank=True)
+    description = models.TextField("描述", blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return self.name
@@ -52,6 +53,15 @@ class CostRecord(models.Model):
     amount = models.DecimalField("金额(元)", max_digits=10, decimal_places=2)
     provider = models.CharField("云厂商", max_length=50, blank=True)
     computed_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['ci', 'month'],
+                name='cmdb_costrecord_unique_ci_month',
+            )
+        ]
 
 class ResourceRequest(models.Model):
     ENV_CHOICES = [('prod', '生产'), ('test', '测试'), ('dev', '开发')]

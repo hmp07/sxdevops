@@ -46,6 +46,9 @@ frontend/cmdb-cost-check*.json
 frontend/screenshots/
 docs/screenshots/*-smoke.png
 
+# Reference clients (not part of the project)
+itop-clinet/
+
 # Local dev runtime
 .codex/
 .runlogs/
