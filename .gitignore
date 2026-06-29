@@ -49,6 +49,10 @@ docs/screenshots/*-smoke.png
 # Reference clients (not part of the project)
 itop-clinet/
 
+# Go build artifacts
+tools/itop-mcp-server/itop-mcp-server
+tools/itop-mcp-server/itop-mcp-server.exe
+
 # Local dev runtime
 .codex/
 .runlogs/
