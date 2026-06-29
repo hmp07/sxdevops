@@ -831,6 +831,59 @@ BUILTIN_SKILLS = [
 - 高风险回滚必须走审批、dry-run 或演练确认。""",
         'allowed_role_codes': [],
     },
+    {
+        'name': 'Zabbix 告警排障 SOP',
+        'slug': 'sx-zabbix-troubleshooting',
+        'category': '告警排障',
+        'description': '约束 assistant 如何结合 Zabbix 监控数据（主机、问题、监控项、历史趋势）进行告警排障。',
+        'source_type': AIOpsSkill.SOURCE_INLINE,
+        'applicable_actions': ['zabbix.problem_analysis', 'cross_system.root_cause'],
+        'examples': ['帮我查 Zabbix 上的严重告警', '分析生产环境 Zabbix 告警根因', '这个主机在 Zabbix 上有什么异常'],
+        'builtin_tools': ['query_zabbix_problems', 'query_zabbix_hosts', 'query_zabbix_items', 'query_zabbix_history'],
+        'recommended_tools': ['query_alerts', 'query_logs', 'query_knowledge_graph'],
+        'max_iterations': 4,
+        'risk_level': AIOpsSkill.RISK_READ_ONLY,
+        'output_contract': {
+            'sections': ['告警概述', '受影响主机', '监控项异常', '历史趋势', '根因推断', '建议动作'],
+            'blocks': ['incident_card', 'evidence_timeline', 'risk_notice'],
+        },
+        'content': """Zabbix 排障 SOP：
+1. 先通过 query_zabbix_problems 了解当前有哪些活跃告警，按严重级别排序。
+2. 对每个问题涉及的 hostid，通过 query_zabbix_hosts 获取主机名、状态、IP。
+3. 通过 query_zabbix_items 查看主机的关键监控项（CPU、内存、磁盘、网络）的最新值。
+4. 若有异常指标，通过 query_zabbix_history 拉取近 1 小时趋势数据判断是突发还是持续。
+5. 结合 query_alerts、query_logs 等平台工具进行交叉验证。
+6. 输出结构化结论：告警概述 → 受影响主机 → 监控项异常 → 历史趋势 → 根因推断 → 建议动作。""",
+        'allowed_role_codes': [],
+    },
+    {
+        'name': 'iTop 变更影响分析',
+        'slug': 'sx-itop-impact-analysis',
+        'category': '变更关联',
+        'description': '约束 assistant 如何利用 iTop CMDB 的 CI 关联关系分析变更的影响范围。',
+        'source_type': AIOpsSkill.SOURCE_INLINE,
+        'applicable_actions': ['itop.change_impact', 'cross_system.root_cause'],
+        'examples': ['这个变更会影响哪些服务器', '查下这个 CI 关联了哪些设备', '分析变更对下游的影响'],
+        'builtin_tools': [
+            'mcp__iTop_CMDB_MCP__itop_get_cis',
+            'mcp__iTop_CMDB_MCP__itop_get_related',
+            'mcp__iTop_CMDB_MCP__itop_get_tickets',
+        ],
+        'recommended_tools': ['query_knowledge_graph', 'query_recent_changes'],
+        'max_iterations': 3,
+        'risk_level': AIOpsSkill.RISK_READ_ONLY,
+        'output_contract': {
+            'sections': ['变更概述', '影响范围', '关联CI', '关联工单', '风险等级', '建议审批策略'],
+            'blocks': ['evidence_timeline', 'risk_notice'],
+        },
+        'content': """iTop 变更影响分析 SOP：
+1. 通过 itop_get_cis 查询目标 CI 的基本信息。
+2. 通过 itop_get_related 获取该 CI 的关联关系（使用 impacts 关系，depth=2-3），列出所有上游和下游设备/服务。
+3. 通过 itop_get_tickets 查询与该 CI 相关的近期工单，判断是否有正在进行的变更。
+4. 结合 query_knowledge_graph 在本平台知识图谱中查看对应的本地 CI 和关联关系。
+5. 输出结构化结论：变更概述 → 影响范围 → 关联CI列表 → 关联工单 → 风险等级 → 建议审批策略。""",
+        'allowed_role_codes': [],
+    },
 ]
 
 BUILTIN_ACTION_REGISTRY = [
@@ -1077,6 +1130,100 @@ BUILTIN_ACTION_REGISTRY = [
             '分析订单服务最近一小时的 SLO 风险。',
             '当前服务健康度下降主要受哪些指标影响？',
             '订单服务健康度下降主要是延迟还是错误率导致的',
+        ],
+    },
+    {
+        'code': 'zabbix.problem_analysis',
+        'display_name': 'Zabbix 告警分析',
+        'category': '故障排障',
+        'description': '结合 Zabbix 监控数据（主机状态、告警问题、监控项指标）定位基础设施故障根因。',
+        'risk_level': 'read_only',
+        'agent_mode': 'react',
+        'required_context': ['environment'],
+        'allowed_tools': [
+            'query_zabbix_problems',
+            'query_zabbix_hosts',
+            'query_zabbix_items',
+            'query_zabbix_history',
+            'query_alerts',
+            'query_logs',
+            'query_knowledge_graph',
+            'query_recent_changes',
+        ],
+        'skills': ['sx-zabbix-troubleshooting', 'answer-formatter'],
+        'preflight_required': False,
+        'preflight_fields': [
+            {'name': 'environment', 'label': '环境', 'required': True},
+            {'name': 'host_search', 'label': '主机名', 'required': False},
+            {'name': 'min_severity', 'label': '最低严重级别', 'required': False},
+        ],
+        'output_blocks': ['incident_card', 'evidence_timeline', 'risk_notice'],
+        'rbac_permissions': ['aiops.chat.view', 'aiops.chat.analyze'],
+        'suggested_questions': [
+            '帮我查下 Zabbix 上有没有严重告警',
+            'Zabbix 上 order-center 相关主机最近有什么问题',
+            '分析下生产环境 Zabbix 告警的根因',
+        ],
+    },
+    {
+        'code': 'itop.change_impact',
+        'display_name': '变更影响分析（iTop CMDB）',
+        'category': '变更关联',
+        'description': '基于 iTop CMDB 的 CI 关联关系，分析变更可能影响的服务范围和设备列表。',
+        'risk_level': 'read_only',
+        'agent_mode': 'react',
+        'required_context': ['environment'],
+        'allowed_tools': [
+            'mcp__iTop_CMDB_MCP__itop_get_cis',
+            'mcp__iTop_CMDB_MCP__itop_get_related',
+            'mcp__iTop_CMDB_MCP__itop_get_tickets',
+            'query_knowledge_graph',
+            'query_recent_changes',
+        ],
+        'skills': ['sx-itop-impact-analysis', 'sx-change-impact-analysis', 'answer-formatter'],
+        'preflight_required': False,
+        'preflight_fields': [
+            {'name': 'environment', 'label': '环境', 'required': True},
+            {'name': 'ci_name', 'label': 'CI 名称', 'required': False},
+        ],
+        'output_blocks': ['evidence_timeline', 'risk_notice'],
+        'rbac_permissions': ['aiops.chat.view', 'aiops.chat.analyze'],
+        'suggested_questions': [
+            '这个变更会影响哪些服务器',
+            '查下 iTop 中这个 CI 关联了哪些设备',
+            '分析订单服务的变更对下游系统的影响',
+        ],
+    },
+    {
+        'code': 'cross_system.root_cause',
+        'display_name': '跨系统根因分析',
+        'category': '故障排障',
+        'description': '综合 Zabbix 监控、iTop CMDB 关联、告警、日志、链路和变更记录，执行跨系统联合根因分析。',
+        'risk_level': 'read_only',
+        'agent_mode': 'plan_react',
+        'required_context': ['environment'],
+        'allowed_tools': [
+            'query_zabbix_problems', 'query_zabbix_hosts', 'query_zabbix_items', 'query_zabbix_history',
+            'query_alerts', 'query_logs', 'query_traces', 'query_knowledge_graph',
+            'query_recent_changes', 'query_event_wall',
+        ],
+        'skills': [
+            'sx-zabbix-troubleshooting', 'sx-itop-impact-analysis',
+            'sx-alert-evidence-checklist', 'sx-change-impact-analysis',
+            'sx-event-timeline-correlation', 'answer-formatter',
+        ],
+        'preflight_required': False,
+        'preflight_fields': [
+            {'name': 'environment', 'label': '环境', 'required': True},
+            {'name': 'service', 'label': '服务名', 'required': False},
+            {'name': 'time_window', 'label': '时间窗口', 'required': False},
+        ],
+        'output_blocks': ['incident_card', 'evidence_timeline', 'risk_notice', 'query_suggestion'],
+        'rbac_permissions': ['aiops.chat.view', 'aiops.chat.analyze'],
+        'suggested_questions': [
+            '生产环境订单服务异常，帮我跨系统排查根因',
+            '从监控、CMDB 和变更记录综合分析当前故障',
+            '这个告警跟最近的变更有没有关联',
         ],
     },
 ]
