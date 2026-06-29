@@ -55,6 +55,30 @@ var ciSafeFields = map[string]bool{
 	"asset_number": true, "purchase_date": true, "end_of_warranty": true,
 }
 
+// ticketSafeFields defines which ticket fields are safe to update via MCP
+var ticketSafeFields = map[string]bool{
+	"title": true, "description": true, "priority": true,
+	"status": true, "solution": true, "pending_reason": true,
+}
+
+// validateTicketUpdate checks ticket fields against the safe list
+func validateTicketUpdate(fields map[string]interface{}) error {
+	for key := range fields {
+		if !ticketSafeFields[key] {
+			return fmt.Errorf("field '%s' is not in the safe update list for tickets. Allowed: %s", key, ticketSafeFieldsString())
+		}
+	}
+	return nil
+}
+
+func ticketSafeFieldsString() string {
+	keys := make([]string, 0, len(ticketSafeFields))
+	for k := range ticketSafeFields {
+		keys = append(keys, k)
+	}
+	return strings.Join(keys, ", ")
+}
+
 // callItopAPI sends a JSON-RPC style request to iTop REST endpoint
 func callItopAPI(jsonData string) (*RestResponse, error) {
 	var b bytes.Buffer

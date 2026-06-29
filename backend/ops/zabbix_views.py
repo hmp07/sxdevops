@@ -38,7 +38,7 @@ class ZabbixDataSourceViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             raise PermissionError('不能删除默认数据源')
         instance.delete()
 
-    @drf_action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
+    @drf_action(detail=True, methods=['post'], permission_classes=[IsAuthenticated, build_rbac_permission('ops.zabbix.datasource.manage')])
     def test_connection(self, request, pk=None):
         """测试 Zabbix API 连接"""
         ds = self.get_object()

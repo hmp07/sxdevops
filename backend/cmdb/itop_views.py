@@ -22,7 +22,7 @@ class iTopDataSourceViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'destroy': 'cmdb.itop.datasource.manage',
     }
 
-    @drf_action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
+    @drf_action(detail=True, methods=['post'], permission_classes=[IsAuthenticated, build_rbac_permission('cmdb.itop.datasource.manage')])
     def test_connection(self, request, pk=None):
         ds = self.get_object()
         try:
@@ -31,7 +31,7 @@ class iTopDataSourceViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         except Exception as e:
             return Response({'status': 'error', 'message': str(e)})
 
-    @drf_action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
+    @drf_action(detail=True, methods=['post'], permission_classes=[IsAuthenticated, build_rbac_permission('cmdb.itop.datasource.manage')])
     def trigger_sync(self, request, pk=None):
         ds = self.get_object()
         if ds.sync_status == 'running':

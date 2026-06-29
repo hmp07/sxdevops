@@ -204,7 +204,7 @@ class ZabbixDataSourceSerializer(serializers.ModelSerializer):
     class Meta:
         model = ZabbixDataSource
         fields = '__all__'
-        extra_kwargs = {'password': {'write_only': True}}
+        extra_kwargs = {'password': {'write_only': True}, 'auth_token': {'write_only': True}}
 
 
 class ObservabilityDataSourceLinkSerializer(serializers.ModelSerializer):

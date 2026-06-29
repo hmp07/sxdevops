@@ -378,14 +378,20 @@ func writeError(id interface{}, code int, message string) {
 func main() {
 	url := flag.String("url", "", "iTop REST API URL (required)")
 	user := flag.String("user", "", "Username (required)")
-	password := flag.String("password", "", "Password (required)")
+	password := flag.String("password", "", "Password (use ITOP_PASSWORD env var for production)")
 	version := flag.String("version", "1.4", "API version")
 	flag.Parse()
+
+	// Prefer environment variable for password in production
+	finalPassword := os.Getenv("ITOP_PASSWORD")
+	if finalPassword == "" {
+		finalPassword = *password
+	}
 
 	config = &Config{
 		BaseURL:  *url,
 		Username: *user,
-		Password: *password,
+		Password: finalPassword,
 		Version:  *version,
 	}
 
