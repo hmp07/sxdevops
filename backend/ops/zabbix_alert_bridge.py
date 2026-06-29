@@ -1,0 +1,43 @@
+"""Zabbix Problem → SxDevOps Alert 桥接模块.
+
+提供将 Zabbix API 返回的问题数据转换为 SxDevOps Alert 模型的工具函数。
+可通过 Webhook 或定时轮询两种方式触发。
+"""
+from django.utils.timezone import now
+from ops.models import Alert
+
+
+def upsert_alert_from_zabbix_problem(problem, host_name=''):
+    """将 Zabbix problem 转换为 Alert 并 upsert"""
+    severity_map = {0: 'info', 1: 'info', 2: 'warning', 3: 'warning', 4: 'critical', 5: 'critical'}
+    event_id = str(problem.get('eventid', ''))
+    if not event_id:
+        return None
+
+    alert, created = Alert.objects.update_or_create(
+        fingerprint=f'zabbix:{event_id}',
+        defaults={
+            'title': problem.get('name', 'Zabbix 告警')[:256],
+            'level': severity_map.get(int(problem.get('severity', 0)), 'warning'),
+            'status': 'active' if not problem.get('r_eventid') else 'resolved',
+            'source_type': 'zabbix',
+            'source': 'zabbix_api',
+            'external_id': event_id,
+            'host': None,
+            'resource': host_name or '',
+            'starts_at': _ts_to_datetime(problem.get('clock')),
+            'last_received_at': now(),
+            'labels': {'zabbix_severity': str(problem.get('severity', ''))},
+            'annotations': {'acknowledged': str(problem.get('acknowledged', ''))},
+            'raw_payload': problem,
+        },
+    )
+    return alert
+
+
+def _ts_to_datetime(ts):
+    """Unix 时间戳转 datetime"""
+    if not ts:
+        return now()
+    from datetime import datetime, timezone as tz
+    return datetime.fromtimestamp(int(ts), tz=tz.utc)

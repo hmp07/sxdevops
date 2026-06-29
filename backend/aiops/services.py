@@ -8673,6 +8673,159 @@ def query_recent_changes(session, user_message, user, limit=5):
     return {'sections': sections, 'citations': citations}
 
 
+# ---- Zabbix MCP Tool Handlers ----
+
+def query_zabbix_hosts(session, user_message, user, datasource_id=None, search='', limit=50):
+    """查询 Zabbix 主机列表和状态"""
+    from ops.zabbix_client import ZabbixClient
+    from ops.models import ZabbixDataSource
+    started_at = time.time()
+    invocation = _create_tool_invocation(session, user_message, 'query_zabbix_hosts', {'datasource_id': datasource_id, 'search': search})
+    if not user_has_permissions(user, ['ops.zabbix.view']):
+        _finish_tool_invocation(invocation, {}, started_at, success=False)
+        return {'error': '权限不足'}
+    try:
+        ds = _resolve_zabbix_datasource(datasource_id)
+        if not ds:
+            _finish_tool_invocation(invocation, {}, started_at, success=False)
+            return {'error': '未找到可用的 Zabbix 数据源'}
+        client = ZabbixClient(ds)
+        result = client.get_hosts(search=search or None, limit=limit)
+        if 'error' in result:
+            return {'error': result['error']}
+        hosts = []
+        for h in (result or []):
+            hosts.append({
+                'hostid': h.get('hostid'), 'host': h.get('host'),
+                'name': h.get('name'), 'status': h.get('status'),
+                'available': h.get('available'),
+                'interfaces': [{'ip': i.get('ip')} for i in (h.get('interfaces') or [])],
+            })
+        _finish_tool_invocation(invocation, {'host_count': len(hosts)}, started_at, success=True)
+        return {'hosts': hosts, 'total': len(hosts)}
+    except Exception as e:
+        _finish_tool_invocation(invocation, {}, started_at, success=False)
+        return {'error': str(e)}
+
+
+def query_zabbix_problems(session, user_message, user, datasource_id=None, min_severity=None, limit=50):
+    """查询 Zabbix 当前告警问题"""
+    from ops.zabbix_client import ZabbixClient
+    from ops.models import ZabbixDataSource
+    started_at = time.time()
+    invocation = _create_tool_invocation(session, user_message, 'query_zabbix_problems', {'datasource_id': datasource_id})
+    if not user_has_permissions(user, ['ops.zabbix.view']):
+        _finish_tool_invocation(invocation, {}, started_at, success=False)
+        return {'error': '权限不足'}
+    try:
+        ds = _resolve_zabbix_datasource(datasource_id)
+        if not ds:
+            return {'error': '未找到可用的 Zabbix 数据源'}
+        client = ZabbixClient(ds)
+        severities = None
+        if min_severity is not None:
+            s = int(min_severity)
+            severities = list(range(s, 6))
+        result = client.get_problems(severities=severities, limit=limit)
+        if 'error' in result:
+            return {'error': result['error']}
+        problems = []
+        for p in (result or []):
+            problems.append({
+                'eventid': p.get('eventid'), 'name': p.get('name'),
+                'severity': _zabbix_severity_label(p.get('severity')),
+                'clock': p.get('clock'),
+                'acknowledged': p.get('acknowledged') == '1',
+            })
+        _finish_tool_invocation(invocation, {'problem_count': len(problems)}, started_at, success=True)
+        return {'problems': problems, 'total': len(problems)}
+    except Exception as e:
+        _finish_tool_invocation(invocation, {}, started_at, success=False)
+        return {'error': str(e)}
+
+
+def query_zabbix_items(session, user_message, user, datasource_id=None, host_ids=None, search='', limit=50):
+    """查询 Zabbix 监控项及最新值"""
+    from ops.zabbix_client import ZabbixClient
+    from ops.models import ZabbixDataSource
+    started_at = time.time()
+    invocation = _create_tool_invocation(session, user_message, 'query_zabbix_items', {'host_ids': host_ids, 'search': search})
+    if not user_has_permissions(user, ['ops.zabbix.view']):
+        _finish_tool_invocation(invocation, {}, started_at, success=False)
+        return {'error': '权限不足'}
+    try:
+        ds = _resolve_zabbix_datasource(datasource_id)
+        if not ds:
+            return {'error': '未找到可用的 Zabbix 数据源'}
+        client = ZabbixClient(ds)
+        hid_list = [int(h) for h in host_ids] if isinstance(host_ids, list) else None
+        result = client.get_items(host_ids=hid_list, search=search or None, limit=limit)
+        if 'error' in result:
+            return {'error': result['error']}
+        items = []
+        for it in (result or []):
+            items.append({
+                'itemid': it.get('itemid'), 'name': it.get('name'),
+                'key_': it.get('key_'), 'lastvalue': it.get('lastvalue'),
+                'units': it.get('units'), 'hostid': it.get('hostid'),
+            })
+        _finish_tool_invocation(invocation, {'item_count': len(items)}, started_at, success=True)
+        return {'items': items, 'total': len(items)}
+    except Exception as e:
+        _finish_tool_invocation(invocation, {}, started_at, success=False)
+        return {'error': str(e)}
+
+
+def query_zabbix_history(session, user_message, user, datasource_id=None, item_ids=None, limit=50):
+    """查询 Zabbix 监控项历史数据"""
+    from ops.zabbix_client import ZabbixClient
+    from ops.models import ZabbixDataSource
+    started_at = time.time()
+    invocation = _create_tool_invocation(session, user_message, 'query_zabbix_history', {'item_ids': item_ids})
+    if not user_has_permissions(user, ['ops.zabbix.view']):
+        _finish_tool_invocation(invocation, {}, started_at, success=False)
+        return {'error': '权限不足'}
+    try:
+        ds = _resolve_zabbix_datasource(datasource_id)
+        if not ds:
+            return {'error': '未找到可用的 Zabbix 数据源'}
+        client = ZabbixClient(ds)
+        iid_list = [int(i) for i in item_ids] if isinstance(item_ids, list) else None
+        if not iid_list:
+            return {'error': '请提供 item_ids'}
+        result = client.get_history(iid_list, limit=limit)
+        if 'error' in result:
+            return {'error': result['error']}
+        history = []
+        for h in (result or []):
+            history.append({
+                'itemid': h.get('itemid'), 'clock': h.get('clock'),
+                'value': h.get('value'), 'ns': h.get('ns'),
+            })
+        _finish_tool_invocation(invocation, {'point_count': len(history)}, started_at, success=True)
+        return {'history': history, 'total': len(history)}
+    except Exception as e:
+        _finish_tool_invocation(invocation, {}, started_at, success=False)
+        return {'error': str(e)}
+
+
+def _resolve_zabbix_datasource(datasource_id=None):
+    """查找可用的 Zabbix 数据源"""
+    from ops.models import ZabbixDataSource
+    if datasource_id:
+        try:
+            return ZabbixDataSource.objects.get(id=datasource_id, is_enabled=True)
+        except ZabbixDataSource.DoesNotExist:
+            pass
+    return ZabbixDataSource.objects.filter(is_enabled=True).order_by('-is_default').first()
+
+
+_ZABBIX_SEVERITY = {0: '未分类', 1: '信息', 2: '警告', 3: '一般严重', 4: '严重', 5: '灾难'}
+
+def _zabbix_severity_label(severity):
+    return _ZABBIX_SEVERITY.get(int(severity) if severity is not None else 0, '未知')
+
+
 def query_host_tasks(session, user_message, user, query='', status='', limit=6):
     started_at = time.time()
     tokens = _clean_tokens(query)
@@ -9459,6 +9612,63 @@ PLATFORM_MCP_TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        'name': 'sxdevops.query_zabbix_hosts',
+        'title': '查询 Zabbix 主机',
+        'description': '查询 Zabbix 监控系统的主机列表，包含主机名、状态、可用性和 IP 地址。',
+        'permission': 'ops.zabbix.view',
+        'handler': 'query_zabbix_hosts',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'search': {'type': 'string', 'description': '搜索关键字，按主机名模糊匹配'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200, 'default': 50},
+            },
+        },
+    },
+    {
+        'name': 'sxdevops.query_zabbix_problems',
+        'title': '查询 Zabbix 告警问题',
+        'description': '查询 Zabbix 当前活跃的告警问题，包含问题描述、严重级别、确认状态。严重级别: 0-未分类,1-信息,2-警告,3-一般,4-严重,5-灾难。',
+        'permission': 'ops.zabbix.view',
+        'handler': 'query_zabbix_problems',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'min_severity': {'type': 'integer', 'minimum': 0, 'maximum': 5, 'description': '最低严重级别，只返回大于等于此级别的告警'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200, 'default': 50},
+            },
+        },
+    },
+    {
+        'name': 'sxdevops.query_zabbix_items',
+        'title': '查询 Zabbix 监控项',
+        'description': '查询指定主机的监控项列表及最新值，包含监控项名称、键值、最新数值和单位。需要先通过 query_zabbix_hosts 获取主机 ID。',
+        'permission': 'ops.zabbix.view',
+        'handler': 'query_zabbix_items',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'host_ids': {'type': 'array', 'items': {'type': 'integer'}, 'description': '主机 ID 列表'},
+                'search': {'type': 'string', 'description': '按监控项键值或名称搜索'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200, 'default': 50},
+            },
+        },
+    },
+    {
+        'name': 'sxdevops.query_zabbix_history',
+        'title': '查询 Zabbix 历史数据',
+        'description': '查询指定监控项的历史数据，用于绘制趋势图或分析指标变化。需要先通过 query_zabbix_items 获取监控项 ID。',
+        'permission': 'ops.zabbix.view',
+        'handler': 'query_zabbix_history',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'item_ids': {'type': 'array', 'items': {'type': 'integer'}, 'description': '监控项 ID 列表'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200, 'default': 50},
+            },
+        },
+    },
 ]
 
 
@@ -9597,6 +9807,14 @@ def _invoke_platform_mcp_handler(handler_name, session, user, arguments):
         )
     if handler_name == 'query_recent_changes':
         return query_recent_changes(session, None, user, limit=limit)
+    if handler_name == 'query_zabbix_hosts':
+        return query_zabbix_hosts(session, None, user, search=arguments.get('search', ''), limit=arguments.get('limit', 50))
+    if handler_name == 'query_zabbix_problems':
+        return query_zabbix_problems(session, None, user, min_severity=arguments.get('min_severity'), limit=arguments.get('limit', 50))
+    if handler_name == 'query_zabbix_items':
+        return query_zabbix_items(session, None, user, host_ids=arguments.get('host_ids'), search=arguments.get('search', ''), limit=arguments.get('limit', 50))
+    if handler_name == 'query_zabbix_history':
+        return query_zabbix_history(session, None, user, item_ids=arguments.get('item_ids'), limit=arguments.get('limit', 50))
     raise ValueError('MCP 工具处理器不存在')
 
 

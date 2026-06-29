@@ -6,6 +6,7 @@ from . import log_views
 from . import docker_views
 from . import k8s_views
 from . import observability_views
+from . import zabbix_views
 
 router = DefaultRouter()
 router.register(r'hosts', views.HostViewSet)
@@ -37,6 +38,7 @@ router.register(r'observability/tracing/datasources', observability_views.Tracin
 router.register(r'observability/metric/datasources', observability_views.MetricDataSourceViewSet, basename='metric-datasource')
 router.register(r'k8s/clusters', k8s_views.K8sClusterViewSet)
 router.register(r'docker/hosts', docker_views.DockerHostViewSet)
+router.register(r'observability/zabbix/datasources', zabbix_views.ZabbixDataSourceViewSet, basename='zabbix-datasource')
 urlpatterns = [
     path('dashboard/stats/', views.dashboard_stats, name='dashboard-stats'),
     path('alerts/webhooks/<str:provider>/', views.alert_webhook, name='alert-webhook'),
@@ -69,6 +71,13 @@ urlpatterns = [
     path('observability/tracing/catalog/', observability_views.observability_tracing_catalog, name='observability-tracing-catalog'),
     path('observability/tracing/search/', observability_views.observability_tracing_search, name='observability-tracing-search'),
     path('observability/tracing/traces/<str:trace_id>/', observability_views.observability_trace_detail, name='observability-trace-detail'),
+    # Zabbix 代理查询端点
+    path('observability/zabbix/hosts/', zabbix_views.zabbix_hosts, name='zabbix-hosts'),
+    path('observability/zabbix/host-groups/', zabbix_views.zabbix_host_groups, name='zabbix-host-groups'),
+    path('observability/zabbix/items/', zabbix_views.zabbix_items, name='zabbix-items'),
+    path('observability/zabbix/history/', zabbix_views.zabbix_history, name='zabbix-history'),
+    path('observability/zabbix/triggers/', zabbix_views.zabbix_triggers, name='zabbix-triggers'),
+    path('observability/zabbix/problems/', zabbix_views.zabbix_problems, name='zabbix-problems'),
 
     path('', include(router.urls)),
 ]

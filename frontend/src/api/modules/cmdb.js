@@ -42,3 +42,11 @@ export const getCmdbDashboard = () => request.get('/cmdb/dashboard/stats/')
 export const getCmdbTopology = (params) => request.get('/cmdb/topology/data/', { params })
 export const getCmdbCostReport = (params) => request.get('/cmdb/cost/report/', { params })
 export const getCmdbOptimization = (params) => request.get('/cmdb/optimization/suggestions/', { params })
+
+// iTop 数据源管理
+export const getITopDataSources = () => request.get('/cmdb/itop/datasources/')
+export const createITopDataSource = (data) => request.post('/cmdb/itop/datasources/', data)
+export const updateITopDataSource = (id, data) => request.put(`/cmdb/itop/datasources/${id}/`, data)
+export const deleteITopDataSource = (id) => request.delete(`/cmdb/itop/datasources/${id}/`)
+export const testITopConnection = (id) => request.post(`/cmdb/itop/datasources/${id}/test_connection/`)
+export const triggerITopSync = (id) => request.post(`/cmdb/itop/datasources/${id}/trigger_sync/`)

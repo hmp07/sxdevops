@@ -100,3 +100,29 @@ class ResourceNode(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class iTopDataSource(models.Model):
+    """iTop 运维管理系统数据源"""
+    name = models.CharField("名称", max_length=128, unique=True)
+    api_url = models.CharField("API 地址", max_length=256)
+    api_version = models.CharField("API 版本", max_length=8, default="1.4")
+    auth_user = models.CharField("用户名", max_length=64)
+    auth_password = models.CharField("密码", max_length=256)
+    organization = models.CharField("组织", max_length=128, blank=True)
+    is_enabled = models.BooleanField("启用", default=True)
+    sync_mode = models.CharField("同步模式", max_length=16, choices=[('full', '全量'), ('incremental', '增量')], default='full')
+    sync_interval = models.PositiveIntegerField("同步间隔(秒)", default=3600)
+    config = models.JSONField("同步配置", default=dict, blank=True)
+    last_sync_at = models.DateTimeField("上次同步", null=True, blank=True)
+    sync_status = models.CharField("同步状态", max_length=16, default='idle')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'iTop 数据源'
+        verbose_name_plural = 'iTop 数据源'
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name

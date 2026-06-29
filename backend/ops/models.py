@@ -1286,6 +1286,32 @@ class MetricDataSource(models.Model):
         return f'{self.name} ({self.get_provider_display()})'
 
 
+class ZabbixDataSource(models.Model):
+    """Zabbix Server 数据源配置"""
+    name = models.CharField('名称', max_length=128, unique=True)
+    api_url = models.CharField('API 地址', max_length=256, help_text='Zabbix JSON-RPC 端点，如 https://zabbix.example.com/api_jsonrpc.php')
+    auth_type = models.CharField('认证方式', max_length=16, choices=[('token', 'API Token'), ('userpass', '用户名/密码')], default='token')
+    auth_token = models.CharField('API Token', max_length=256, blank=True, default='')
+    username = models.CharField('用户名', max_length=64, blank=True, default='')
+    password = models.CharField('密码', max_length=256, blank=True, default='')
+    tls_verify = models.BooleanField('TLS 验证', default=True)
+    timeout = models.PositiveIntegerField('超时(秒)', default=15)
+    is_enabled = models.BooleanField('启用', default=True)
+    is_default = models.BooleanField('默认数据源', default=False)
+    config = models.JSONField('扩展配置', default=dict, blank=True)
+    last_sync_at = models.DateTimeField('上次同步', null=True, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = 'Zabbix 数据源'
+        verbose_name_plural = 'Zabbix 数据源'
+        ordering = ['-is_default', 'name']
+
+    def __str__(self):
+        return self.name
+
+
 class ObservabilityDataSourceLink(models.Model):
     name = models.CharField('关联名称', max_length=128, unique=True)
     log_datasource = models.ForeignKey(
@@ -1633,6 +1659,9 @@ class TransactionTicket(models.Model):
     applicant = models.CharField('申请人', max_length=64, default='system')
     window = models.CharField('执行窗口', max_length=128, blank=True, default='')
     description = models.TextField('说明', blank=True, default='')
+    external_source = models.CharField('外部来源', max_length=32, null=True, blank=True)
+    external_id = models.CharField('外部ID', max_length=128, null=True, blank=True)
+    external_url = models.CharField('外部链接', max_length=256, null=True, blank=True)
     status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)

@@ -227,6 +227,7 @@ const menuItems = [
       { path: '/observability/tracing', title: '链路追踪', icon: 'Connection', permission: 'ops.trace.view' },
       { path: '/observability/datasources', title: '数据源', icon: 'DataBoard', anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view', 'ops.trace.datasource.view', 'ops.observability.link.view'] },
       { path: '/alerts', title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
+      { path: '/observability/zabbix', title: 'Zabbix 监控', icon: 'Monitor', permission: 'ops.zabbix.view' },
     ],
   },
   {
@@ -276,6 +277,7 @@ const menuItems = [
       { path: '/cmdb/dashboard', title: 'CMDB 总览', icon: 'DataLine', permission: 'cmdb.dashboard.view' },
       { path: '/cmdb/config-items', title: '配置项', icon: 'Monitor', permission: 'cmdb.ci.view' },
       { path: '/cmdb/topology', title: '资源拓扑', icon: 'Share', permission: 'cmdb.topology.view' },
+      { path: '/cmdb/itop', title: 'iTop 对接', icon: 'Connection', permission: 'cmdb.itop.view' },
     ],
   },
   {

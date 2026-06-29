@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import CIType, ConfigItem, CIRelation, CostRecord, ResourceRequest, ResourceNode
+from .models import CIType, ConfigItem, CIRelation, CostRecord, iTopDataSource, ResourceRequest, ResourceNode
 from django.db.models import Sum
 from .sync import normalize_ci_attributes, normalize_ci_type_name, resolve_config_item_type_meta
 
@@ -130,3 +130,10 @@ class ResourceNodeSerializer(serializers.ModelSerializer):
     class Meta:
         model = ResourceNode
         fields = '__all__'
+
+
+class iTopDataSourceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = iTopDataSource
+        fields = '__all__'
+        extra_kwargs = {'auth_password': {'write_only': True}}

@@ -1,6 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from . import views
+from . import itop_views
 
 router = DefaultRouter()
 router.register(r'ci-types', views.CITypeViewSet)
@@ -9,6 +10,7 @@ router.register(r'ci-relations', views.CIRelationViewSet)
 router.register(r'cost-records', views.CostRecordViewSet)
 router.register(r'resource-requests', views.ResourceRequestViewSet)
 router.register(r'resource-nodes', views.ResourceNodeViewSet)
+router.register(r'itop/datasources', itop_views.iTopDataSourceViewSet, basename='itop-datasource')
 
 urlpatterns = [
     path('', include(router.urls)),

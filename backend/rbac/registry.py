@@ -87,6 +87,15 @@ PERMISSION_DEFINITIONS = [
     ('rbac.module.manage', '管理模块显示', 'rbac', '配置左侧菜单模块的显示与隐藏'),
     ('rbac.audit.view', '查看操作审计', 'rbac', '查看平台关键操作、执行动作和配置变更审计记录'),
     ('rbac.audit.manage', '管理操作审计', 'rbac', '按保留策略批量清理操作审计记录'),
+    # Zabbix
+    ('ops.zabbix.view', '查看 Zabbix 监控', 'ops', '查看 Zabbix 主机、监控项、历史数据和问题'),
+    ('ops.zabbix.datasource.view', '查看 Zabbix 数据源', 'ops', '查看 Zabbix Server 连接配置'),
+    ('ops.zabbix.datasource.manage', '管理 Zabbix 数据源', 'ops', '新增、编辑、删除、测试 Zabbix 数据源'),
+    # iTop / CMDB
+    ('cmdb.itop.view', '查看 iTop 对接', 'cmdb', '查看 iTop 数据源配置和同步状态'),
+    ('cmdb.itop.datasource.view', '查看 iTop 数据源', 'cmdb', '查看 iTop 服务器连接配置'),
+    ('cmdb.itop.datasource.manage', '管理 iTop 数据源', 'cmdb', '新增、编辑、删除 iTop 数据源并触发同步'),
+    ('cmdb.itop.ticket.view', '查看 iTop 工单', 'cmdb', '查看从 iTop 同步的工单'),
 ]
 
 
@@ -120,6 +129,8 @@ BUILTIN_ROLES = [
             'cmdb.dashboard.view', 'cmdb.ci.view',
             'cmdb.ci.manage', 'cmdb.topology.view', 'cmdb.cost.view', 'cmdb.request.submit',
             'cmdb.request.approve',
+            'ops.zabbix.view', 'ops.zabbix.datasource.view', 'ops.zabbix.datasource.manage',
+            'cmdb.itop.view', 'cmdb.itop.datasource.view', 'cmdb.itop.datasource.manage', 'cmdb.itop.ticket.view',
         ],
     },
     {

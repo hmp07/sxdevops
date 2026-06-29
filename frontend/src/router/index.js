@@ -320,6 +320,12 @@ const routes = [
         meta: { hidden: true, permission: 'ops.trace.datasource.view' },
       },
       {
+        path: 'observability/zabbix',
+        name: 'ZabbixMonitor',
+        component: () => import('@/views/ZabbixMonitor.vue'),
+        meta: { title: 'Zabbix 监控', icon: 'Monitor', permission: 'ops.zabbix.view' },
+      },
+      {
         path: 'observability/tracing/topology',
         redirect: (to) => ({ path: '/observability/tracing', query: { ...to.query, topology: '1' } }),
         meta: { hidden: true, permission: 'ops.trace.view' },
@@ -457,6 +463,12 @@ const routes = [
         name: 'CmdbTopology',
         component: () => import('@/views/CmdbTopology.vue'),
         meta: { title: '资源拓扑', icon: 'Share', permission: 'cmdb.topology.view' },
+      },
+      {
+        path: 'cmdb/itop',
+        name: 'iTopCMDB',
+        component: () => import('@/views/iTopCMDB.vue'),
+        meta: { title: 'iTop 对接', icon: 'Connection', permission: 'cmdb.itop.view' },
       },
       {
         path: 'sql',

@@ -186,3 +186,18 @@ export const testTracingDataSource = (id) => request.post(`/observability/tracin
 export const getTracingCatalog = (params) => request.get('/observability/tracing/catalog/', { params })
 export const searchTracing = (data) => request.post('/observability/tracing/search/', data)
 export const getTraceDetail = (traceId, params) => request.get(`/observability/tracing/traces/${traceId}/`, { params })
+
+// Zabbix 数据源管理
+export const getZabbixDataSources = () => request.get('/observability/zabbix/datasources/')
+export const createZabbixDataSource = (data) => request.post('/observability/zabbix/datasources/', data)
+export const updateZabbixDataSource = (id, data) => request.put(`/observability/zabbix/datasources/${id}/`, data)
+export const deleteZabbixDataSource = (id) => request.delete(`/observability/zabbix/datasources/${id}/`)
+export const testZabbixConnection = (id) => request.post(`/observability/zabbix/datasources/${id}/test_connection/`)
+
+// Zabbix 代理查询
+export const getZabbixHosts = (params) => request.get('/observability/zabbix/hosts/', { params })
+export const getZabbixHostGroups = (params) => request.get('/observability/zabbix/host-groups/', { params })
+export const getZabbixItems = (params) => request.get('/observability/zabbix/items/', { params })
+export const getZabbixHistory = (params) => request.get('/observability/zabbix/history/', { params })
+export const getZabbixTriggers = (params) => request.get('/observability/zabbix/triggers/', { params })
+export const getZabbixProblems = (params) => request.get('/observability/zabbix/problems/', { params })

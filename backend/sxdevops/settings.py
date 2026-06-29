@@ -588,3 +588,15 @@ def _build_channel_layers():
 # ASGI / Channels
 ASGI_APPLICATION = 'sxdevops.asgi.application'
 CHANNEL_LAYERS = _build_channel_layers()
+
+# 外部系统集成配置
+INTEGRATION_CONFIG = {
+    'zabbix': {
+        'proxy_timeout': int(os.getenv('ZABBIX_PROXY_TIMEOUT', '15')),
+        'cache_ttl': int(os.getenv('ZABBIX_CACHE_TTL', '60')),
+    },
+    'itop': {
+        'sync_batch_size': int(os.getenv('ITOP_SYNC_BATCH_SIZE', '100')),
+        'sync_timeout': int(os.getenv('ITOP_SYNC_TIMEOUT', '300')),
+    },
+}
