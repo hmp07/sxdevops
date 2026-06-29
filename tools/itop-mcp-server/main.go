@@ -23,6 +23,11 @@ type JSONRPCResponse struct {
 	Error   *RPCError   `json:"error,omitempty"`
 }
 
+type JSONRPCNotification struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+}
+
 type RPCError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -422,7 +427,7 @@ func main() {
 				},
 			})
 			// Send initialized notification
-			notify := JSONRPCResponse{
+			notify := JSONRPCNotification{
 				JSONRPC: "2.0",
 				Method:  "notifications/initialized",
 			}
