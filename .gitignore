@@ -49,6 +49,9 @@ docs/screenshots/*-smoke.png
 # Reference clients (not part of the project)
 itop-clinet/
 
+# Per-deployment documents (not part of open-source codebase)
+docs/入场调研方案*.md
+
 # Go build artifacts
 tools/itop-mcp-server/itop-mcp-server
 tools/itop-mcp-server/itop-mcp-server.exe
