@@ -29,7 +29,7 @@
         </div>
         <div class="audit-card audit-card--inline">
           <div class="stat-label">可用主机</div>
-          <div class="stat-value">{{ hosts.filter(h => h.available === '1').length }}</div>
+          <div class="stat-value">{{ onlineCount }}</div>
         </div>
         <div class="audit-card audit-card--inline">
           <div class="stat-label">当前问题</div>
@@ -49,17 +49,27 @@
         </button>
       </div>
 
+      <!-- 主机列表 -->
       <section class="panel" v-if="activeTab === 'hosts'">
         <div class="toolbar">
-          <el-input v-model="hostSearch" size="small" placeholder="搜索主机名" clearable style="width: 200px" />
+          <div class="toolbar-left">
+            <el-input v-model="hostSearch" size="small" placeholder="搜索主机名" clearable style="width: 200px" @clear="hostPage = 1" @keyup.enter="hostPage = 1" />
+          </div>
+          <div class="toolbar-right">
+            <span style="font-size: 12px; color: #94a3b8; margin-right: 8px">每页</span>
+            <el-select v-model="hostPageSize" size="small" style="width: 80px" @change="hostPage = 1">
+              <el-option v-for="n in pageSizeOptions" :key="n" :label="String(n)" :value="n" />
+            </el-select>
+            <span style="font-size: 12px; color: #94a3b8; margin-left: 4px">条</span>
+          </div>
         </div>
-        <el-table :data="filteredHosts" v-loading="loading" stripe @row-click="showHostItems">
+        <el-table :data="pagedHosts" v-loading="loading" stripe @row-click="showHostItems">
           <el-table-column prop="host" label="主机名" min-width="140" />
           <el-table-column prop="name" label="可见名称" min-width="160" />
           <el-table-column label="状态" width="90">
             <template #default="{ row }">
-              <el-tag :type="row.available === '1' ? 'success' : 'danger'" size="small">
-                {{ row.available === '1' ? '可用' : '不可用' }}
+              <el-tag :type="isHostOnline(row) ? 'success' : 'danger'" size="small">
+                {{ isHostOnline(row) ? '可用' : '不可用' }}
               </el-tag>
             </template>
           </el-table-column>
@@ -74,10 +84,27 @@
             </template>
           </el-table-column>
         </el-table>
+        <div class="pagination-wrap">
+          <el-pagination
+            v-model:current-page="hostPage" :page-size="hostPageSize"
+            :total="filteredHosts.length" layout="total, prev, pager, next, sizes"
+            :page-sizes="pageSizeOptions" @size-change="onHostSizeChange" @current-change="hostPage = $event"
+          />
+        </div>
       </section>
 
+      <!-- 触发器 -->
       <section class="panel" v-if="activeTab === 'triggers'">
-        <el-table :data="triggers" v-loading="loading" stripe>
+        <div class="toolbar">
+          <div class="toolbar-right">
+            <span style="font-size: 12px; color: #94a3b8; margin-right: 8px">每页</span>
+            <el-select v-model="triggerPageSize" size="small" style="width: 80px" @change="triggerPage = 1">
+              <el-option v-for="n in pageSizeOptions" :key="n" :label="String(n)" :value="n" />
+            </el-select>
+            <span style="font-size: 12px; color: #94a3b8; margin-left: 4px">条</span>
+          </div>
+        </div>
+        <el-table :data="pagedTriggers" v-loading="loading" stripe>
           <el-table-column prop="description" label="触发器名称" min-width="220" />
           <el-table-column label="严重度" width="90">
             <template #default="{ row }">
@@ -93,14 +120,31 @@
           </el-table-column>
           <el-table-column label="关联主机" width="150">
             <template #default="{ row }">
-              <span v-for="h in (row.hosts || []).slice(0, 2)" :key="h.hostid">{{ h.host }}</span>
+              <span v-for="h in (row.hosts || []).slice(0, 2)" :key="h.hostid" style="display:block;font-size:12px">{{ h.host }}</span>
             </template>
           </el-table-column>
         </el-table>
+        <div class="pagination-wrap">
+          <el-pagination
+            v-model:current-page="triggerPage" :page-size="triggerPageSize"
+            :total="triggers.length" layout="total, prev, pager, next, sizes"
+            :page-sizes="pageSizeOptions" @size-change="onTriggerSizeChange" @current-change="triggerPage = $event"
+          />
+        </div>
       </section>
 
+      <!-- 当前问题 -->
       <section class="panel" v-if="activeTab === 'problems'">
-        <el-table :data="problems" v-loading="loading" stripe>
+        <div class="toolbar">
+          <div class="toolbar-right">
+            <span style="font-size: 12px; color: #94a3b8; margin-right: 8px">每页</span>
+            <el-select v-model="problemPageSize" size="small" style="width: 80px" @change="problemPage = 1">
+              <el-option v-for="n in pageSizeOptions" :key="n" :label="String(n)" :value="n" />
+            </el-select>
+            <span style="font-size: 12px; color: #94a3b8; margin-left: 4px">条</span>
+          </div>
+        </div>
+        <el-table :data="pagedProblems" v-loading="loading" stripe>
           <el-table-column prop="name" label="问题描述" min-width="250" />
           <el-table-column label="严重度" width="90">
             <template #default="{ row }">
@@ -120,6 +164,13 @@
             </template>
           </el-table-column>
         </el-table>
+        <div class="pagination-wrap">
+          <el-pagination
+            v-model:current-page="problemPage" :page-size="problemPageSize"
+            :total="problems.length" layout="total, prev, pager, next, sizes"
+            :page-sizes="pageSizeOptions" @size-change="onProblemSizeChange" @current-change="problemPage = $event"
+          />
+        </div>
       </section>
 
       <el-dialog v-model="itemsVisible" title="主机监控项" width="800px">
@@ -152,6 +203,7 @@ import {
 
 const SEVERITY_MAP = { 0: '未分类', 1: '信息', 2: '警告', 3: '一般严重', 4: '严重', 5: '灾难' }
 const SEVERITY_TYPE = { 0: 'info', 1: 'info', 2: 'warning', 3: '', 4: 'danger', 5: 'danger' }
+const pageSizeOptions = [10, 20, 50, 100]
 
 const loading = ref(false)
 const activeDsId = ref('')
@@ -166,10 +218,45 @@ const itemSearch = ref('')
 const itemsVisible = ref(false)
 const itemsLoading = ref(false)
 
+// Pagination state
+const hostPage = ref(1)
+const hostPageSize = ref(20)
+const triggerPage = ref(1)
+const triggerPageSize = ref(20)
+const problemPage = ref(1)
+const problemPageSize = ref(20)
+
+// ---- Host status logic (from ZBXScreen data_aggregator.py _build_online_status) ----
+// Use main interface's 'available' field: 0=unknown(assume online), 1=available(online), 2=unavailable(offline)
+// Rule: available != 2 → online
+function isHostOnline(host) {
+  const ifaces = host.interfaces || []
+  const main = ifaces.find(i => i.main === '1') || ifaces[0]
+  if (!main) return true  // no interface → assume online
+  const avail = parseInt(main.available)
+  return avail !== 2  // 0=unknown(online), 1=available(online), 2=unavailable(offline)
+}
+
+const onlineCount = computed(() => hosts.value.filter(h => isHostOnline(h)).length)
+
 const filteredHosts = computed(() => {
   const kw = hostSearch.value.trim().toLowerCase()
   if (!kw) return hosts.value
   return hosts.value.filter(h => (h.host || '').toLowerCase().includes(kw) || (h.name || '').toLowerCase().includes(kw))
+})
+
+// Paginated computed slices
+const pagedHosts = computed(() => {
+  const start = (hostPage.value - 1) * hostPageSize.value
+  return filteredHosts.value.slice(start, start + hostPageSize.value)
+})
+const pagedTriggers = computed(() => {
+  const start = (triggerPage.value - 1) * triggerPageSize.value
+  return triggers.value.slice(start, start + triggerPageSize.value)
+})
+const pagedProblems = computed(() => {
+  const start = (problemPage.value - 1) * problemPageSize.value
+  return problems.value.slice(start, start + problemPageSize.value)
 })
 
 const filteredItems = computed(() => {
@@ -177,6 +264,10 @@ const filteredItems = computed(() => {
   if (!kw) return items.value
   return items.value.filter(i => (i.name || '').toLowerCase().includes(kw) || (i.key_ || '').toLowerCase().includes(kw))
 })
+
+function onHostSizeChange(n) { hostPageSize.value = n; hostPage.value = 1 }
+function onTriggerSizeChange(n) { triggerPageSize.value = n; triggerPage.value = 1 }
+function onProblemSizeChange(n) { problemPageSize.value = n; problemPage.value = 1 }
 
 function severityLabel(p) { return SEVERITY_MAP[parseInt(p)] || '未知' }
 function severityType(p) { return SEVERITY_TYPE[parseInt(p)] || 'info' }
@@ -190,7 +281,6 @@ async function loadDataSources() {
     if (dataSources.value.length && !activeDsId.value) {
       const def = dataSources.value.find(d => d.is_default) || dataSources.value[0]
       activeDsId.value = def.id
-      // Auto-load data after short delay for Vue to render
       setTimeout(() => refreshAll(), 100)
     }
   } catch { /* ignore */ }
@@ -212,6 +302,8 @@ async function refreshAll() {
     hosts.value = Array.isArray(hRes) ? hRes : (hRes?.result || [])
     triggers.value = Array.isArray(tRes) ? tRes : (tRes?.result || [])
     problems.value = Array.isArray(pRes) ? pRes : (pRes?.result || [])
+    // Reset pagination
+    hostPage.value = 1; triggerPage.value = 1; problemPage.value = 1
   } catch {
     hosts.value = []; triggers.value = []; problems.value = []
   } finally {
@@ -223,8 +315,8 @@ async function showHostItems(row) {
   itemsVisible.value = true
   itemsLoading.value = true
   try {
-    const { data } = await getZabbixItems({ datasource_id: activeDsId.value, host_ids: [row.hostid] })
-    items.value = Array.isArray(data) ? data : (data?.result || [])
+    const resp = await getZabbixItems({ datasource_id: activeDsId.value, host_ids: [row.hostid] })
+    items.value = Array.isArray(resp) ? resp : (resp?.result || resp?.data || [])
   } catch {
     items.value = []
   } finally {
@@ -242,4 +334,8 @@ onMounted(() => { loadDataSources() })
 
 <style scoped>
 .zabbix-top-stats { margin-bottom: 16px; }
+.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.toolbar-left { display: flex; align-items: center; gap: 8px; }
+.toolbar-right { display: flex; align-items: center; }
+.pagination-wrap { margin-top: 12px; display: flex; justify-content: flex-end; }
 </style>
