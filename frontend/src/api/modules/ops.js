@@ -199,5 +199,6 @@ export const getZabbixHosts = (params) => request.get('/observability/zabbix/hos
 export const getZabbixHostGroups = (params) => request.get('/observability/zabbix/host-groups/', { params })
 export const getZabbixItems = (params) => request.get('/observability/zabbix/items/', { params })
 export const getZabbixHistory = (params) => request.get('/observability/zabbix/history/', { params })
+export const getZabbixTrends = (params) => request.get('/observability/zabbix/trends/', { params })
 export const getZabbixTriggers = (params) => request.get('/observability/zabbix/triggers/', { params })
 export const getZabbixProblems = (params) => request.get('/observability/zabbix/problems/', { params })

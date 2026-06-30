@@ -8837,7 +8837,7 @@ def query_zabbix_hosts(session, user_message, user, datasource_id=None, search='
             _finish_tool_invocation(invocation, {}, started_at, success=False)
             return {'error': '未找到可用的 Zabbix 数据源'}
         client = ZabbixClient(ds)
-        result = client.get_hosts(search=search or None, limit=limit)
+        result = client.get_hosts(search=search or None)
         if 'error' in result:
             return {'error': result['error']}
         hosts = []
@@ -8873,7 +8873,7 @@ def query_zabbix_problems(session, user_message, user, datasource_id=None, min_s
         if min_severity is not None:
             s = int(min_severity)
             severities = list(range(s, 6))
-        result = client.get_problems(severities=severities, limit=limit)
+        result = client.get_problems(severities=severities)
         if 'error' in result:
             return {'error': result['error']}
         problems = []
@@ -8906,7 +8906,7 @@ def query_zabbix_items(session, user_message, user, datasource_id=None, host_ids
             return {'error': '未找到可用的 Zabbix 数据源'}
         client = ZabbixClient(ds)
         hid_list = [int(h) for h in host_ids] if isinstance(host_ids, list) else None
-        result = client.get_items(host_ids=hid_list, search=search or None, limit=limit)
+        result = client.get_items(host_ids=hid_list, search=search or None)
         if 'error' in result:
             return {'error': result['error']}
         items = []
@@ -8940,7 +8940,7 @@ def query_zabbix_history(session, user_message, user, datasource_id=None, item_i
         iid_list = [int(i) for i in item_ids] if isinstance(item_ids, list) else None
         if not iid_list:
             return {'error': '请提供 item_ids'}
-        result = client.get_history(iid_list, limit=limit)
+        result = client.get_history(iid_list)
         if 'error' in result:
             return {'error': result['error']}
         history = []

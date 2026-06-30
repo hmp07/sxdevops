@@ -76,6 +76,7 @@ urlpatterns = [
     path('observability/zabbix/host-groups/', zabbix_views.zabbix_host_groups, name='zabbix-host-groups'),
     path('observability/zabbix/items/', zabbix_views.zabbix_items, name='zabbix-items'),
     path('observability/zabbix/history/', zabbix_views.zabbix_history, name='zabbix-history'),
+    path('observability/zabbix/trends/', zabbix_views.zabbix_trends, name='zabbix-trends'),
     path('observability/zabbix/triggers/', zabbix_views.zabbix_triggers, name='zabbix-triggers'),
     path('observability/zabbix/problems/', zabbix_views.zabbix_problems, name='zabbix-problems'),
 
