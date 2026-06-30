@@ -25,6 +25,14 @@ class ZabbixClient:
         self._rpc_id += 1
         return self._rpc_id
 
+    def _get_auth_header(self):
+        """构建认证 HTTP Header"""
+        if self._cached_token:
+            return f'Bearer {self._cached_token}'
+        if self.auth_type == 'token':
+            return f'Bearer {self.auth_token}'
+        return None
+
     def _call(self, method, params=None):
         """调用 Zabbix JSON-RPC API"""
         payload = {
@@ -34,8 +42,9 @@ class ZabbixClient:
             'id': self._next_id(),
         }
         headers = {'Content-Type': 'application/json-rpc'}
-        if self.auth_type == 'token':
-            headers['Authorization'] = f'Bearer {self.auth_token}'
+        auth_header = self._get_auth_header()
+        if auth_header:
+            headers['Authorization'] = auth_header
 
         try:
             resp = requests.post(
@@ -52,18 +61,20 @@ class ZabbixClient:
 
         if 'error' in result:
             err = result['error']
-            if err.get('code') == -32602 and self.auth_type == 'userpass':
-                # Session terminated, re-authenticate and retry once
+            # Re-authenticate on session errors and retry once
+            if self.auth_type == 'userpass' and not self._cached_token:
                 if self._login():
-                    payload['auth'] = self._cached_token
-                    return self._call_raw(payload)
+                    headers['Authorization'] = f'Bearer {self._cached_token}'
+                    return self._call_raw(payload, headers)
             return {'error': err.get('message', str(err)), 'data': err.get('data', '')}
 
         return result.get('result', {})
 
-    def _call_raw(self, payload):
+    def _call_raw(self, payload, extra_headers=None):
         """Raw JSON-RPC call without auth handling"""
         headers = {'Content-Type': 'application/json-rpc'}
+        if extra_headers:
+            headers.update(extra_headers)
         try:
             resp = requests.post(
                 self.api_url,
@@ -85,31 +96,28 @@ class ZabbixClient:
         with self._token_lock:
             if self._cached_token:
                 return True
-            result = self._call_raw({
+            raw = self._call_raw({
                 'jsonrpc': '2.0',
                 'method': 'user.login',
                 'params': {'username': self.username, 'password': self.password},
                 'id': self._next_id(),
             })
-            if isinstance(result, dict) and 'error' not in result:
-                self._cached_token = result
+            # user.login returns a string token directly (not a dict)
+            if isinstance(raw, str) and len(raw) == 32:
+                self._cached_token = raw
+                return True
+            if isinstance(raw, dict) and 'error' not in raw:
+                self._cached_token = raw
                 return True
         return False
 
     def _ensure_auth(self):
-        """确保已认证（用户密码模式）"""
-        if self.auth_type == 'token':
+        """确保已认证"""
+        if self.auth_type == 'token' and self.auth_token:
             return True
         if self._cached_token:
             return True
         return self._login()
-
-    def _build_params(self, params=None):
-        """构建带 auth 的参数"""
-        p = params or {}
-        if self.auth_type == 'userpass' and self._cached_token:
-            p['auth'] = self._cached_token
-        return p
 
     # ---- Zabbix API Methods ----
 
@@ -129,14 +137,14 @@ class ZabbixClient:
             params['search'] = {'host': search, 'name': search}
         if not self._ensure_auth():
             return {'error': '认证失败'}
-        return self._call('host.get', self._build_params(params))
+        return self._call('host.get', params)
 
     def get_host_groups(self):
         """获取主机组列表"""
         params = {'output': ['groupid', 'name']}
         if not self._ensure_auth():
             return {'error': '认证失败'}
-        return self._call('hostgroup.get', self._build_params(params))
+        return self._call('hostgroup.get', params)
 
     def get_items(self, host_ids=None, search=None, limit=100):
         """获取监控项列表"""
@@ -151,7 +159,7 @@ class ZabbixClient:
             params['search'] = {'key_': search, 'name': search}
         if not self._ensure_auth():
             return {'error': '认证失败'}
-        return self._call('item.get', self._build_params(params))
+        return self._call('item.get', params)
 
     def get_history(self, item_ids, history_type=0, time_from=None, time_to=None, limit=100):
         """获取监控项历史数据"""
@@ -167,7 +175,7 @@ class ZabbixClient:
             params['time_till'] = time_to
         if not self._ensure_auth():
             return {'error': '认证失败'}
-        return self._call('history.get', self._build_params(params))
+        return self._call('history.get', params)
 
     def get_triggers(self, host_ids=None, min_severity=None, only_true=False, limit=100):
         """获取触发器列表"""
@@ -185,22 +193,17 @@ class ZabbixClient:
             params['filter'] = {'value': 1}
         if not self._ensure_auth():
             return {'error': '认证失败'}
-        return self._call('trigger.get', self._build_params(params))
+        return self._call('trigger.get', params)
 
     def get_problems(self, host_ids=None, severities=None, recent=True, limit=100):
-        """获取当前问题"""
+        """获取当前问题（Zabbix 7.4 不支持 selectHosts/sortfield）"""
         params = {'output': ['eventid', 'name', 'severity', 'clock', 'source', 'objectid',
                              'acknowledged', 'r_eventid'],
-                  'selectHosts': ['hostid', 'host', 'name'],
-                  'sortfield': 'clock',
-                  'sortorder': 'DESC',
                   'limit': limit}
         if host_ids:
             params['hostids'] = host_ids
         if severities:
             params['severities'] = severities
-        if recent:
-            params['recent'] = 'true'
         if not self._ensure_auth():
             return {'error': '认证失败'}
-        return self._call('problem.get', self._build_params(params))
+        return self._call('problem.get', params)

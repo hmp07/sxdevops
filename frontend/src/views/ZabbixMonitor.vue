@@ -184,12 +184,14 @@ function formatTime(t) { return t ? new Date(parseInt(t) * 1000).toLocaleString(
 
 async function loadDataSources() {
   try {
-    const { data } = await getZabbixDataSources()
-    dataSources.value = data?.results || data || []
+    const resp = await getZabbixDataSources()
+    const list = resp?.results || resp?.data || resp || []
+    dataSources.value = Array.isArray(list) ? list : (list.results || [])
     if (dataSources.value.length && !activeDsId.value) {
       const def = dataSources.value.find(d => d.is_default) || dataSources.value[0]
       activeDsId.value = def.id
-      await refreshAll()
+      // Auto-load data after short delay for Vue to render
+      setTimeout(() => refreshAll(), 100)
     }
   } catch { /* ignore */ }
 }
@@ -199,14 +201,17 @@ async function refreshAll() {
   loading.value = true
   try {
     const params = { datasource_id: activeDsId.value }
-    const [hRes, tRes, pRes] = await Promise.all([
+    const results = await Promise.allSettled([
       getZabbixHosts(params),
       getZabbixTriggers(params),
       getZabbixProblems(params),
     ])
-    hosts.value = Array.isArray(hRes.data) ? hRes.data : (hRes.data?.result || [])
-    triggers.value = Array.isArray(tRes.data) ? tRes.data : (tRes.data?.result || [])
-    problems.value = Array.isArray(pRes.data) ? pRes.data : (pRes.data?.result || [])
+    const hRes = results[0].status === 'fulfilled' ? results[0].value : null
+    const tRes = results[1].status === 'fulfilled' ? results[1].value : null
+    const pRes = results[2].status === 'fulfilled' ? results[2].value : null
+    hosts.value = Array.isArray(hRes) ? hRes : (hRes?.result || [])
+    triggers.value = Array.isArray(tRes) ? tRes : (tRes?.result || [])
+    problems.value = Array.isArray(pRes) ? pRes : (pRes?.result || [])
   } catch {
     hosts.value = []; triggers.value = []; problems.value = []
   } finally {
