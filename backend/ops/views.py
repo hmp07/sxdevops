@@ -2147,6 +2147,15 @@ class LogEntryViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, build_rbac_permission('ops.dashboard.view')])
+def _zabbix_host_online(host):
+    """Zabbix 主机在线判断：通过主接口 available 字段"""
+    ifaces = host.get('interfaces', []) or []
+    main = next((i for i in ifaces if str(i.get('main', '')) == '1'), None) or (ifaces[0] if ifaces else None)
+    if not main:
+        return True
+    return str(main.get('available', '0')) != '2'
+
+
 def dashboard_stats(request):
     host_total = Host.objects.count()
     host_status = dict(Host.objects.values_list('status').annotate(count=Count('id')).values_list('status', 'count'))
@@ -2174,7 +2183,34 @@ def dashboard_stats(request):
         many=True,
     ).data
 
+    # Zabbix integration stats
+    zabbix_hosts_total = 0
+    zabbix_hosts_online = 0
+    zabbix_problems_total = 0
+    try:
+        from .models import ZabbixDataSource
+        from .zabbix_client import ZabbixClient
+        ds = ZabbixDataSource.objects.filter(is_enabled=True).order_by('-is_default').first()
+        if ds:
+            client = ZabbixClient(ds)
+            result = client.get_hosts()
+            if 'error' not in result:
+                zabbix_hosts_total = len(result)
+                zabbix_hosts_online = sum(
+                    1 for h in result if _zabbix_host_online(h)
+                )
+            probs = client.get_problems()
+            if 'error' not in probs:
+                zabbix_problems_total = len(probs)
+    except Exception:
+        pass
+
     return Response({
+        'zabbix': {
+            'hosts_total': zabbix_hosts_total,
+            'hosts_online': zabbix_hosts_online,
+            'problems_total': zabbix_problems_total,
+        },
         'hosts': {
             'total': host_total,
             'online': host_status.get('online', 0),
