@@ -84,7 +84,20 @@ async function load() {
   loading.value = true
   try {
     const resp = await getCmdbDashboard()
-    stats.value = resp || {}
+    if (resp) {
+      stats.value = {
+        total_ci: resp.ci_total || 0,
+        active_ci: resp.ci_active || 0,
+        relation_count: resp.relation_count || 0,
+        pending_requests: resp.pending_requests || 0,
+        by_type: resp.ci_by_type || [],
+        by_environment: resp.ci_by_env || [],
+        by_business_line: resp.ci_by_business || [],
+        device_matched: resp.device_matched || 0,
+      }
+    } else {
+      stats.value = {}
+    }
   } catch {
     stats.value = {}
   } finally {
