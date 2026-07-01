@@ -136,8 +136,9 @@ const dsForm = reactive({ name: '', api_url: '', api_version: '1.4', auth_user: 
 async function loadDataSources() {
   loading.value = true
   try {
-    const { data } = await getITopDataSources()
-    dataSources.value = data?.results || data || []
+    const resp = await getITopDataSources()
+    const list = resp?.results || resp?.data || resp || []
+    dataSources.value = Array.isArray(list) ? list : (list.results || [])
   } catch { /* ignore */ } finally { loading.value = false }
 }
 
