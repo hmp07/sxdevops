@@ -23,6 +23,7 @@ from ops.models import (
     TaskResource,
     TaskResourceGroup,
     TracingDataSource,
+    ZabbixDataSource,
 )
 from marketplace.models import ServiceDeployment
 from ops.tracing_providers import load_tracing_catalog
@@ -54,6 +55,8 @@ CAPABILITY_DEFS = [
     ('alerts', '告警', 'alert', '/alerts'),
     ('internal_events', '内部事件', 'internal_event', '/events/wall'),
     ('external_events', '外部事件', 'external_event', '/events/wall'),
+    ('zabbix_monitoring', 'Zabbix 监控', 'zabbix_datasource', '/observability/zabbix'),
+    ('cmdb', 'CMDB', 'cmdb', '/cmdb/dashboard'),
 ]
 
 
@@ -393,6 +396,8 @@ def _empty_graph(filters=None):
             {'key': 'infrastructure_member', 'label': '集群包含主机'},
             {'key': 'service_runtime', 'label': '服务依赖'},
             {'key': 'system_runtime', 'label': '系统依赖运行组件'},
+            {'key': 'zabbix_monitored', 'label': 'Zabbix 监控'},
+            {'key': 'zabbix_triggered', 'label': 'Zabbix 告警'},
         ],
         'environment_required': True,
     }
@@ -1527,6 +1532,7 @@ def build_knowledge_graph(params=None):
     selected_metric_datasource_ids = set()
     selected_log_datasource_ids = set()
     selected_tracing_datasource_ids = set()
+    selected_zabbix_datasource_ids = set()
     selected_observability_link_ids = set()
     selected_k8s_cluster_ids = set()
     selected_k8s_namespaces = defaultdict(set)
@@ -1547,6 +1553,7 @@ def build_knowledge_graph(params=None):
             selected_metric_datasource_ids.update(_int_list(getattr(config, 'metric_datasource_ids', []) or []))
             selected_log_datasource_ids.update(_int_list(config.log_datasource_ids))
             selected_tracing_datasource_ids.update(_int_list(config.tracing_datasource_ids))
+            selected_zabbix_datasource_ids.update(_int_list(getattr(config, 'zabbix_datasource_ids', []) or []))
             selected_observability_link_ids.update(_int_list(getattr(config, 'observability_link_ids', []) or []))
             config_k8s_cluster_ids = _int_list(config.k8s_cluster_ids)
             selected_k8s_cluster_ids.update(config_k8s_cluster_ids)
@@ -2402,6 +2409,34 @@ def build_knowledge_graph(params=None):
             provider=datasource.provider,
         )
         add_edge(_node_key('capability', 'tracing'), node_id, '接入链路源', 'capability_datasource')
+
+    # Zabbix 监控数据源节点
+    zabbix_queryset = ZabbixDataSource.objects.filter(is_enabled=True).order_by('name')
+    if use_knowledge_env:
+        zabbix_queryset = zabbix_queryset.filter(id__in=selected_zabbix_datasource_ids) if selected_zabbix_datasource_ids else ZabbixDataSource.objects.none()
+    for ds in zabbix_queryset:
+        node_id = _node_key('zabbix_ds', ds.id)
+        add_node(
+            node_id, ds.name, 'datasource', 'Zabbix 数据源',
+            route='/observability/zabbix', status='enabled',
+            description=f'Zabbix {ds.api_url}',
+        )
+        add_edge(_node_key('capability', 'zabbix_monitoring'), node_id, '接入 Zabbix', 'capability_datasource')
+
+    # iTop CMDB 数据源节点
+    try:
+        from cmdb.models import iTopDataSource
+        itop_queryset = iTopDataSource.objects.filter(is_enabled=True).order_by('name')
+        for ds in itop_queryset:
+            node_id = _node_key('itop_ds', ds.id)
+            add_node(
+                node_id, ds.name, 'datasource', 'iTop 数据源',
+                route='/cmdb/itop', status='enabled',
+                description=f'iTop {ds.api_url}',
+            )
+            add_edge(_node_key('capability', 'cmdb'), node_id, '接入 iTop', 'capability_datasource')
+    except ImportError:
+        pass
 
     dashboard_nodes = {}
     dashboard_folder_counts = Counter()
