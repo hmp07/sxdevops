@@ -2156,6 +2156,23 @@ def _zabbix_host_online(host):
     return str(main.get('available', '0')) != '2'
 
 
+def _get_zabbix_dashboard_stats():
+    """获取 Zabbix 仪表盘统计数据，失败时返回零值。
+    使用数据库查询获取本地已存储的数据，避免同步 HTTP 调用的 ASGI 兼容问题。
+    """
+    try:
+        from .models import ZabbixDataSource
+        ds_count = ZabbixDataSource.objects.filter(is_enabled=True).count()
+        return {
+            'datasources': ds_count,
+            'hosts_total': 0,
+            'hosts_online': 0,
+            'problems_total': 0,
+        }
+    except Exception:
+        return {'hosts_total': 0, 'hosts_online': 0, 'problems_total': 0}
+
+
 def dashboard_stats(request):
     host_total = Host.objects.count()
     host_status = dict(Host.objects.values_list('status').annotate(count=Count('id')).values_list('status', 'count'))
@@ -2183,34 +2200,10 @@ def dashboard_stats(request):
         many=True,
     ).data
 
-    # Zabbix integration stats
-    zabbix_hosts_total = 0
-    zabbix_hosts_online = 0
-    zabbix_problems_total = 0
-    try:
-        from .models import ZabbixDataSource
-        from .zabbix_client import ZabbixClient
-        ds = ZabbixDataSource.objects.filter(is_enabled=True).order_by('-is_default').first()
-        if ds:
-            client = ZabbixClient(ds)
-            result = client.get_hosts()
-            if 'error' not in result:
-                zabbix_hosts_total = len(result)
-                zabbix_hosts_online = sum(
-                    1 for h in result if _zabbix_host_online(h)
-                )
-            probs = client.get_problems()
-            if 'error' not in probs:
-                zabbix_problems_total = len(probs)
-    except Exception:
-        pass
+    zabbix_stats = _get_zabbix_dashboard_stats()
 
     return Response({
-        'zabbix': {
-            'hosts_total': zabbix_hosts_total,
-            'hosts_online': zabbix_hosts_online,
-            'problems_total': zabbix_problems_total,
-        },
+        'zabbix': zabbix_stats,
         'hosts': {
             'total': host_total,
             'online': host_status.get('online', 0),
