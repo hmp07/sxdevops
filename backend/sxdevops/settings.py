@@ -392,6 +392,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'sxdevops.asgi_middleware.DRFResponseRenderMiddleware',
 ]
 
 ROOT_URLCONF = 'sxdevops.urls'
