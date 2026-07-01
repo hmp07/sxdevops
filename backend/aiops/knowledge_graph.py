@@ -2416,20 +2416,20 @@ def build_knowledge_graph(params=None):
         zabbix_queryset = zabbix_queryset.filter(id__in=selected_zabbix_datasource_ids) if selected_zabbix_datasource_ids else ZabbixDataSource.objects.none()
     for ds in zabbix_queryset:
         node_id = _node_key('zabbix_ds', ds.id)
-        add_node(
-            node_id, ds.name, 'datasource', 'Zabbix 数据源',
-            route='/observability/zabbix', status='enabled',
-            description=f'Zabbix {ds.api_url}',
-        )
-        add_edge(_node_key('capability', 'zabbix_monitoring'), node_id, '接入 Zabbix', 'capability_datasource')
-        # 检查是否有关联的 iTop CI
+        # Build description with device mapping info if available
+        desc = f'Zabbix {ds.api_url}'
         try:
             from ops.models import DeviceMapping
-            dm = DeviceMapping.objects.filter(zabbix_ip=ds.api_url.replace('http://', '').rstrip('/')).first()
-            if not dm:
-                pass
+            matched = DeviceMapping.objects.filter(config_item__isnull=False).count()
+            if matched > 0:
+                desc = f'Zabbix {ds.api_url}，{matched} 台设备已关联 iTop CI'
         except Exception:
             pass
+        add_node(
+            node_id, ds.name, 'datasource', 'Zabbix 数据源',
+            route='/observability/zabbix', status='enabled', description=desc,
+        )
+        add_edge(_node_key('capability', 'zabbix_monitoring'), node_id, '接入 Zabbix', 'capability_datasource')
 
     # iTop CMDB 数据源节点
     try:
@@ -2437,10 +2437,17 @@ def build_knowledge_graph(params=None):
         itop_queryset = iTopDataSource.objects.filter(is_enabled=True).order_by('name')
         for ds in itop_queryset:
             node_id = _node_key('itop_ds', ds.id)
+            desc = f'iTop {ds.api_url}'
+            try:
+                from ops.models import DeviceMapping
+                matched = DeviceMapping.objects.filter(config_item__isnull=False).count()
+                if matched > 0:
+                    desc = f'iTop {ds.api_url}，{matched} 台设备已关联 Zabbix 监控'
+            except Exception:
+                pass
             add_node(
                 node_id, ds.name, 'datasource', 'iTop 数据源',
-                route='/cmdb/itop', status='enabled',
-                description=f'iTop {ds.api_url}',
+                route='/cmdb/itop', status='enabled', description=desc,
             )
             add_edge(_node_key('capability', 'cmdb'), node_id, '接入 iTop', 'capability_datasource')
     except ImportError:
