@@ -8956,6 +8956,44 @@ def query_zabbix_history(session, user_message, user, datasource_id=None, item_i
         return {'error': str(e)}
 
 
+def query_device_detail(session, user_message, user, hostname=''):
+    """查询设备完整信息（Zabbix+iTop 合并视图）"""
+    started_at = time.time()
+    invocation = _create_tool_invocation(session, user_message, 'query_device_detail', {'hostname': hostname})
+    if not user_has_permissions(user, ['ops.zabbix.view']):
+        _finish_tool_invocation(invocation, {}, started_at, success=False)
+        return {'error': '权限不足'}
+    try:
+        from ops.models import DeviceMapping
+        from django.db.models import Q
+        mapping = DeviceMapping.objects.filter(
+            Q(zabbix_hostname__icontains=hostname) | Q(zabbix_ip__icontains=hostname)
+        ).select_related('config_item__ci_type').first()
+        if not mapping:
+            return {'found': False, 'message': f'未找到匹配设备: {hostname}'}
+        result = {
+            'found': True,
+            'zabbix_hostid': mapping.zabbix_hostid,
+            'zabbix_hostname': mapping.zabbix_hostname,
+            'zabbix_ip': mapping.zabbix_ip,
+            'match_method': mapping.match_method,
+            'match_confidence': mapping.match_confidence,
+        }
+        if mapping.config_item:
+            ci = mapping.config_item
+            result['itop_ci'] = {
+                'id': ci.id, 'name': ci.name, 'ci_type': ci.ci_type.name,
+                'status': ci.status, 'business_line': ci.business_line,
+                'environment': ci.environment, 'admin_user': ci.admin_user,
+                'attributes': ci.attributes or {},
+            }
+        _finish_tool_invocation(invocation, result, started_at, success=True)
+        return result
+    except Exception as e:
+        _finish_tool_invocation(invocation, {}, started_at, success=False)
+        return {'error': str(e)}
+
+
 def _resolve_zabbix_datasource(datasource_id=None):
     """查找可用的 Zabbix 数据源"""
     from ops.models import ZabbixDataSource
@@ -9816,6 +9854,19 @@ PLATFORM_MCP_TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        'name': 'sxdevops.query_device_detail',
+        'title': '查询设备完整信息',
+        'description': '查询设备的 Zabbix 监控与 iTop CMDB 合并视图。输入主机名或 IP 即可获取监控状态、CMDB 属性、关联工单。',
+        'permission': 'ops.zabbix.view',
+        'handler': 'query_device_detail',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'hostname': {'type': 'string', 'description': '主机名或 IP 地址'},
+            },
+        },
+    },
 ]
 
 
@@ -9962,6 +10013,8 @@ def _invoke_platform_mcp_handler(handler_name, session, user, arguments):
         return query_zabbix_items(session, None, user, host_ids=arguments.get('host_ids'), search=arguments.get('search', ''), limit=arguments.get('limit', 50))
     if handler_name == 'query_zabbix_history':
         return query_zabbix_history(session, None, user, item_ids=arguments.get('item_ids'), limit=arguments.get('limit', 50))
+    if handler_name == 'query_device_detail':
+        return query_device_detail(session, None, user, hostname=arguments.get('hostname', ''))
     raise ValueError('MCP 工具处理器不存在')
 
 

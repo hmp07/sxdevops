@@ -58,6 +58,16 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="Zabbix 监控" width="140">
+          <template #default="{ row }">
+            <template v-if="row.zabbix_mapping">
+              <el-tag type="success" size="small" effect="plain">
+                {{ row.zabbix_mapping.zabbix_hostname }}
+              </el-tag>
+            </template>
+            <span v-else style="color: #94a3b8; font-size: 12px">未监控</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="100" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="showDetail(row)">详情</el-button>

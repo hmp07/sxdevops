@@ -2422,6 +2422,14 @@ def build_knowledge_graph(params=None):
             description=f'Zabbix {ds.api_url}',
         )
         add_edge(_node_key('capability', 'zabbix_monitoring'), node_id, '接入 Zabbix', 'capability_datasource')
+        # 检查是否有关联的 iTop CI
+        try:
+            from ops.models import DeviceMapping
+            dm = DeviceMapping.objects.filter(zabbix_ip=ds.api_url.replace('http://', '').rstrip('/')).first()
+            if not dm:
+                pass
+        except Exception:
+            pass
 
     # iTop CMDB 数据源节点
     try:

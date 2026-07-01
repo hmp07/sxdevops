@@ -607,7 +607,7 @@ class CITypeViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
 class ConfigItemViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     """配置项管理"""
-    queryset = ConfigItem.objects.select_related('ci_type').annotate(
+    queryset = ConfigItem.objects.select_related('ci_type', 'zabbix_mapping').annotate(
         _relation_count=Coalesce(
             Count('outgoing_relations', distinct=True) + Count('incoming_relations', distinct=True),
             Value(0),
@@ -909,6 +909,14 @@ class ResourceRequestViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, build_rbac_permission('cmdb.dashboard.view')])
+def _get_device_matched_count():
+    try:
+        from ops.models import DeviceMapping
+        return DeviceMapping.objects.filter(config_item__isnull=False).count()
+    except Exception:
+        return 0
+
+
 def cmdb_dashboard(request):
     month = _current_month()
     ci_total = ConfigItem.objects.count()
@@ -952,6 +960,7 @@ def cmdb_dashboard(request):
         'total_monthly_cost': _to_float(total_monthly_cost),
         'relation_count': relation_count,
         'pending_requests': pending_requests,
+        'device_matched': _get_device_matched_count(),
     })
 
 @api_view(['GET'])
