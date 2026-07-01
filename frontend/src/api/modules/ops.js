@@ -202,3 +202,4 @@ export const getZabbixHistory = (params) => request.get('/observability/zabbix/h
 export const getZabbixTrends = (params) => request.get('/observability/zabbix/trends/', { params })
 export const getZabbixTriggers = (params) => request.get('/observability/zabbix/triggers/', { params })
 export const getZabbixProblems = (params) => request.get('/observability/zabbix/problems/', { params })
+export const getZabbixDeviceMappings = (params) => request.get('/observability/zabbix/device-mappings/', { params })

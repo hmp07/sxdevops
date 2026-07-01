@@ -118,6 +118,13 @@ def sync_cis(ds):
                 ci.save()
                 stats['updated'] += 1
 
+            # 触发设备关联匹配
+            try:
+                from ops.device_matcher import match_ci_to_zabbix
+                match_ci_to_zabbix(ci)
+            except Exception:
+                pass
+
     return stats
 
 

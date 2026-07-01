@@ -8,6 +8,7 @@ from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from .models import ZabbixDataSource
 from .serializers import ZabbixDataSourceSerializer
 from .zabbix_client import ZabbixClient
+from .device_matcher import get_device_mapping_for_hosts
 
 
 def _get_client(datasource_id):
@@ -57,6 +58,12 @@ def zabbix_hosts(request):
     )
     if 'error' in result:
         return Response(result, status=status.HTTP_400_BAD_REQUEST)
+    # 触发设备关联匹配（静默，不影响数据返回）
+    try:
+        from .device_matcher import match_all_zabbix_hosts
+        match_all_zabbix_hosts(result if isinstance(result, list) else [])
+    except Exception:
+        pass
     return Response(result)
 
 
@@ -153,3 +160,14 @@ def zabbix_problems(request):
     if 'error' in result:
         return Response(result, status=status.HTTP_400_BAD_REQUEST)
     return Response(result)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.zabbix.view')])
+def zabbix_device_mappings(request):
+    """获取 Zabbix 主机的设备关联映射"""
+    host_ids = request.GET.getlist('host_ids')
+    if not host_ids:
+        return Response({})
+    mappings = get_device_mapping_for_hosts(host_ids)
+    return Response(mappings)

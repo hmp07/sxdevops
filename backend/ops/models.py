@@ -1312,6 +1312,43 @@ class ZabbixDataSource(models.Model):
         return self.name
 
 
+class DeviceMapping(models.Model):
+    """Zabbix 主机与 iTop CI 的设备关联映射"""
+    MATCH_IP = 'ip_exact'
+    MATCH_NAME = 'name_fuzzy'
+    MATCH_MANUAL = 'manual'
+    MATCH_METHODS = [
+        (MATCH_IP, 'IP 精确匹配'),
+        (MATCH_NAME, '名称模糊匹配'),
+        (MATCH_MANUAL, '人工指定'),
+    ]
+
+    zabbix_hostid = models.CharField('Zabbix 主机 ID', max_length=32, unique=True)
+    zabbix_hostname = models.CharField('Zabbix 主机名', max_length=128)
+    zabbix_ip = models.CharField('Zabbix IP', max_length=64)
+    config_item = models.OneToOneField(
+        'cmdb.ConfigItem', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='zabbix_mapping', verbose_name='关联 CI',
+    )
+    match_method = models.CharField('匹配方式', max_length=16, choices=MATCH_METHODS, default=MATCH_IP)
+    match_confidence = models.FloatField('匹配置信度', default=1.0)
+    is_verified = models.BooleanField('已确认', default=False)
+    last_matched_at = models.DateTimeField('上次匹配时间', auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = '设备关联映射'
+        verbose_name_plural = '设备关联映射'
+        indexes = [
+            models.Index(fields=['zabbix_ip']),
+            models.Index(fields=['config_item']),
+        ]
+
+    def __str__(self):
+        ci_name = self.config_item.name if self.config_item else '未关联'
+        return f'{self.zabbix_hostname} ↔ {ci_name}'
+
+
 class ObservabilityDataSourceLink(models.Model):
     name = models.CharField('关联名称', max_length=128, unique=True)
     log_datasource = models.ForeignKey(

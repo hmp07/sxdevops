@@ -83,6 +83,16 @@
               <el-tag v-for="g in (row.groups || []).slice(0, 3)" :key="g.groupid" size="small" style="margin: 1px">{{ g.name }}</el-tag>
             </template>
           </el-table-column>
+          <el-table-column label="关联 CI" width="140">
+            <template #default="{ row }">
+              <template v-if="row._mapping && row._mapping.config_item">
+                <el-tag type="success" size="small" effect="plain">
+                  {{ row._mapping.config_item.name }}
+                </el-tag>
+              </template>
+              <span v-else style="color: #94a3b8; font-size: 12px">未关联</span>
+            </template>
+          </el-table-column>
         </el-table>
         <div class="pagination-wrap">
           <el-pagination
@@ -199,6 +209,7 @@ import { Refresh } from '@element-plus/icons-vue'
 import {
   getZabbixDataSources, getZabbixHosts,
   getZabbixItems, getZabbixTriggers, getZabbixProblems,
+  getZabbixDeviceMappings,
 } from '@/api/modules/ops'
 
 const SEVERITY_MAP = { 0: '未分类', 1: '信息', 2: '警告', 3: '一般严重', 4: '严重', 5: '灾难' }
@@ -302,6 +313,17 @@ async function refreshAll() {
     hosts.value = Array.isArray(hRes) ? hRes : (hRes?.result || [])
     triggers.value = Array.isArray(tRes) ? tRes : (tRes?.result || [])
     problems.value = Array.isArray(pRes) ? pRes : (pRes?.result || [])
+    // Load device mappings for hosts
+    if (hosts.value.length) {
+      try {
+        const hostIds = hosts.value.map(h => h.hostid)
+        const mResp = await getZabbixDeviceMappings({ host_ids: hostIds.join(',') })
+        const mappings = mResp || {}
+        for (const h of hosts.value) {
+          h._mapping = mappings[h.hostid] || null
+        }
+      } catch { /* ignore */ }
+    }
     // Reset pagination
     hostPage.value = 1; triggerPage.value = 1; problemPage.value = 1
   } catch {

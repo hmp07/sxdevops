@@ -79,6 +79,7 @@ urlpatterns = [
     path('observability/zabbix/trends/', zabbix_views.zabbix_trends, name='zabbix-trends'),
     path('observability/zabbix/triggers/', zabbix_views.zabbix_triggers, name='zabbix-triggers'),
     path('observability/zabbix/problems/', zabbix_views.zabbix_problems, name='zabbix-problems'),
+    path('observability/zabbix/device-mappings/', zabbix_views.zabbix_device_mappings, name='zabbix-device-mappings'),
 
     path('', include(router.urls)),
 ]
