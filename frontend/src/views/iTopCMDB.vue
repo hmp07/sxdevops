@@ -10,12 +10,20 @@
       </div>
     </section>
 
+    <div class="info-banner">
+      <el-icon :size="18"><InfoFilled /></el-icon>
+      <span>iTop 集成采用双通道架构：<strong>同步引擎</strong>将 CMDB/工单批量导入本地，供拓扑和事件墙使用；<strong>MCP Server</strong>（在 AIOps 配置 → MCP 中管理）为 Agent 提供实时查询能力。</span>
+    </div>
+
     <div class="neo-tabs theme-blue">
       <button class="neo-tab-btn" :class="{ active: activeTab === 'datasources' }" @click="activeTab = 'datasources'">
         <el-icon style="margin-right: 4px"><Setting /></el-icon>数据源配置
       </button>
       <button class="neo-tab-btn" :class="{ active: activeTab === 'sync' }" @click="activeTab = 'sync'">
         <el-icon style="margin-right: 4px"><Refresh /></el-icon>同步状态
+      </button>
+      <button class="neo-tab-btn" :class="{ active: activeTab === 'mcp' }" @click="switchMcpTab">
+        <el-icon style="margin-right: 4px"><Connection /></el-icon>MCP 工具
       </button>
     </div>
 
@@ -59,6 +67,29 @@
       </div>
     </section>
 
+    <!-- MCP 工具列表 -->
+    <section class="panel" v-if="activeTab === 'mcp'">
+      <div v-if="mcpTools.length" style="margin-bottom: 12px; color: #64748b; font-size: 13px">
+        以下工具已注册到 AIOps 智能助手，Agent 可在对话中调用它们查询 iTop 数据。
+      </div>
+      <el-table v-if="mcpTools.length" :data="mcpTools" stripe>
+        <el-table-column prop="name" label="工具名" width="220" />
+        <el-table-column prop="description" label="描述" min-width="320">
+          <template #default="{ row }">{{ row.description || '--' }}</template>
+        </el-table-column>
+        <el-table-column label="参数" width="180">
+          <template #default="{ row }">
+            <el-tag v-for="p in (row.params || [])" :key="p" size="small" style="margin: 1px">{{ p }}</el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div v-else style="text-align: center; padding: 40px 0; color: #94a3b8">
+        <el-icon :size="36"><Connection /></el-icon>
+        <p style="margin-top: 12px">MCP 工具列表从 AIOps 配置 → MCP Server 中获取</p>
+        <p style="font-size: 12px; margin-top: 4px">请前往智能体配置页面查看 iTop CMDB MCP 的完整工具列表</p>
+      </div>
+    </section>
+
     <!-- 数据源对话框 -->
     <el-dialog v-model="dsVisible" :title="editingDs ? '编辑数据源' : '新增数据源'" width="560px">
       <el-form :model="dsForm" label-width="100px">
@@ -84,18 +115,21 @@
 <script setup>
 import { onMounted, ref, reactive } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Clock } from '@element-plus/icons-vue'
+import { Clock, InfoFilled } from '@element-plus/icons-vue'
 import {
   getITopDataSources, createITopDataSource, updateITopDataSource,
   deleteITopDataSource, testITopConnection, triggerITopSync,
 } from '@/api/modules/cmdb'
+import { listAIOpsMcpTools } from '@/api/modules/aiops'
 
 const loading = ref(false)
 const saving = ref(false)
+const mcpLoading = ref(false)
 const dataSources = ref([])
 const activeTab = ref('datasources')
 const dsVisible = ref(false)
 const editingDs = ref(null)
+const mcpTools = ref([])
 const dsForm = reactive({ name: '', api_url: '', api_version: '1.4', auth_user: '', auth_password: '',
   organization: '', sync_mode: 'full', is_enabled: true })
 
@@ -105,6 +139,21 @@ async function loadDataSources() {
     const { data } = await getITopDataSources()
     dataSources.value = data?.results || data || []
   } catch { /* ignore */ } finally { loading.value = false }
+}
+
+async function loadMcpTools() {
+  mcpLoading.value = true
+  mcpTools.value = []
+  try {
+    // Try to find iTop MCP Server (id=9) and list its tools
+    const resp = await listAIOpsMcpTools(9)
+    const tools = resp?.data?.tools || resp?.tools || []
+    mcpTools.value = tools.map(t => ({
+      name: t.name,
+      description: t.description || '',
+      params: t.inputSchema?.required || Object.keys(t.inputSchema?.properties || {}),
+    }))
+  } catch { /* ignore */ } finally { mcpLoading.value = false }
 }
 
 function openDsDialog(row) {
@@ -159,6 +208,11 @@ async function deleteDs(row) {
     ElMessage.success('已删除')
     await loadDataSources()
   } catch { /* cancelled */ }
+}
+
+function switchMcpTab() {
+  activeTab.value = 'mcp'
+  if (!mcpTools.value.length) loadMcpTools()
 }
 
 onMounted(() => { loadDataSources() })

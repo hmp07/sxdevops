@@ -14,14 +14,20 @@ django_asgi_app = get_asgi_application()
 # Monkey-patch DRF Response to prevent Django 5.2 ASGI template rendering.
 # In ASGI mode, Django calls response.render() on SimpleTemplateResponse subclasses,
 # but DRF Response handles rendering internally via accepted_renderer.
+# We override rendered_content to safely degrade when renderer is missing.
 from rest_framework.response import Response as DRFResponse
-_original_init = DRFResponse.__init__
+_original_rendered_content = DRFResponse.rendered_content.fget
 
-def _patched_init(self, *args, **kwargs):
-    _original_init(self, *args, **kwargs)
-    self._is_rendered = True  # prevent Django ASGI from calling render()
+def _safe_rendered_content(self):
+    renderer = getattr(self, 'accepted_renderer', None)
+    if renderer is None:
+        # In ASGI mode without renderer set, return data as-is (will be serialized later)
+        import json
+        self['Content-Type'] = 'application/json'
+        return json.dumps(self.data, ensure_ascii=False)
+    return _original_rendered_content(self)
 
-DRFResponse.__init__ = _patched_init
+DRFResponse.rendered_content = property(_safe_rendered_content)
 
 from channels.routing import ProtocolTypeRouter, URLRouter
 from ops.routing import websocket_urlpatterns

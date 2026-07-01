@@ -105,6 +105,7 @@ export const useAuthStore = defineStore('auth', () => {
   function hasPermission(code) {
     if (!code) return true
     if (currentUser.value?.is_superuser) return true
+    if (permissions.value.includes('*')) return true
     return permissions.value.includes(code)
   }
 
