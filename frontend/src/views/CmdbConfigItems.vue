@@ -127,9 +127,9 @@ async function fetch() {
     if (filters.value.environment) params.environment = filters.value.environment
     if (filters.value.business_line) params.business_line = filters.value.business_line
     if (filters.value.search) params.search = filters.value.search
-    const { data } = await getConfigItems(params)
-    items.value = data.results || []
-    total.value = data.count || 0
+    const resp = await getConfigItems(params)
+    items.value = resp?.results || (Array.isArray(resp) ? resp : [])
+    total.value = resp?.count || 0
     if (items.value.length) {
       const lines = new Set(items.value.map(i => i.business_line).filter(Boolean))
       businessLines.value = [...lines].sort()
@@ -148,8 +148,8 @@ function onFilterChange() {
 
 async function loadTypes() {
   try {
-    const { data } = await getCITypes()
-    ciTypes.value = data?.results || data || []
+    const resp = await getCITypes()
+    ciTypes.value = resp?.results || (Array.isArray(resp) ? resp : [])
   } catch { /* ignore */ }
 }
 

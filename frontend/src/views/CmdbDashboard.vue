@@ -83,8 +83,8 @@ const stats = ref({})
 async function load() {
   loading.value = true
   try {
-    const { data } = await getCmdbDashboard()
-    stats.value = data || {}
+    const resp = await getCmdbDashboard()
+    stats.value = resp || {}
   } catch {
     stats.value = {}
   } finally {
