@@ -85,7 +85,7 @@ def sync_cis(ds):
             continue
 
         ci_type, _ = CIType.objects.get_or_create(name=class_map[itop_class])
-        objects = result.get('objects', {})
+        objects = (result.get('objects') or {})
         for key, obj in objects.items():
             if obj.get('code') != 0:
                 continue
@@ -135,9 +135,14 @@ def sync_relations(ds):
         if result.get('code') != 0:
             continue
 
-        for _, obj in result.get('objects', {}).items():
+        for key, obj in (result.get('objects') or {}).items():
             obj_id = obj.get('key')
             if not obj_id:
+                continue
+            # Find the local CI for this iTop object
+            obj_name = key.split('::')[-1] if '::' in key else str(obj_id)
+            src_ci = _find_ci_by_itop_key(key, obj_name)
+            if not src_ci:
                 continue
             for rel_type in relation_types:
                 rel_result = _call_itop_api(ds,
@@ -146,15 +151,12 @@ def sync_relations(ds):
                     ))
                 if rel_result.get('code') != 0:
                     continue
-                relations = rel_result.get('relations', {})
-                for src_key, targets in relations.items():
-                    # Parse src_key format: "ClassName::id"
-                    src_name = src_key.split('::')[-1] if '::' in src_key else src_key
-                    src_ci = _find_ci_by_itop_key(src_key, src_name)
-                    if not src_ci:
-                        continue
-                    for target in targets:
-                        tgt_key = target.get('key', '')
+                relations = rel_result.get('relations') or {}
+                if isinstance(relations, list):
+                    # iTop returns relations as a flat list of {key: "ClassName::id"} pairs
+                    # Each pair represents a single relation edge; treat source==obj
+                    for rel in relations:
+                        tgt_key = rel.get('key', '')
                         tgt_name = tgt_key.split('::')[-1] if '::' in tgt_key else tgt_key
                         tgt_ci = _find_ci_by_itop_key(tgt_key, tgt_name)
                         if not tgt_ci:
@@ -168,6 +170,27 @@ def sync_relations(ds):
                             stats['created'] += 1
                         else:
                             stats['skipped'] += 1
+                else:
+                    for src_key, targets in relations.items():
+                        src_name = src_key.split('::')[-1] if '::' in src_key else src_key
+                        src_ci = _find_ci_by_itop_key(src_key, src_name)
+                        if not src_ci:
+                            continue
+                        for target in (targets if isinstance(targets, list) else [targets]):
+                            tgt_key = target.get('key', '')
+                            tgt_name = tgt_key.split('::')[-1] if '::' in tgt_key else tgt_key
+                            tgt_ci = _find_ci_by_itop_key(tgt_key, tgt_name)
+                            if not tgt_ci:
+                                continue
+                            _, created = CIRelation.objects.get_or_create(
+                                source=src_ci,
+                                target=tgt_ci,
+                                relation_type=_map_relation_type(rel_type),
+                            )
+                            if created:
+                                stats['created'] += 1
+                            else:
+                                stats['skipped'] += 1
 
     return stats
 
@@ -185,7 +208,7 @@ def sync_tickets(ds):
             continue
 
         ticket_type = TICKET_TYPE_MAP.get(itop_class, TransactionTicket.TYPE_CHANGE)
-        objects = result.get('objects', {})
+        objects = (result.get('objects') or {})
         for _, obj in objects.items():
             if obj.get('code') != 0:
                 continue
