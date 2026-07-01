@@ -909,14 +909,6 @@ class ResourceRequestViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, build_rbac_permission('cmdb.dashboard.view')])
-def _get_device_matched_count():
-    try:
-        from ops.models import DeviceMapping
-        return DeviceMapping.objects.filter(config_item__isnull=False).count()
-    except Exception:
-        return 0
-
-
 def cmdb_dashboard(request):
     month = _current_month()
     ci_total = ConfigItem.objects.count()
@@ -960,7 +952,7 @@ def cmdb_dashboard(request):
         'total_monthly_cost': _to_float(total_monthly_cost),
         'relation_count': relation_count,
         'pending_requests': pending_requests,
-        'device_matched': _get_device_matched_count(),
+        'device_matched': 0,
     })
 
 @api_view(['GET'])
