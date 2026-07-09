@@ -44,6 +44,10 @@ const tabGroups = {
     { key: 'log-datasources', title: '日志数据源', icon: 'DataBoard', path: '/logs/datasources', permission: 'ops.log.datasource.view' },
     { key: 'trace-datasources', title: '链路追踪数据源', icon: 'DataBoard', path: '/observability/tracing/datasources', permission: 'ops.trace.datasource.view' },
     { key: 'datasource-links', title: '关联配置', icon: 'Share', path: '/observability/datasource-links', permission: 'ops.observability.link.view' },
+    { key: 'zabbix-datasources', title: 'Zabbix 数据源', icon: 'Monitor', path: '/observability/zabbix/datasources', permission: 'ops.zabbix.datasource.view' },
+  ],
+  cmdb: [
+    { key: 'itop-datasource', title: 'iTop', icon: 'Connection', path: '/cmdb/datasources/itop', permission: 'cmdb.itop.datasource.view' },
   ],
 }
 

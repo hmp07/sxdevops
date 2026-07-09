@@ -1,11 +1,9 @@
 """Zabbix Problem → SxDevOps Alert 桥接模块.
 
-提供将 Zabbix API 返回的问题数据转换为 SxDevOps Alert 模型的工具函数。
-同时写入 EventWall 事件墙，便于故障复盘。
-可通过 Webhook 或定时轮询两种方式触发。
+将 Zabbix API 返回的问题数据通过统一告警流水线导入 Alert 模型。
+支持定时轮询和 Webhook 两种触发方式。
 """
 from django.utils.timezone import now
-from ops.models import Alert
 
 SEVERITY_MAP = {0: 'info', 1: 'info', 2: 'warning', 3: 'warning', 4: 'critical', 5: 'critical'}
 SEVERITY_RESULT_MAP = {0: 'info', 1: 'info', 2: 'warning', 3: 'partial', 4: 'failed', 5: 'failed'}
@@ -32,32 +30,54 @@ def _record_event(alert, created):
         pass
 
 
-def upsert_alert_from_zabbix_problem(problem, host_name=''):
-    """将 Zabbix problem 转换为 Alert 并 upsert"""
+def _build_normalized(problem, host_name='', env_name=''):
+    """将 Zabbix problem 构建为统一告警流水线的标准化字典"""
+    event_id = str(problem.get('eventid', ''))
+    severity = int(problem.get('severity', 0))
+
+    return {
+        'title': problem.get('name', 'Zabbix 告警')[:256],
+        'level': SEVERITY_MAP.get(severity, 'warning'),
+        'status': 'active' if not problem.get('r_eventid') else 'resolved',
+        'source': 'zabbix_api',
+        'source_type': 'zabbix',
+        'external_id': event_id,
+        'fingerprint': f'zabbix:{event_id}',
+        'group_key': '',
+        'message': problem.get('name', ''),
+        'resource_type': 'host',
+        'resource': host_name or '',
+        'environment': env_name or '',
+        'labels': {'zabbix_severity': str(severity), 'host': host_name or '', 'hostname': host_name or ''},
+        'annotations': {
+            'acknowledged': str(problem.get('acknowledged', '')),
+            'opdata': str(problem.get('opdata', '')),
+        },
+        'raw_payload': problem,
+        'starts_at': _ts_to_datetime(problem.get('clock')),
+        'ends_at': _ts_to_datetime(problem.get('r_clock')) if problem.get('r_eventid') else None,
+        'last_received_at': now(),
+    }
+
+
+def upsert_alert_from_zabbix_problem(problem, host_name='', env_name=''):
+    """将 Zabbix problem 通过统一流水线转换为 Alert 并返回 (alert, created)"""
+    from ops import alerting
+
     event_id = str(problem.get('eventid', ''))
     if not event_id:
-        return None
+        return None, False
 
-    alert, created = Alert.objects.update_or_create(
-        fingerprint=f'zabbix:{event_id}',
-        defaults={
-            'title': problem.get('name', 'Zabbix 告警')[:256],
-            'level': SEVERITY_MAP.get(int(problem.get('severity', 0)), 'warning'),
-            'status': 'active' if not problem.get('r_eventid') else 'resolved',
-            'source_type': 'zabbix',
-            'source': 'zabbix_api',
-            'external_id': event_id,
-            'host': None,
-            'resource': host_name or '',
-            'starts_at': _ts_to_datetime(problem.get('clock')),
-            'last_received_at': now(),
-            'labels': {'zabbix_severity': str(problem.get('severity', ''))},
-            'annotations': {'acknowledged': str(problem.get('acknowledged', ''))},
-            'raw_payload': problem,
-        },
-    )
-    _record_event(alert, created)
-    return alert
+    normalized = _build_normalized(problem, host_name, env_name)
+    alert, created = alerting.upsert_alert(normalized, integration=None, actor='zabbix_poll')
+
+    if alert:
+        alerting.apply_alert_suppression(alert)
+        action = 'resolved' if alert.status == 'resolved' else 'fire'
+        alerting.dispatch_alert_notifications(alert, action=action)
+        _record_event(alert, created)
+
+    return alert, created
 
 
 def _ts_to_datetime(ts):

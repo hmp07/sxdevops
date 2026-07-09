@@ -279,7 +279,7 @@ const routes = [
           if (authStore.hasPermission('ops.observability.link.view')) return '/observability/datasource-links'
           return '/403'
         },
-        meta: { hidden: true, anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view', 'ops.trace.datasource.view', 'ops.observability.link.view'] },
+        meta: { hidden: true, anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.zabbix.datasource.view'] },
       },
       {
         path: 'observability/overview',
@@ -324,6 +324,12 @@ const routes = [
         name: 'ZabbixMonitor',
         component: () => import('@/views/ZabbixMonitor.vue'),
         meta: { title: 'Zabbix 监控', icon: 'Monitor', permission: 'ops.zabbix.view' },
+      },
+      {
+        path: 'observability/zabbix/datasources',
+        name: 'ZabbixDataSources',
+        component: () => import('@/views/ZabbixDataSources.vue'),
+        meta: { title: 'Zabbix 数据源', icon: 'DataBoard', permission: 'ops.zabbix.datasource.view' },
       },
       {
         path: 'observability/tracing/topology',
@@ -465,10 +471,20 @@ const routes = [
         meta: { title: '资源拓扑', icon: 'Share', permission: 'cmdb.topology.view' },
       },
       {
-        path: 'cmdb/itop',
-        name: 'iTopCMDB',
+        path: 'cmdb/datasources',
+        redirect: '/cmdb/datasources/itop',
+        meta: { hidden: true, permission: 'cmdb.itop.datasource.view' },
+      },
+      {
+        path: 'cmdb/datasources/itop',
+        name: 'CmdbITopDataSource',
         component: () => import('@/views/iTopCMDB.vue'),
-        meta: { title: 'iTop 对接', icon: 'Connection', permission: 'cmdb.itop.view' },
+        meta: { title: 'iTop 数据源', permission: 'cmdb.itop.datasource.view' },
+      },
+      {
+        path: 'cmdb/itop',
+        redirect: '/cmdb/datasources/itop',
+        meta: { hidden: true },
       },
       {
         path: 'sql',

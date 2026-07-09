@@ -2158,19 +2158,23 @@ def _zabbix_host_online(host):
 
 def _get_zabbix_dashboard_stats():
     """获取 Zabbix 仪表盘统计数据，失败时返回零值。
-    使用数据库查询获取本地已存储的数据，避免同步 HTTP 调用的 ASGI 兼容问题。
+    数据源数量从 ZabbixDataSource 表统计，告警统计从 Alert 表查询。
     """
     try:
         from .models import ZabbixDataSource
         ds_count = ZabbixDataSource.objects.filter(is_enabled=True).count()
+        zabbix_hosts = Host.objects.filter(source='zabbix')
+        zabbix_alerts = Alert.objects.filter(source_type='zabbix')
         return {
             'datasources': ds_count,
-            'hosts_total': 0,
-            'hosts_online': 0,
-            'problems_total': 0,
+            'hosts_total': zabbix_hosts.count(),
+            'hosts_online': zabbix_hosts.filter(status='online').count(),
+            'problems_total': zabbix_alerts.filter(status='active').count(),
+            'alerts_total': zabbix_alerts.count(),
+            'alerts_critical': zabbix_alerts.filter(level='critical', status='active').count(),
         }
     except Exception:
-        return {'hosts_total': 0, 'hosts_online': 0, 'problems_total': 0}
+        return {'datasources': 0, 'hosts_total': 0, 'hosts_online': 0, 'problems_total': 0, 'alerts_total': 0, 'alerts_critical': 0}
 
 
 def dashboard_stats(request):

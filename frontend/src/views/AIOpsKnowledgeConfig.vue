@@ -410,7 +410,7 @@ function openDialog(row = null) {
 async function submitForm() {
   await formRef.value?.validate()
   if (!hasAnyBinding()) {
-    ElMessage.warning('请至少选择一个事件中心、看板目录、日志、链路、告警、K8s 集群、Docker 环境或任务中心资源底座来源')
+    ElMessage.warning('请至少选择一个关联来源（事件中心、看板、指标、日志、链路、告警、K8s、Docker、任务中心、Zabbix、iTop）')
     return
   }
   saving.value = true

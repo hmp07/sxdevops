@@ -84,6 +84,8 @@ class ZabbixClient:
 
     def _ensure_auth(self):
         if self.auth_type == 'token' and self.auth_token:
+            if not self._zabbix_version:
+                self._zabbix_version = self._detect_version()
             return True
         if self._is_token_valid():
             return True
@@ -152,6 +154,7 @@ class ZabbixClient:
             'output': ['hostid', 'host', 'name', 'status', 'description', 'available'],
             'selectInterfaces': ['ip', 'dns', 'type', 'main', 'available'],
             'selectGroups': ['groupid', 'name'],
+            'selectHostGroups': ['groupid', 'name'],
         }
         if group_ids:
             params['groupids'] = group_ids
@@ -161,7 +164,13 @@ class ZabbixClient:
             params['search'] = {'host': search}
         if not self._ensure_auth():
             return {'error': '认证失败'}
-        return self._call('host.get', params)
+        result = self._call('host.get', params)
+        # 统一 Zabbix 7.x 的 hostgroups → groups
+        hosts = result if isinstance(result, list) else []
+        for h in hosts:
+            if 'hostgroups' in h and 'groups' not in h:
+                h['groups'] = h.pop('hostgroups')
+        return hosts
 
     def get_host_groups(self):
         """获取主机组列表"""
@@ -218,7 +227,7 @@ class ZabbixClient:
             return {'error': '认证失败'}
         return self._call('trend.get', params)
 
-    def get_triggers(self, host_ids=None, min_severity=None, active_only=False):
+    def get_triggers(self, host_ids=None, trigger_ids=None, min_severity=None, active_only=False):
         """获取触发器列表"""
         params = {
             'output': ['triggerid', 'description', 'priority', 'value', 'lastchange'],
@@ -229,6 +238,8 @@ class ZabbixClient:
         }
         if host_ids:
             params['hostids'] = host_ids
+        if trigger_ids:
+            params['triggerids'] = trigger_ids
         if min_severity is not None and min_severity > 0:
             params['min_severity'] = str(min_severity)
         if active_only:

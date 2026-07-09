@@ -66,6 +66,7 @@
           :reset-token="resetToken"
           :labels="labels"
           :editable="canManage"
+          :layout-mode="useLayeredLayout ? 'layered' : 'grid'"
           @select-node="handleSelectNode"
           @select-edge="handleSelectEdge"
           @clear-selection="clearSelection"
@@ -80,9 +81,14 @@
               <div class="sidebar-title">{{ selectedNode.name }}</div>
               <div class="sidebar-subtitle">{{ selectedNode.type }} / {{ selectedNode.business_line || labels.unassigned }}</div>
             </div>
-            <el-tag :type="selectedNode.status === 'active' ? 'success' : selectedNode.status === 'idle' ? 'warning' : 'info'">
-              {{ statusLabel(selectedNode.status) }}
-            </el-tag>
+            <div class="sidebar-status-group">
+              <el-tag :type="selectedNode.device_matched && selectedNode.zabbix_online ? 'success' : selectedNode.device_matched && selectedNode.zabbix_online === false ? 'danger' : selectedNode.status === 'active' ? 'success' : selectedNode.status === 'idle' ? 'warning' : 'info'">
+                {{ selectedNode.device_matched && selectedNode.zabbix_online ? labels.online : selectedNode.device_matched && selectedNode.zabbix_online === false ? labels.offline : statusLabel(selectedNode.status) }}
+              </el-tag>
+              <el-tag v-if="selectedNode.device_matched && selectedNode.alert_count > 0" type="danger" effect="dark" style="margin-left: 6px">
+                {{ labels.alert }} {{ selectedNode.alert_count }}
+              </el-tag>
+            </div>
           </div>
 
           <div class="detail-grid">
@@ -93,6 +99,14 @@
             <div class="detail-card">
               <div class="detail-label">IP</div>
               <div class="detail-value">{{ selectedNode.ip || '-' }}</div>
+            </div>
+            <div class="detail-card" v-if="selectedNode.device_matched">
+              <div class="detail-label">Zabbix 主机</div>
+              <div class="detail-value">{{ selectedNode.zabbix_hostname || selectedNode.zabbix_hostid || '-' }}</div>
+            </div>
+            <div class="detail-card" v-if="selectedNode.device_matched">
+              <div class="detail-label">{{ labels.matchMethod }}</div>
+              <div class="detail-value">{{ matchMethodLabel(selectedNode.match_method) }}</div>
             </div>
             <div class="detail-card">
               <div class="detail-label">{{ labels.owner }}</div>
@@ -296,6 +310,10 @@ const labels = {
   offline: '\u79bb\u7ebf',
   maintenance: '\u7ef4\u62a4\u4e2d',
   decommissioned: '\u5df2\u4e0b\u7ebf',
+  online: '\u5728\u7ebf',
+  offline: '\u79bb\u7ebf',
+  alert: '\u544a\u8b66',
+  matchMethod: '\u5339\u914d\u65b9\u5f0f',
 }
 
 const props = defineProps({
@@ -339,6 +357,7 @@ const selectedNode = computed(() => topology.value.nodes.find(node => node.id ==
 const selectedEdge = computed(() => topology.value.edges.find(edge => edge.id === selectedEdgeId.value) || null)
 const matchedNodeCount = computed(() => topology.value.meta?.matched_node_ids?.length || topology.value.nodes.filter(node => node.is_match).length)
 const externalNodeCount = computed(() => Math.max(topology.value.nodes.length - matchedNodeCount.value, 0))
+const useLayeredLayout = computed(() => !!topoFilterBiz.value)
 const resetToken = computed(() => [topoFilterBiz.value || '', topoFilterEnv.value || '', topoFilterType.value || '', topologyScope.value, topology.value.meta?.node_count || 0, topology.value.meta?.edge_count || 0].join('|'))
 const selectedNodeRelations = computed(() => {
   if (!selectedNode.value) return []
@@ -370,6 +389,14 @@ function statusLabel(status) {
     maintenance: labels.maintenance,
     decommissioned: labels.decommissioned,
   }[status] || status || '-'
+}
+
+function matchMethodLabel(method) {
+  return {
+    ip_exact: 'IP 精确匹配',
+    name_fuzzy: '名称模糊匹配',
+    manual: '人工指定',
+  }[method] || method || '-'
 }
 
 function getErrorMessage(error, fallback) {
@@ -546,15 +573,6 @@ watch(
 )
 
 watch(
-  () => [topoFilterBiz.value, topoFilterEnv.value],
-  ([businessLine, environment]) => {
-    if ((businessLine || environment) && topologyScope.value === 'neighbors') {
-      topologyScope.value = 'exact'
-    }
-  },
-)
-
-watch(
   () => props.resourceTree,
   () => {
     if (topoFilterBiz.value && !businessOptions.value.includes(topoFilterBiz.value)) {
@@ -713,6 +731,13 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 12px;
   align-items: flex-start;
+}
+
+.sidebar-status-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
 }
 
 .sidebar-title,

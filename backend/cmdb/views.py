@@ -16,7 +16,7 @@ from .serializers import (
     CITypeSerializer, ConfigItemSerializer, CIRelationSerializer,
     CostRecordSerializer, ResourceRequestSerializer, ResourceNodeSerializer
 )
-from ops.models import Host
+from ops.models import Host, DeviceMapping, Alert
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import user_has_permissions
 from .sync import (
@@ -607,7 +607,7 @@ class CITypeViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
 class ConfigItemViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     """配置项管理"""
-    queryset = ConfigItem.objects.select_related('ci_type', 'zabbix_mapping').annotate(
+    queryset = ConfigItem.objects.select_related('ci_type', 'zabbix_mapping', 'itop_datasource').annotate(
         _relation_count=Coalesce(
             Count('outgoing_relations', distinct=True) + Count('incoming_relations', distinct=True),
             Value(0),
@@ -630,7 +630,7 @@ class ConfigItemViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'attributes__specification',
         'attributes__instance_type',
     ]
-    filterset_fields = ['ci_type', 'business_line', 'environment', 'status']
+    filterset_fields = ['ci_type', 'business_line', 'environment', 'status', 'itop_datasource']
     rbac_permissions = {
         'list': ['cmdb.ci.view'],
         'retrieve': ['cmdb.ci.view'],
@@ -952,7 +952,7 @@ def cmdb_dashboard(request):
         'total_monthly_cost': _to_float(total_monthly_cost),
         'relation_count': relation_count,
         'pending_requests': pending_requests,
-        'device_matched': 0,
+        'device_matched': DeviceMapping.objects.filter(config_item__isnull=False).count(),
     })
 
 @api_view(['GET'])
@@ -974,14 +974,43 @@ def cmdb_topology(request):
 
     matched_ids = set(filtered_qs.values_list('id', flat=True))
     node_ids = set(matched_ids)
-    relations = CIRelation.objects.none()
+
+    # 有向 BFS：沿 iTop 数据边的自然方向遍历依赖链
+    # source → target 表示 "source impacts target"（target 依赖 source）
+    #   'out' = 顺着边方向往下游（远离基础设施）
+    #   'in'  = 逆着边方向往上游（靠近基础设施）
     if matched_ids and include_neighbors:
+        visited = set()
+        queue = []  # (node_id, direction)
+
+        for mid in matched_ids:
+            visited.add(mid)
+            queue.append((mid, 'both'))
+
+        while queue:
+            current, direction = queue.pop(0)
+
+            # 下游：current impacts target → 继续往下游走
+            if direction in ('out', 'both'):
+                for edge in CIRelation.objects.filter(source_id=current):
+                    if edge.target_id not in visited:
+                        visited.add(edge.target_id)
+                        queue.append((edge.target_id, 'out'))
+
+            # 上游：source impacts current → 继续往上游走
+            if direction in ('in', 'both'):
+                for edge in CIRelation.objects.filter(target_id=current):
+                    if edge.source_id not in visited:
+                        visited.add(edge.source_id)
+                        queue.append((edge.source_id, 'in'))
+
+        node_ids = visited
         relations = CIRelation.objects.filter(
-            Q(source_id__in=matched_ids) | Q(target_id__in=matched_ids)
+            source_id__in=list(node_ids),
+            target_id__in=list(node_ids),
         ).select_related('source', 'target')
-        for relation in relations:
-            node_ids.add(relation.source_id)
-            node_ids.add(relation.target_id)
+    else:
+        relations = CIRelation.objects.none()
 
     node_qs = ConfigItem.objects.select_related('ci_type').filter(id__in=node_ids).order_by(
         'business_line',
@@ -989,9 +1018,46 @@ def cmdb_topology(request):
         'ci_type__name',
         'name',
     )
+
+    # ---- 批量查询 Zabbix 实时状态 ----
+    ci_zabbix_map = {}       # ci_id → {hostid, hostname, match_method}
+    host_status_map = {}     # zabbix_hostid → Host
+    alert_counts = {}        # host_id → count
+
+    if node_ids:
+        mappings = DeviceMapping.objects.filter(
+            config_item_id__in=list(node_ids)
+        ).select_related('config_item')
+        for m in mappings:
+            ci_zabbix_map[m.config_item_id] = {
+                'hostid': m.zabbix_hostid,
+                'hostname': m.zabbix_hostname,
+                'match_method': m.match_method,
+            }
+
+        zabbix_hostids = [v['hostid'] for v in ci_zabbix_map.values() if v['hostid']]
+        if zabbix_hostids:
+            zabbix_hosts = Host.objects.filter(
+                external_id__in=[f'zabbix:{h}' for h in zabbix_hostids]
+            )
+            for h in zabbix_hosts:
+                raw_hostid = h.external_id.split(':', 1)[1] if ':' in (h.external_id or '') else h.external_id
+                host_status_map[raw_hostid] = h
+
+            alert_qs = Alert.objects.filter(
+                source_type='zabbix',
+                status='active',
+                host__isnull=False,
+            ).values('host').annotate(cnt=Count('id'))
+            for a in alert_qs:
+                alert_counts[a['host']] = a['cnt']
+
     nodes = []
     for ci in node_qs:
         attributes = ci.attributes or {}
+        zbx = ci_zabbix_map.get(ci.id)
+        zbx_host = host_status_map.get(zbx['hostid']) if zbx else None
+
         nodes.append({
             'id': ci.id,
             'name': ci.name,
@@ -1012,6 +1078,14 @@ def cmdb_topology(request):
             'disk_gb': attributes.get('disk_gb'),
             'description': attributes.get('description', ''),
             'is_match': ci.id in matched_ids,
+            # Zabbix 实时状态
+            'zabbix_hostid': zbx['hostid'] if zbx else None,
+            'zabbix_hostname': zbx['hostname'] if zbx else None,
+            'zabbix_online': zbx_host.status == 'online' if zbx_host else None,
+            'zabbix_status': zbx_host.status if zbx_host else None,
+            'alert_count': alert_counts.get(zbx_host.id, 0) if zbx_host else 0,
+            'device_matched': zbx is not None,
+            'match_method': zbx['match_method'] if zbx else None,
         })
 
     filtered_edges = []

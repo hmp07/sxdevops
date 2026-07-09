@@ -86,15 +86,30 @@
                   <div class="session-indicator">
                     <span class="session-indicator-label">{{ currentSession?.title || '新会话' }}</span>
                   </div>
-                  <span class="environment-chip" :class="{ empty: !currentEnvironmentName }">
-                    {{ currentEnvironmentName ? `环境：${currentEnvironmentName}` : '未指定环境' }}
-                  </span>
+                  <label class="env-select-label">
+                    <span>选择环境</span>
+                    <el-select
+                      v-model="selectedEnvironment"
+                      size="small"
+                      placeholder="选择环境"
+                      clearable
+                      class="environment-select"
+                      @change="onEnvironmentChange"
+                    >
+                      <el-option
+                        v-for="env in knowledgeEnvironments"
+                        :key="env.id"
+                        :label="env.name"
+                        :value="env.name"
+                      />
+                    </el-select>
+                  </label>
+                </div>
+                <div class="chat-toolbar-right">
                   <label class="analysis-toggle">
                     <span>只分析</span>
                     <el-switch v-model="analysisSwitchValue" size="small" :disabled="forcedAnalysisOnly" />
                   </label>
-                </div>
-                <div class="chat-toolbar-right">
                   <span class="toolbar-hint">
                     {{ analysisHintText }}
                   </span>
@@ -570,6 +585,7 @@ import {
   createAIOpsSession,
   deleteAIOpsSession,
   getAIOpsBootstrap,
+  getAIOpsKnowledgeEnvironments,
   getAIOpsMessages,
   getAIOpsSessions,
   sendAIOpsMessageAsync,
@@ -599,6 +615,8 @@ const analysisOnly = ref(localStorage.getItem(STORAGE_ANALYSIS_KEY) === '1')
 const bootstrap = ref({ permissions: {}, suggested_questions: [], runtime: {} })
 const sessions = ref([])
 const messages = ref([])
+const knowledgeEnvironments = ref([])
+const selectedEnvironment = ref('')
 const composer = ref('')
 const currentSessionId = ref(Number(localStorage.getItem(STORAGE_SESSION_KEY) || '') || null)
 const loading = ref({ bootstrap: false, sessions: false, messages: false, send: false, poll: false, deleteSession: null })
@@ -1734,6 +1752,28 @@ async function fetchBootstrap() {
   }
 }
 
+async function fetchKnowledgeEnvironments() {
+  try {
+    const resp = await getAIOpsKnowledgeEnvironments()
+    const list = resp?.results || resp?.data || resp || []
+    knowledgeEnvironments.value = Array.isArray(list) ? list : (list.results || [])
+    // 默认选中 is_default 的环境
+    if (!selectedEnvironment.value) {
+      const def = knowledgeEnvironments.value.find(e => e.is_default)
+      if (def) selectedEnvironment.value = def.name
+    }
+  } catch { /* ignore */ }
+}
+
+function onEnvironmentChange() {
+  // 环境变更时更新会话上下文
+  if (currentSession.value && selectedEnvironment.value) {
+    const ctx = currentSession.value.context || {}
+    ctx.current_environment = selectedEnvironment.value
+    currentSession.value.context = ctx
+  }
+}
+
 async function fetchSessions() {
   loading.value.sessions = true
   try {
@@ -1820,6 +1860,7 @@ async function handleSend() {
     const response = await sendAIOpsMessageAsync(sessionId, {
       content,
       analysis_only: effectiveAnalysisOnly.value,
+      knowledge_environment: selectedEnvironment.value || '',
     })
     messages.value.push(response.user_message)
     messages.value.push(response.assistant_message)
@@ -2106,6 +2147,7 @@ onMounted(async () => {
     window.addEventListener('sxdevops-aiops-open', handleOpenRequest)
   }
   await fetchBootstrap()
+  await fetchKnowledgeEnvironments()
   if ((embedded.value || visible.value) && bootstrap.value.enabled) {
     await fetchSessions()
     await nextTick()
@@ -2196,7 +2238,9 @@ onBeforeUnmount(() => {
 .environment-chip{display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:6px;background:#ecfdf5;border:1px solid #bbf7d0;color:#047857;font-size:12px;font-weight:700;white-space:nowrap}
 .environment-chip.empty{background:#fff7ed;border-color:#fed7aa;color:#c2410c}
 .page-context-chip{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8}
-.analysis-toggle{display:flex;align-items:center;gap:8px;font-size:12px;color:#334155}
+.analysis-toggle{display:flex;align-items:center;gap:8px;font-size:12px;color:#334155;flex-shrink:0;white-space:nowrap}
+.env-select-label{display:flex;align-items:center;gap:6px;font-size:12px;color:#334155;flex-shrink:0;white-space:nowrap}
+.environment-select{width:140px;flex-shrink:0}
 .toolbar-hint{font-size:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .quick-palette{padding:6px 12px 0}
 .aiops-quick-questions,.aiops-secondary-actions{display:flex;gap:8px;flex-wrap:wrap}

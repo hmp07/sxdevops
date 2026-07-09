@@ -27,6 +27,10 @@
         <div class="stat-value">{{ stats.relation_count || 0 }}</div>
       </div>
       <div class="audit-card audit-card--inline">
+        <div class="stat-label">已关联 Zabbix</div>
+        <div class="stat-value">{{ stats.device_matched || 0 }}</div>
+      </div>
+      <div class="audit-card audit-card--inline">
         <div class="stat-label">待审批</div>
         <div class="stat-value">{{ stats.pending_requests || 0 }}</div>
       </div>
@@ -38,8 +42,8 @@
           <h4>按 CI 类型分布</h4>
         </div>
         <div class="audit-grid">
-          <div v-for="item in stats.by_type" :key="item.name" class="audit-card audit-card--inline">
-            <div class="stat-label">{{ item.name }}</div>
+          <div v-for="item in stats.by_type" :key="item.type_name" class="audit-card audit-card--inline">
+            <div class="stat-label">{{ item.type_name }}</div>
             <div class="stat-value">{{ item.count }}</div>
           </div>
         </div>

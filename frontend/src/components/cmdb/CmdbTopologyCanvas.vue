@@ -18,6 +18,17 @@
       <div class="tooltip-row">{{ labels.environment }}: {{ envLabel(hoveredNode.env) }}</div>
       <div class="tooltip-row">IP: {{ hoveredNode.ip || '-' }}</div>
       <div class="tooltip-row">{{ labels.monthlyCost }}: {{ formatCurrency(hoveredNode.monthly_cost) }}</div>
+      <template v-if="hoveredNode.device_matched">
+        <div class="tooltip-divider"></div>
+        <div class="tooltip-row">Zabbix: {{ hoveredNode.zabbix_hostname || hoveredNode.zabbix_hostid }}</div>
+        <div class="tooltip-row">
+          <span class="tooltip-status-dot" :class="hoveredNode.zabbix_online ? 'online' : 'offline'"></span>
+          {{ hoveredNode.zabbix_online ? '在线' : '离线' }}
+          <template v-if="hoveredNode.alert_count > 0">
+            &nbsp;·&nbsp; {{ '告警' }} {{ hoveredNode.alert_count }}
+          </template>
+        </div>
+      </template>
     </div>
 
     <button type="button" class="topology-fit-btn" @click="fitView()">{{ labels.resetCanvas }}</button>
@@ -56,6 +67,7 @@ import {
   buildGraphLookup,
   envLabel,
   layoutTopology,
+  layoutTopologyLayered,
   pointToSegmentDistance,
 } from './useTopologyGraph'
 
@@ -114,6 +126,10 @@ const props = defineProps({
     type: Boolean,
     default: true,
   },
+  layoutMode: {
+    type: String,
+    default: 'grid',
+  },
 })
 
 const emit = defineEmits(['select-node', 'select-edge', 'clear-selection', 'edit-node'])
@@ -125,7 +141,7 @@ const tooltipPos = ref({ x: 0, y: 0 })
 const canvasSize = ref({ width: 0, height: 0, dpr: 1 })
 const viewport = ref({ x: 0, y: 0, scale: 1 })
 const layoutState = ref({ nodes: [], sections: [], laneLabels: [], bounds: null })
-const dragState = ref({ active: false, moved: false, start: null, viewport: null })
+const dragState = ref({ active: false, moved: false, start: null, viewport: null, draggingNodeId: null, dragOffsetX: 0, dragOffsetY: 0 })
 
 let resizeObserver = null
 let frameHandle = null
@@ -206,12 +222,22 @@ function syncCanvasSize() {
 
 function rebuildGraph({ fit = false } = {}) {
   if (!syncCanvasSize()) return
-  layoutState.value = layoutTopology({
-    nodes: props.nodes,
-    resourceTree: props.resourceTree,
-    width: canvasSize.value.width,
-    height: canvasSize.value.height,
-  })
+  const useLayered = props.layoutMode === 'layered'
+  if (useLayered) {
+    layoutState.value = layoutTopologyLayered({
+      nodes: props.nodes,
+      edges: props.edges,
+      width: canvasSize.value.width,
+      height: canvasSize.value.height,
+    })
+  } else {
+    layoutState.value = layoutTopology({
+      nodes: props.nodes,
+      resourceTree: props.resourceTree,
+      width: canvasSize.value.width,
+      height: canvasSize.value.height,
+    })
+  }
 
   if (props.selectedNodeId && !layoutState.value.nodes.some(node => node.id === props.selectedNodeId)) {
     emit('clear-selection')
@@ -860,7 +886,24 @@ function drawGraph() {
     ctx.lineWidth = props.selectedNodeId === node.id ? 3 : 2
     ctx.stroke()
 
-    if (node.status === 'active') {
+    // Zabbix 实时状态优先，回退到 CI 静态状态
+    if (node.device_matched) {
+      // 有 Zabbix 映射：显示实时状态
+      ctx.beginPath()
+      ctx.arc(node.x + node.r * 0.62, node.y - node.r * 0.62, 5, 0, Math.PI * 2)
+      if (node.zabbix_online && node.alert_count > 0) {
+        ctx.fillStyle = '#f97316'  // 在线但有告警 → 橙色
+      } else if (node.zabbix_online) {
+        ctx.fillStyle = '#22c55e'  // 在线无告警 → 绿色
+      } else {
+        ctx.fillStyle = '#94a3b8'  // 离线 → 灰色
+      }
+      ctx.fill()
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+    } else if (node.status === 'active') {
+      // 无 Zabbix 映射：沿用旧的 CI 静态状态
       ctx.beginPath()
       ctx.arc(node.x + node.r * 0.62, node.y - node.r * 0.62, 5, 0, Math.PI * 2)
       ctx.fillStyle = '#22c55e'
@@ -955,11 +998,31 @@ function updateHover(event) {
 function handleMouseDown(event) {
   if (event.button !== 0) return
   const localPoint = clientToLocalPoint(event)
-  dragState.value = {
-    active: true,
-    moved: false,
-    start: localPoint,
-    viewport: { ...viewport.value },
+  const worldPoint = localToWorld(localPoint)
+  const hitNode = getNodeAt(worldPoint)
+
+  if (hitNode) {
+    // 节点拖动模式
+    dragState.value = {
+      active: true,
+      moved: false,
+      start: localPoint,
+      viewport: { ...viewport.value },
+      draggingNodeId: hitNode.id,
+      dragOffsetX: hitNode.x - worldPoint.x,
+      dragOffsetY: hitNode.y - worldPoint.y,
+    }
+  } else {
+    // 画布平移模式
+    dragState.value = {
+      active: true,
+      moved: false,
+      start: localPoint,
+      viewport: { ...viewport.value },
+      draggingNodeId: null,
+      dragOffsetX: 0,
+      dragOffsetY: 0,
+    }
   }
 }
 
@@ -970,12 +1033,24 @@ function handleMouseMove(event) {
     const deltaY = localPoint.y - dragState.value.start.y
     if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
       dragState.value.moved = true
-      viewport.value = {
-        ...viewport.value,
-        x: dragState.value.viewport.x + deltaX,
-        y: dragState.value.viewport.y + deltaY,
+      if (dragState.value.draggingNodeId) {
+        // 拖动节点
+        const worldPoint = localToWorld(localPoint)
+        const node = layoutState.value.nodes.find(n => n.id === dragState.value.draggingNodeId)
+        if (node) {
+          node.x = worldPoint.x + dragState.value.dragOffsetX
+          node.y = worldPoint.y + dragState.value.dragOffsetY
+          scheduleDraw()
+        }
+      } else {
+        // 平移画布
+        viewport.value = {
+          ...viewport.value,
+          x: dragState.value.viewport.x + deltaX,
+          y: dragState.value.viewport.y + deltaY,
+        }
+        scheduleDraw()
       }
-      scheduleDraw()
     }
   }
   updateHover(event)
@@ -992,12 +1067,12 @@ function handleMouseUp(event) {
     else if (edge) emit('select-edge', edge.id)
     else emit('clear-selection')
   }
-  dragState.value = { active: false, moved: false, start: null, viewport: null }
+  dragState.value = { active: false, moved: false, start: null, viewport: null, draggingNodeId: null, dragOffsetX: 0, dragOffsetY: 0 }
 }
 
 function handleMouseLeave() {
   hoveredNode.value = null
-  dragState.value = { active: false, moved: false, start: null, viewport: null }
+  dragState.value = { active: false, moved: false, start: null, viewport: null, draggingNodeId: null, dragOffsetX: 0, dragOffsetY: 0 }
   if (canvasRef.value) canvasRef.value.style.cursor = 'grab'
 }
 
@@ -1101,6 +1176,28 @@ defineExpose({ fitView })
   color: #475569;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.tooltip-divider {
+  margin: 4px 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.tooltip-status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 2px;
+  vertical-align: middle;
+}
+
+.tooltip-status-dot.online {
+  background: #22c55e;
+}
+
+.tooltip-status-dot.offline {
+  background: #94a3b8;
 }
 
 .topology-fit-btn {

@@ -22,6 +22,13 @@ class iTopDataSourceViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'destroy': 'cmdb.itop.datasource.manage',
     }
 
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        try:
+            run_full_sync(instance)
+        except Exception:
+            pass
+
     @drf_action(detail=True, methods=['post'], permission_classes=[IsAuthenticated, build_rbac_permission('cmdb.itop.datasource.manage')])
     def test_connection(self, request, pk=None):
         ds = self.get_object()

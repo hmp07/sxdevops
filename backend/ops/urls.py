@@ -80,6 +80,7 @@ urlpatterns = [
     path('observability/zabbix/triggers/', zabbix_views.zabbix_triggers, name='zabbix-triggers'),
     path('observability/zabbix/problems/', zabbix_views.zabbix_problems, name='zabbix-problems'),
     path('observability/zabbix/device-mappings/', zabbix_views.zabbix_device_mappings, name='zabbix-device-mappings'),
+    path('observability/zabbix/poll-alerts/', zabbix_views.zabbix_poll_alerts, name='zabbix-poll-alerts'),
 
     path('', include(router.urls)),
 ]

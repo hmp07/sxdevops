@@ -19,8 +19,21 @@ class ConfigItem(models.Model):
     admin_user = models.CharField("负责人", max_length=50, blank=True)
     status = models.CharField("状态", max_length=20, choices=[('active', '使用中'), ('idle', '闲置'), ('offline', '已下线')], default='active')
     attributes = models.JSONField("扩展属性", default=dict, blank=True)
+    itop_datasource = models.ForeignKey(
+        'iTopDataSource', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='config_items', verbose_name='iTop 数据源',
+    )
+    external_id = models.CharField('外部 ID', max_length=128, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = '配置项'
+        verbose_name_plural = '配置项'
+        ordering = ['-updated_at', 'name']
+        indexes = [
+            models.Index(fields=['itop_datasource', 'external_id']),
+        ]
 
     def __str__(self):
         return f"[{self.ci_type.name}] {self.name}"

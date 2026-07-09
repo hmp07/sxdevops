@@ -294,7 +294,7 @@ BUILTIN_MCP_SERVERS = [
         'name': '知识图谱 MCP',
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
         'description': '查询知识图谱中的环境关联、系统拓扑、服务依赖与主机资源关系。',
-        'tool_whitelist': ['query_knowledge_graph', 'query_hosts'],
+        'tool_whitelist': ['query_knowledge_graph', 'query_hosts', 'query_cmdb_items', 'query_cmdb_topology', 'query_device_detail', 'query_zabbix_hosts', 'query_zabbix_problems', 'query_zabbix_items', 'query_zabbix_history'],
     },
     {
         'name': '可观测性 MCP',
@@ -306,19 +306,19 @@ BUILTIN_MCP_SERVERS = [
         'name': '工单系统 MCP',
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
         'description': '查询事务工单与当前处理状态。',
-        'tool_whitelist': ['query_workorders'],
+        'tool_whitelist': ['query_workorders', 'query_task_center'],
     },
     {
         'name': '任务中心 MCP',
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
         'description': '查询任务记录并生成任务中心草稿。',
-        'tool_whitelist': ['query_task_resources', 'generate_host_task'],
+        'tool_whitelist': ['query_task_resources', 'generate_host_task', 'query_host_tasks'],
     },
     {
         'name': '时间中心 MCP',
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
         'description': '查询事件墙中的关键事件与最近动态。',
-        'tool_whitelist': ['query_event_wall'],
+        'tool_whitelist': ['query_event_wall', 'query_events'],
     },
     {
         'name': '容器管理 MCP',
@@ -884,6 +884,38 @@ BUILTIN_SKILLS = [
 5. 输出结构化结论：变更概述 → 影响范围 → 关联CI列表 → 关联工单 → 风险等级 → 建议审批策略。""",
         'allowed_role_codes': [],
     },
+    {
+        'name': 'sx-cmdb-query',
+        'slug': 'sx-cmdb-query',
+        'title': 'CMDB 配置查询',
+        'category': 'CMDB',
+        'description': '查询 CMDB 中的业务系统、服务器、数据库等配置项及其拓扑关系，结合 Zabbix 监控状态',
+        'source_type': AIOpsSkill.SOURCE_INLINE,
+        'applicable_actions': ['cmdb.query'],
+        'builtin_tools': ['query_cmdb_items', 'query_cmdb_topology', 'query_knowledge_graph', 'query_hosts'],
+        'recommended_tools': ['query_device_detail'],
+        'content': """# CMDB 配置查询 SOP
+
+## 可用工具
+- query_knowledge_graph: 查看整体知识图谱（含 CMDB 系统节点和 Zabbix 主机节点）
+- query_cmdb_items: 按关键词/业务线搜索 CMDB 配置项
+- query_cmdb_topology: 查看业务线的资源拓扑依赖关系
+- query_hosts: 查询主机资源详情（含 Zabbix 实时监控状态）
+- query_device_detail: 查询单台设备的 Zabbix + iTop CMDB 合并视图
+
+## 工作流程
+1. 用户询问某业务线/系统时 → query_knowledge_graph(system_name="XXX") 查看图谱中的系统节点
+2. 用户询问具体配置项 → query_cmdb_items(query="关键词") 搜索 CMDB
+3. 用户询问依赖关系/拓扑 → query_cmdb_topology(business_line="业务线名称")
+4. 用户询问某主机监控状态 → query_hosts 或 query_device_detail
+5. 综合 CMDB 配置数据 + Zabbix 实时监控状态给出答案
+
+## 注意事项
+- CMDB 数据来自 iTop 同步，主机已通过 DeviceMapping 关联 Zabbix 监控
+- 知识图谱中的 infrastructure 节点同时展示了 Zabbix 监控状态和 CMDB 业务线归属
+- ApplicationSolution 在 CMDB 中对应"应用方案"CI 类型，business_line 字段即业务线""",
+        'allowed_role_codes': [],
+    },
 ]
 
 BUILTIN_ACTION_REGISTRY = [
@@ -1224,6 +1256,25 @@ BUILTIN_ACTION_REGISTRY = [
             '生产环境订单服务异常，帮我跨系统排查根因',
             '从监控、CMDB 和变更记录综合分析当前故障',
             '这个告警跟最近的变更有没有关联',
+        ],
+    },
+    {
+        'code': 'cmdb.query',
+        'display_name': 'CMDB 配置查询',
+        'description': '查询 CMDB 中的业务系统、服务器、拓扑关系，结合 Zabbix 监控状态',
+        'agent_mode': 'direct',
+        'risk_level': 'low',
+        'allowed_tools': ['query_cmdb_items', 'query_cmdb_topology', 'query_knowledge_graph', 'query_hosts', 'query_device_detail'],
+        'skills': ['sx-cmdb-query'],
+        'preflight_required': False,
+        'preflight_fields': [],
+        'output_blocks': ['query_suggestion'],
+        'rbac_permissions': ['aiops.chat.view', 'cmdb.ci.view'],
+        'suggested_questions': [
+            '查询电商平台的系统和服务',
+            '电商平台依赖哪些数据库',
+            '电商平台的资源拓扑关系',
+            '查看当前所有业务线的系统分布',
         ],
     },
 ]
@@ -2132,6 +2183,7 @@ ACTION_ROUTE_PRIORITY = [
     'k8s.diagnose',
     'slo.analysis',
     'alert.root_cause',
+    'cmdb.query',
 ]
 
 
@@ -2251,6 +2303,16 @@ def _action_question_matches(action_code, question, analysis_scope=None):
             and (has_task_scope or (has_target_scope and _question_contains_any(lowered, ['巡检', '检查', '健康'])) or has_tool_task)
         ) or (
             has_install_intent and has_software_target
+        )
+    if action_code == 'cmdb.query':
+        return (
+            any(kw in question for kw in [
+                'CMDB', '配置项', '业务线', '应用方案', '资源拓扑', '拓扑关系',
+                '资产信息', '服务器信息', '数据库信息', '系统信息',
+                'itop', 'iTop', 'ITOP', '配置管理',
+            ])
+            or bool(re.search(r'(查询|查看|搜索|有哪些|多少|列出).*(系统|业务|服务器|数据库|主机|资产|拓扑|配置)', question))
+            or bool(re.search(r'(电商|交易|订单|支付|用户|商品|库存).*(平台|系统|服务)', question))
         )
     return False
 
@@ -3956,7 +4018,13 @@ def _enabled_knowledge_environment_options():
     return options
 
 
-def _resolve_chat_environment(session, question):
+def _resolve_chat_environment(session, question, knowledge_environment=''):
+    # 1. 显式传入的环境（前端选择器）
+    if knowledge_environment:
+        resolved = resolve_knowledge_environment(knowledge_environment)
+        if resolved:
+            return {'status': 'resolved', 'environment': resolved, 'source': 'explicit', 'candidates': []}
+
     text = str(question or '').strip()
     matches = resolve_knowledge_environments_from_text(text)
     seen = set()
@@ -4019,6 +4087,13 @@ def _resolve_chat_environment(session, question):
         return {'status': 'resolved', 'environment': fuzzy_matches[0], 'source': 'fuzzy', 'candidates': []}
     if len(fuzzy_matches) > 1:
         return {'status': 'ambiguous', 'environment': None, 'source': 'fuzzy', 'candidates': fuzzy_matches}
+
+    # 3. is_default 兜底
+    default_env = AIOpsKnowledgeEnvironment.objects.filter(is_enabled=True, is_default=True).first()
+    if default_env:
+        resolved = resolve_knowledge_environment(default_env.name)
+        if resolved:
+            return {'status': 'resolved', 'environment': resolved, 'source': 'default', 'candidates': []}
 
     return {'status': 'missing', 'environment': None, 'source': '', 'candidates': [resolve_knowledge_environment(item['name']) for item in options if resolve_knowledge_environment(item['name'])]}
 
@@ -5901,8 +5976,26 @@ def _promql_items_from_results(results):
 def query_grafana_promql(session, user_message, user, query='', promql='', range_query=True, duration_minutes=30, step=60, limit=6, metric_datasource_id=''):
     started_at = time.time()
     knowledge_environment = _resolve_knowledge_environment_for_query(query)
-    selected_metric_datasource_id = metric_datasource_id or ((knowledge_environment.get('metric_datasource_ids') or [''])[0] if knowledge_environment else '')
+    metric_datasource_ids = (knowledge_environment.get('metric_datasource_ids') or []) if knowledge_environment else []
+    selected_metric_datasource_id = str(metric_datasource_id or (metric_datasource_ids[0] if metric_datasource_ids else ''))
     expression = str(promql or query or '').strip()
+    # Zabbix 数据源不支持 PromQL，路由到 Zabbix MCP 工具
+    for ds_id in ([int(metric_datasource_id)] if metric_datasource_id else metric_datasource_ids):
+        if not ds_id:
+            continue
+        try:
+            zabbix_ds = MetricDataSource.objects.filter(id=ds_id, tsdb_type='zabbix').first()
+        except Exception:
+            continue
+        if zabbix_ds:
+            invocation = _create_tool_invocation(
+                session, user_message, 'query_grafana_promql_zabbix',
+                {'query': query, 'promql': expression, 'zabbix_datasource_id': ds_id},
+            )
+            return _query_zabbix_metric_proxy(
+                session, user_message, user, query, expression, duration_minutes,
+                limit, zabbix_ds, knowledge_environment, invocation, started_at,
+            )
     invocation = _create_tool_invocation(
         session,
         user_message,
@@ -8822,6 +8915,56 @@ def query_recent_changes(session, user_message, user, limit=5):
 
 # ---- Zabbix MCP Tool Handlers ----
 
+def _query_zabbix_metric_proxy(session, user_message, user, query, expression, duration_minutes, limit,
+                                zabbix_ds, knowledge_environment, invocation, started_at):
+    """Zabbix 数据源的指标查询代理：使用 Zabbix MCP 工具替代 PromQL。"""
+    from html import escape as html_escape
+    zabbix_datasource_id = (zabbix_ds.config or {}).get('zabbix_datasource_id')
+    hosts_result = query_zabbix_hosts(session, user_message, user, datasource_id=zabbix_datasource_id)
+    if 'error' in hosts_result:
+        _finish_tool_invocation(invocation, {'error': hosts_result['error']}, started_at, success=False)
+        return {'error': hosts_result['error'], 'sections': [], 'citations': []}
+
+    hosts = hosts_result.get('hosts', [])
+    items_by_host = {}
+    for h in hosts[:limit]:
+        hostid = h.get('hostid', '')
+        hostname = h.get('host', '') or h.get('name', '')
+        items_result = query_zabbix_items(session, user_message, user, datasource_id=zabbix_datasource_id,
+                                          host_ids=[hostid])
+        items = items_result.get('items', []) if 'error' not in items_result else []
+        cpu_items = [i for i in items if 'cpu' in (i.get('name', '') + i.get('key_', '')).lower()]
+        mem_items = [i for i in items if 'mem' in (i.get('name', '') + i.get('key_', '')).lower()]
+        items_by_host[hostname or hostid] = {
+            'hostid': hostid, 'hostname': hostname,
+            'cpu': cpu_items[:3], 'mem': mem_items[:3], 'items': items[:10],
+        }
+
+    lines = []
+    for hostname, data in items_by_host.items():
+        safe_host = html_escape(str(hostname))
+        parts = [f'**{safe_host}**']
+        cpu_parts = []
+        for i in data['cpu']:
+            cpu_parts.append(f'{html_escape(str(i.get("name","")))}={html_escape(str(i.get("lastvalue","?")))}')
+        cpu_last = ', '.join(cpu_parts)
+        mem_parts = []
+        for i in data['mem']:
+            mem_parts.append(f'{html_escape(str(i.get("name","")))}={html_escape(str(i.get("lastvalue","?")))}')
+        mem_last = ', '.join(mem_parts)
+        if cpu_last: parts.append(f'CPU: {cpu_last}')
+        if mem_last: parts.append(f'内存: {mem_last}')
+        lines.append(' | '.join(parts))
+
+    result_summary = {'host_count': len(hosts), 'queried_hosts': len(items_by_host), 'type': 'zabbix_proxy'}
+    _finish_tool_invocation(invocation, result_summary, started_at, success=True)
+    return {
+        'summary': result_summary,
+        'sections': [{'title': f'Zabbix 监控指标 ({zabbix_ds.name})', 'items': lines or ['暂无监控项数据']}],
+        'citations': [{'title': 'Zabbix 监控', 'path': '/observability/zabbix'}],
+    }
+
+
 def query_zabbix_hosts(session, user_message, user, datasource_id=None, search='', limit=50):
     """查询 Zabbix 主机列表和状态"""
     from ops.zabbix_client import ZabbixClient
@@ -8884,6 +9027,26 @@ def query_zabbix_problems(session, user_message, user, datasource_id=None, min_s
                 'clock': p.get('clock'),
                 'acknowledged': p.get('acknowledged') == '1',
             })
+        # 静默同步告警到 Alert 模型，使告警中心可查看
+        try:
+            from ops.zabbix_alert_bridge import upsert_alert_from_zabbix_problem
+            ds_name = ds.name if ds else ''
+            for p in (result or []):
+                try:
+                    host_name = ''
+                    trigger_id = p.get('objectid', '')
+                    if trigger_id:
+                        triggers_resp = client.get_triggers(trigger_ids=[trigger_id])
+                        if isinstance(triggers_resp, list) and triggers_resp:
+                            hosts = triggers_resp[0].get('hosts', [])
+                            if hosts:
+                                host_name = hosts[0].get('host', '')
+                    upsert_alert_from_zabbix_problem(p, host_name=host_name, env_name=ds_name)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         _finish_tool_invocation(invocation, {'problem_count': len(problems)}, started_at, success=True)
         return {'problems': problems, 'total': len(problems)}
     except Exception as e:
@@ -9183,6 +9346,99 @@ def query_cmdb_items(session, user_message, user, query='', environment='', limi
         'sections': sections,
         'citations': [{'title': 'CMDB'}],
         'items': serialized_items,
+    }
+
+
+def query_cmdb_topology(session, user_message, user, business_line='', ci_name='', scope='neighbors'):
+    """查询 CMDB 资源拓扑 — 复刻 cmdb/views.py 的 BFS 逻辑，结合 Zabbix 监控状态"""
+    started_at = time.time()
+    invocation = _create_tool_invocation(session, user_message, 'query_cmdb_topology',
+                                         {'business_line': business_line, 'ci_name': ci_name, 'scope': scope})
+    if not user_has_permissions(user, ['cmdb.topology.view']):
+        _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
+        return {'sections': [], 'citations': []}
+
+    try:
+        from cmdb.models import ConfigItem, CIRelation
+        from ops.models import DeviceMapping
+    except ImportError:
+        _finish_tool_invocation(invocation, {'detail': 'cmdb_unavailable'}, started_at, success=False)
+        return {'sections': [], 'citations': []}
+
+    matched = ConfigItem.objects.select_related('ci_type').all()
+    if business_line:
+        matched = matched.filter(business_line__icontains=business_line)
+    if ci_name:
+        matched = matched.filter(name__icontains=ci_name)
+
+    matched_ids = set(matched.values_list('id', flat=True))
+    if not matched_ids:
+        _finish_tool_invocation(invocation, {'count': 0}, started_at, success=True)
+        return {
+            'summary': {'node_count': 0, 'edge_count': 0},
+            'sections': [{'title': 'CMDB 拓扑', 'items': ['未找到匹配的配置项']}],
+            'citations': [{'title': 'CMDB 拓扑'}],
+        }
+
+    # BFS 扩展
+    node_ids = set(matched_ids)
+    if scope == 'neighbors':
+        from collections import deque
+        q = deque(matched_ids)
+        while q:
+            current = q.popleft()
+            for edge in CIRelation.objects.filter(source_id=current):
+                if edge.target_id not in node_ids:
+                    node_ids.add(edge.target_id)
+                    q.append(edge.target_id)
+            for edge in CIRelation.objects.filter(target_id=current):
+                if edge.source_id not in node_ids:
+                    node_ids.add(edge.source_id)
+                    q.append(edge.source_id)
+
+    nodes_qs = ConfigItem.objects.filter(id__in=node_ids).select_related('ci_type')
+    edges_qs = CIRelation.objects.filter(source_id__in=node_ids, target_id__in=node_ids)
+
+    # 批量查 DeviceMapping（Zabbix 关联状态）
+    ci_ids = list(node_ids)
+    dm_map = {}
+    for dm in DeviceMapping.objects.filter(config_item_id__in=ci_ids):
+        dm_map[dm.config_item_id] = {'hostname': dm.zabbix_hostname, 'hostid': dm.zabbix_hostid}
+
+    nodes_data = []
+    for n in nodes_qs:
+        dm = dm_map.get(n.id, {})
+        nodes_data.append({
+            'id': n.id, 'name': n.name,
+            'type': n.ci_type.name if n.ci_type else '',
+            'business_line': n.business_line, 'environment': n.environment,
+            'status': n.status,
+            'zabbix_hostname': dm.get('hostname', ''),
+            'zabbix_monitored': bool(dm),
+        })
+
+    edges_data = [{
+        'source': e.source.name, 'target': e.target.name,
+        'relation': e.relation_type,
+    } for e in edges_qs]
+
+    items = [
+        f"{n['name']} [{n['type']}]" +
+        (f" → Zabbix: {n['zabbix_hostname']}" if n['zabbix_monitored'] else "")
+        for n in nodes_data[:12]
+    ]
+
+    _finish_tool_invocation(invocation,
+                            {'node_count': len(nodes_data), 'edge_count': len(edges_data)},
+                            started_at, success=True)
+    return {
+        'summary': {'node_count': len(nodes_data), 'edge_count': len(edges_data),
+                    'business_line': business_line},
+        'sections': [{'title': f'CMDB 拓扑 ({business_line or ci_name or "全部"})',
+                      'items': items}],
+        'citations': [{'title': 'CMDB 拓扑'}],
+        'nodes': nodes_data,
+        'edges': edges_data,
     }
 
 
@@ -9867,6 +10123,36 @@ PLATFORM_MCP_TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        'name': 'sxdevops.query_cmdb_items',
+        'title': '查询 CMDB 配置项',
+        'description': '查询平台 CMDB 中的配置项（CI），包括业务系统(ApplicationSolution)、服务器、数据库、中间件等。可按业务线、环境、关键词过滤。用于回答"有哪些系统"、"电商平台包含哪些服务器"等问题。',
+        'permission': 'cmdb.ci.view',
+        'handler': 'query_cmdb_items',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string', 'description': '搜索关键词：业务线名称、主机名、IP、CI类型'},
+                'environment': {'type': 'string', 'description': '环境过滤: prod/test/dev'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20, 'default': 6},
+            },
+        },
+    },
+    {
+        'name': 'sxdevops.query_cmdb_topology',
+        'title': '查询 CMDB 资源拓扑',
+        'description': '查询 CMDB 中指定业务线或 CI 的拓扑关系（上下游依赖图）。用于影响分析、根因定位、"电商平台依赖哪些数据库"等问题。',
+        'permission': 'cmdb.topology.view',
+        'handler': 'query_cmdb_topology',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'business_line': {'type': 'string', 'description': '业务线名称，如"电商平台"'},
+                'ci_name': {'type': 'string', 'description': 'CI 名称'},
+                'scope': {'type': 'string', 'enum': ['exact', 'neighbors'], 'default': 'neighbors'},
+            },
+        },
+    },
 ]
 
 
@@ -10015,6 +10301,10 @@ def _invoke_platform_mcp_handler(handler_name, session, user, arguments):
         return query_zabbix_history(session, None, user, item_ids=arguments.get('item_ids'), limit=arguments.get('limit', 50))
     if handler_name == 'query_device_detail':
         return query_device_detail(session, None, user, hostname=arguments.get('hostname', ''))
+    if handler_name == 'query_cmdb_items':
+        return query_cmdb_items(session, None, user, query=arguments.get('query', ''), environment=arguments.get('environment', ''), limit=arguments.get('limit', 6))
+    if handler_name == 'query_cmdb_topology':
+        return query_cmdb_topology(session, None, user, business_line=arguments.get('business_line', ''), ci_name=arguments.get('ci_name', ''), scope=arguments.get('scope', 'neighbors'))
     raise ValueError('MCP 工具处理器不存在')
 
 
@@ -13511,8 +13801,10 @@ def _provider_error_code(error_payload):
     return str(error.get('code') or error.get('type') or '').strip()
 
 
-def _should_retry_with_developer_role(error_payload, request_payload):
+def _should_retry_with_developer_role(error_payload, request_payload, model_name=''):
     if _provider_error_code(error_payload) != 'bad_response_status_code':
+        return False
+    if not _model_prefers_developer_role(model_name):
         return False
     return any(isinstance(message, dict) and message.get('role') == 'system' for message in request_payload.get('messages') or [])
 
@@ -13536,7 +13828,8 @@ def _model_request_payload_variants(payload, model_name):
     else:
         developer_messages = messages
     developer_payload = {**request_payload, 'messages': developer_messages}
-    tool_compatible_payload = {**developer_payload, 'messages': _convert_tool_messages_to_user_summaries(developer_messages)}
+    base_messages = developer_messages if _model_prefers_developer_role(model_name) else messages
+    tool_compatible_payload = {**request_payload, 'messages': _convert_tool_messages_to_user_summaries(base_messages)}
     if has_tool_role and _model_prefers_developer_role(model_name):
         return [tool_compatible_payload, developer_payload, request_payload]
     if has_tool_role:
@@ -13545,7 +13838,8 @@ def _model_request_payload_variants(payload, model_name):
         return [request_payload]
     if _model_prefers_developer_role(model_name):
         return [developer_payload, request_payload]
-    return [request_payload, developer_payload]
+    # Non-developer models (DeepSeek, etc.) — skip developer role entirely
+    return [request_payload]
 
 
 def _model_provider_api_base(provider):
@@ -14065,7 +14359,7 @@ def _request_model_completion_legacy(provider, payload):
             if response.status_code >= 400:
                 last_error = data
                 if not (
-                    _should_retry_with_developer_role(data, request_payload)
+                    _should_retry_with_developer_role(data, request_payload, model_name=model_name)
                     or _should_retry_without_tool_role(data, request_payload)
                 ):
                     break
@@ -14893,6 +15187,20 @@ def _tool_allowed(user, tool_name):
         return user_has_permissions(user, ['ops.host.execute'])
     if tool_name == 'generate_host_task':
         return user_has_permissions(user, ['aiops.task.generate'])
+    if tool_name == 'query_cmdb_items':
+        return user_has_permissions(user, ['cmdb.ci.view'])
+    if tool_name == 'query_cmdb_topology':
+        return user_has_permissions(user, ['cmdb.topology.view'])
+    if tool_name == 'query_device_detail':
+        return user_has_permissions(user, ['ops.zabbix.view'])
+    if tool_name == 'query_zabbix_hosts':
+        return user_has_permissions(user, ['ops.zabbix.view'])
+    if tool_name == 'query_zabbix_problems':
+        return user_has_permissions(user, ['ops.zabbix.view'])
+    if tool_name == 'query_zabbix_items':
+        return user_has_permissions(user, ['ops.zabbix.view'])
+    if tool_name == 'query_zabbix_history':
+        return user_has_permissions(user, ['ops.zabbix.view'])
     return False
 
 
@@ -14900,8 +15208,14 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
     tool_names = []
     for server in active_mcp_servers:
         for tool_name in filter_feature_tools(server.tool_whitelist or []):
-            if tool_name not in tool_names and _tool_allowed(user, tool_name):
-                tool_names.append(tool_name)
+            if tool_name not in tool_names:
+                if _tool_allowed(user, tool_name):
+                    tool_names.append(tool_name)
+                else:
+                    logging.getLogger(__name__).info(
+                        'Tool "%s" (server: %s) skipped — _tool_allowed returned False. Check _tool_allowed() for missing permission entry.',
+                        tool_name, server.name
+                    )
 
     catalog = {
         'query_knowledge_graph': {
@@ -15066,6 +15380,79 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
         },
     }
 
+    catalog['query_cmdb_items'] = {
+        'description': '查询平台 CMDB 中的配置项（CI），包括业务系统(ApplicationSolution)、服务器、数据库、中间件等。可按业务线、环境、关键词过滤。用于回答"有哪些系统"、"电商平台包含哪些服务器"等问题。',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string', 'description': '搜索关键词：业务线名称、主机名、IP、CI类型'},
+                'environment': {'type': 'string', 'description': '环境过滤: prod/test/dev'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20, 'default': 6},
+            },
+        },
+    }
+    catalog['query_cmdb_topology'] = {
+        'description': '查询 CMDB 中指定业务线或 CI 的拓扑关系（上下游依赖图）。用于影响分析、根因定位、"电商平台依赖哪些数据库"等问题。',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'business_line': {'type': 'string', 'description': '业务线名称，如"电商平台"'},
+                'ci_name': {'type': 'string', 'description': 'CI 名称'},
+                'scope': {'type': 'string', 'enum': ['exact', 'neighbors'], 'default': 'neighbors'},
+            },
+        },
+    }
+    catalog['query_device_detail'] = {
+        'description': '查询单台设备的 Zabbix 监控与 iTop CMDB 合并视图。输入主机名或 IP 即可获取监控状态、CMDB 属性、关联工单。',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'hostname': {'type': 'string', 'description': '主机名或 IP 地址'},
+            },
+        },
+    }
+    catalog['query_zabbix_hosts'] = {
+        'description': '查询 Zabbix 监控中的主机列表，可按主机组和关键词过滤。',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'search': {'type': 'string', 'description': '搜索关键词'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 50},
+            },
+        },
+    }
+    catalog['query_zabbix_problems'] = {
+        'description': '查询 Zabbix 当前活跃问题/告警列表，可按严重程度过滤。',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'min_severity': {'type': 'integer', 'minimum': 0, 'maximum': 5, 'description': '最小严重程度 0-5'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 50},
+            },
+        },
+    }
+    catalog['query_zabbix_items'] = {
+        'description': '查询 Zabbix 监控项列表，可按主机和关键词过滤。',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'host_ids': {'type': 'array', 'items': {'type': 'string'}, 'description': '主机 ID 列表'},
+                'search': {'type': 'string', 'description': '搜索关键词'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 50},
+            },
+        },
+    }
+    catalog['query_zabbix_history'] = {
+        'description': '查询 Zabbix 监控项历史数据（数值型监控项的时序数据）。',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'item_ids': {'type': 'array', 'items': {'type': 'string'}, 'description': '监控项 ID 列表'},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 50},
+            },
+        },
+    }
+
     catalog['query_dashboard_metadata'] = {
         'description': '查询平台已同步的 Grafana 看板元数据、目录、标题和环境关联。需要实时指标值时使用 query_grafana_promql 或 query_dashboard_panel_data。',
         'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
@@ -15168,6 +15555,13 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
             'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10},
         },
     }
+
+    # 一致性校验：记录 whitelist 中存在但 _tool_allowed 拒绝或 catalog 缺失的工具
+    for tool_name in tool_names:
+        if tool_name not in catalog:
+            logging.getLogger(__name__).warning(
+                'Tool "%s" is whitelisted in MCP servers but missing from runtime catalog — LLM will not see it. Add a catalog entry in _tool_specs_for_runtime().', tool_name
+            )
 
     return [
         {'type': 'function', 'function': {'name': tool_name, 'description': catalog[tool_name]['description'], 'parameters': catalog[tool_name]['parameters']}}
@@ -15657,6 +16051,27 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
             'message_type': AIOpsChatMessage.TYPE_ACTION,
             'pending_action_draft': draft,
         }
+    if tool_name == 'query_cmdb_items':
+        result = query_cmdb_items(session, user_message, user, query=arguments.get('query', ''), environment=arguments.get('environment', ''), limit=arguments.get('limit') or 6)
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
+    if tool_name == 'query_cmdb_topology':
+        result = query_cmdb_topology(session, user_message, user, business_line=arguments.get('business_line', ''), ci_name=arguments.get('ci_name', ''), scope=arguments.get('scope', 'neighbors'))
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
+    if tool_name == 'query_device_detail':
+        result = query_device_detail(session, user_message, user, hostname=arguments.get('hostname', ''))
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
+    if tool_name == 'query_zabbix_hosts':
+        result = query_zabbix_hosts(session, user_message, user, search=arguments.get('search', ''), limit=arguments.get('limit') or 50)
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
+    if tool_name == 'query_zabbix_problems':
+        result = query_zabbix_problems(session, user_message, user, min_severity=arguments.get('min_severity'), limit=arguments.get('limit') or 50)
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
+    if tool_name == 'query_zabbix_items':
+        result = query_zabbix_items(session, user_message, user, host_ids=arguments.get('host_ids'), search=arguments.get('search', ''), limit=arguments.get('limit') or 50)
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
+    if tool_name == 'query_zabbix_history':
+        result = query_zabbix_history(session, user_message, user, item_ids=arguments.get('item_ids'), limit=arguments.get('limit') or 50)
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
     raise ValueError(f'Unsupported tool: {tool_name}')
 
 
@@ -16299,6 +16714,13 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                     tool_name = function_payload.get('name', '')
                     registry_entry = registry.get(tool_name)
                     if not registry_entry:
+                        # 确保每个 tool_call 都有对应的 tool 响应消息
+                        # DeepSeek 等模型要求 tool_calls 和 tool 消息严格配对
+                        messages.append({
+                            'role': 'tool',
+                            'tool_call_id': tool_call.get('id'),
+                            'content': json.dumps({'error': f'工具 {tool_name} 未在运行时注册表中找到，请检查 MCP 服务配置。'}, ensure_ascii=False),
+                        })
                         continue
                     arguments = _parse_tool_arguments(function_payload.get('arguments'))
                     emit(
@@ -16769,7 +17191,7 @@ def _run_async_chat_worker(session_id, user_message_id, user_id, assistant_messa
 
 
 
-def start_async_chat_processing(session, user_message, user, assistant_message, analysis_only=False):
+def start_async_chat_processing(session, user_message, user, assistant_message, analysis_only=False, knowledge_environment=''):
     worker = threading.Thread(
         target=_run_async_chat_worker,
         kwargs={

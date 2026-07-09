@@ -162,7 +162,7 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'aliases', 'description', 'event_environments', 'grafana_folder_keys',
             'metric_datasource_ids', 'log_datasource_ids', 'tracing_datasource_ids', 'observability_link_ids', 'alert_environments',
-            'k8s_cluster_ids', 'k8s_namespaces', 'docker_host_ids',
+            'k8s_cluster_ids', 'k8s_namespaces', 'zabbix_datasource_ids', 'itop_datasource_ids', 'docker_host_ids',
             'task_resource_environment_ids',
             'is_default', 'is_enabled', 'created_by', 'updated_by', 'created_at', 'updated_at',
         ]
@@ -185,6 +185,8 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
             'observability_link_ids',
             'alert_environments',
             'k8s_cluster_ids',
+            'zabbix_datasource_ids',
+            'itop_datasource_ids',
             'docker_host_ids',
             'task_resource_environment_ids',
         ]
@@ -542,6 +544,7 @@ class AIOpsChatInputSerializer(serializers.Serializer):
     content = serializers.CharField(max_length=4000)
     analysis_only = serializers.BooleanField(required=False, default=False)
     page_context = serializers.JSONField(required=False, default=dict)
+    knowledge_environment = serializers.CharField(required=False, allow_blank=True, default='')
 
 
 class AIOpsCreateSessionSerializer(serializers.Serializer):

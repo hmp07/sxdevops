@@ -271,6 +271,120 @@ export function layoutTopology({ nodes = [], resourceTree = [], width = 1200, he
   }
 }
 
+export function layoutTopologyLayered({ nodes = [], edges = [], width = 1200, height = 720 }) {
+  const padding = { top: 60, right: 40, bottom: 40, left: 40 }
+  const innerWidth = Math.max(width - padding.left - padding.right, 320)
+  const innerHeight = Math.max(height - padding.top - padding.bottom, 320)
+
+  if (!nodes.length) {
+    return {
+      nodes: [], sections: [], laneLabels: [],
+      bounds: { minX: padding.left, minY: padding.top, maxX: width - padding.right, maxY: height - padding.bottom, width: innerWidth, height: innerHeight },
+    }
+  }
+
+  // Build adjacency maps
+  const nodeMap = new Map(nodes.map(n => [n.id, n]))
+  const outEdges = new Map()  // source → [target ids]
+  const inEdges = new Map()   // target → [source ids]
+  nodes.forEach(n => { outEdges.set(n.id, []); inEdges.set(n.id, []) })
+  edges.forEach(e => {
+    if (outEdges.has(e.source)) outEdges.get(e.source).push(e.target)
+    if (inEdges.has(e.target)) inEdges.get(e.target).push(e.source)
+  })
+
+  // BFS from roots (nodes with no incoming edges = infrastructure layer)
+  const roots = nodes.filter(n => (inEdges.get(n.id) || []).length === 0)
+  const startNodes = roots.length ? roots : [nodes[0]]
+
+  const layers = []
+  const assigned = new Set()
+  let frontier = [...startNodes]
+  while (frontier.length) {
+    const layerNodes = [...new Set(frontier)].filter(n => !assigned.has(n.id))
+    if (!layerNodes.length) break
+    layers.push(layerNodes)
+    layerNodes.forEach(n => assigned.add(n.id))
+    // Next frontier: all nodes reachable from this layer that haven't been assigned
+    const next = new Set()
+    layerNodes.forEach(n => {
+      (outEdges.get(n.id) || []).forEach(tgtId => {
+        if (!assigned.has(tgtId)) next.add(nodeMap.get(tgtId))
+      })
+      // Also follow incoming edges for nodes that point TO this layer
+      ;(inEdges.get(n.id) || []).forEach(srcId => {
+        if (!assigned.has(srcId)) next.add(nodeMap.get(srcId))
+      })
+    })
+    frontier = [...next]
+  }
+
+  // Put any remaining unassigned nodes in the last layer
+  const unassigned = nodes.filter(n => !assigned.has(n.id))
+  if (unassigned.length) {
+    if (layers.length) {
+      layers[layers.length - 1] = [...layers[layers.length - 1], ...unassigned]
+    } else {
+      layers.push(unassigned)
+    }
+  }
+
+  // Sort nodes within each layer by CI type
+  const positionedNodes = []
+  const layerCount = layers.length
+  const layerGap = 24
+  const layerWidth = (innerWidth - layerGap * Math.max(layerCount - 1, 0)) / Math.max(layerCount, 1)
+
+  layers.forEach((layerNodes, layerIndex) => {
+    const layerX = padding.left + layerIndex * (layerWidth + layerGap)
+    // Sort by CI type within layer
+    layerNodes.sort((a, b) => {
+      if (a.type !== b.type) return String(a.type).localeCompare(String(b.type), 'zh-CN')
+      return String(a.name).localeCompare(String(b.name))
+    })
+
+    const nodeGap = 14
+    const nodeCount = layerNodes.length
+    const availableHeight = innerHeight - nodeGap * Math.max(nodeCount - 1, 0)
+    const nodeSpacing = nodeCount > 1 ? availableHeight / (nodeCount - 1) : 0
+
+    layerNodes.forEach((node, nodeIndex) => {
+      const x = layerX + layerWidth / 2
+      const y = nodeCount === 1
+        ? padding.top + innerHeight / 2
+        : padding.top + nodeIndex * nodeSpacing
+      positionedNodes.push({ ...node, x, y, r: 24 })
+    })
+  })
+
+  const bounds = positionedNodes.reduce((result, node) => ({
+    minX: Math.min(result.minX, node.x - node.r - 16),
+    minY: Math.min(result.minY, node.y - node.r - 18),
+    maxX: Math.max(result.maxX, node.x + node.r + 16),
+    maxY: Math.max(result.maxY, node.y + node.r + 42),
+  }), { minX: padding.left, minY: padding.top, maxX: width - padding.right, maxY: height - padding.bottom })
+
+  // Build lane labels for each layer
+  const laneLabels = layers.map((layerNodes, index) => {
+    const types = [...new Set(layerNodes.map(n => n.type))]
+    return {
+      type: 'business',
+      text: types.length <= 2 ? types.join(' / ') : `Layer ${index + 1}`,
+      x: padding.left + index * (layerWidth + layerGap),
+      y: padding.top - 40,
+      width: layerWidth,
+      height: 30,
+    }
+  })
+
+  return {
+    nodes: positionedNodes,
+    sections: [],
+    laneLabels,
+    bounds: { ...bounds, width: bounds.maxX - bounds.minX, height: bounds.maxY - bounds.minY },
+  }
+}
+
 export function pointToSegmentDistance(point, start, end) {
   const dx = end.x - start.x
   const dy = end.y - start.y

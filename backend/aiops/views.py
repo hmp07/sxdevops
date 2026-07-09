@@ -550,6 +550,16 @@ def _clean_catalog_value(value):
     return str(value or '').strip()
 
 
+def _safe_api_url(url):
+    """脱敏 API URL，仅保留主机名"""
+    if not url:
+        return None
+    from urllib.parse import urlparse, urlunparse
+    parsed = urlparse(url)
+    safe = parsed._replace(netloc=parsed.hostname + (f':{parsed.port}' if parsed.port else ''))
+    return urlunparse(safe)
+
+
 def _is_demoish_catalog_item(*values):
     text = ' '.join(str(value or '') for value in values).lower()
     return any(keyword in text for keyword in ['demo', '演示', '示例', '样例'])
@@ -649,6 +659,11 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
             .distinct()
             .order_by('environment')[:100]
         )
+        # 将已配置的 Zabbix 数据源名称加入告警环境候选
+        from ops.models import ZabbixDataSource as ZbxDS
+        for zds in ZbxDS.objects.filter(is_enabled=True):
+            if zds.name and zds.name not in alert_environments:
+                alert_environments.append(zds.name)
         log_datasources = [
             {
                 'id': item.id,
@@ -744,6 +759,7 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
             for item in TaskResourceGroup.objects.filter(group_type=TaskResourceGroup.GROUP_ENVIRONMENT).order_by('sort_order', 'name', 'id')
         ]
 
+
         folder_map = {}
         for setting in GrafanaSetting.objects.filter(enabled=True).order_by('name'):
             folders = setting.folders if isinstance(setting.folders, list) else []
@@ -775,6 +791,10 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
             'tracing_datasources': tracing_datasources,
             'observability_links': observability_links,
             'alert_environments': [_clean_catalog_value(item) for item in alert_environments if _clean_catalog_value(item)],
+            'zabbix_datasources': [
+                {'id': zds.id, 'name': zds.name, 'api_url': _safe_api_url(zds.api_url)}
+                for zds in ZbxDS.objects.filter(is_enabled=True)
+            ],
             'k8s_clusters': k8s_clusters,
             'docker_hosts': docker_hosts,
             'task_resource_environments': task_resource_environments,
@@ -910,8 +930,14 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         content = recover_masked_suggested_question(serializer.validated_data['content'].strip())
         analysis_only = bool(serializer.validated_data.get('analysis_only'))
         page_context = normalize_page_context(serializer.validated_data.get('page_context'))
+        knowledge_environment = (serializer.validated_data.get('knowledge_environment') or '').strip()
+        ctx = session.context if isinstance(session.context, dict) else {}
         if page_context:
-            session.context = {**(session.context if isinstance(session.context, dict) else {}), 'page_context': page_context}
+            ctx['page_context'] = page_context
+        if knowledge_environment:
+            ctx['current_environment'] = knowledge_environment
+        if ctx != session.context:
+            session.context = ctx
             session.save(update_fields=['context', 'updated_at'])
         user_metadata = {}
         if analysis_only:
@@ -943,8 +969,14 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         content = recover_masked_suggested_question(serializer.validated_data['content'].strip())
         analysis_only = bool(serializer.validated_data.get('analysis_only'))
         page_context = normalize_page_context(serializer.validated_data.get('page_context'))
+        knowledge_environment = (serializer.validated_data.get('knowledge_environment') or '').strip()
+        ctx = session.context if isinstance(session.context, dict) else {}
         if page_context:
-            session.context = {**(session.context if isinstance(session.context, dict) else {}), 'page_context': page_context}
+            ctx['page_context'] = page_context
+        if knowledge_environment:
+            ctx['current_environment'] = knowledge_environment
+        if ctx != session.context:
+            session.context = ctx
             session.save(update_fields=['context', 'updated_at'])
         user_metadata = {}
         if analysis_only:

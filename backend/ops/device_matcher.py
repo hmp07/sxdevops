@@ -11,17 +11,36 @@ def extract_ip_from_zabbix_host(host: dict) -> str | None:
     return (iface.get('ip') or '').strip() or None
 
 
+def _extract_ci_ip(attrs: dict) -> str:
+    """从 CI attributes 中提取 IP（兼容 iTop 多字段格式）"""
+    if not attrs:
+        return ''
+    return (
+        attrs.get('ip_address') or
+        attrs.get('managementip') or
+        attrs.get('managementip_id_friendlyname') or  # iTop 实际存储 IP 的字段
+        ''
+    ).strip()
+
+
 def find_ci_by_ip(ip: str):
     """按 IP 在 ConfigItem 中查找匹配的 CI"""
     if not ip:
         return None
     from cmdb.models import ConfigItem
     for ci in ConfigItem.objects.select_related('ci_type').all():
-        attrs = ci.attributes or {}
-        ci_ip = (attrs.get('ip_address') or attrs.get('managementip') or '').strip()
+        ci_ip = _extract_ci_ip(ci.attributes or {})
         if ci_ip and ci_ip == ip:
             return ci
     return None
+
+
+def find_ci_by_name(name: str):
+    """按名称在 ConfigItem 中查找匹配的 CI（IP 匹配失败时的降级方案）"""
+    if not name:
+        return None
+    from cmdb.models import ConfigItem
+    return ConfigItem.objects.filter(name__iexact=name.strip()).first()
 
 
 def match_zabbix_host(host: dict):
@@ -45,11 +64,20 @@ def match_zabbix_host(host: dict):
         zabbix_hostname=hostname,
         zabbix_ip=ip or '',
     )
+    matched = False
     if ip:
         ci = find_ci_by_ip(ip)
         if ci:
             mapping.config_item = ci
             mapping.match_method = DeviceMapping.MATCH_IP
+            mapping.match_confidence = 1.0
+            matched = True
+    if not matched:
+        ci = find_ci_by_name(hostname)
+        if ci:
+            mapping.config_item = ci
+            mapping.match_method = DeviceMapping.MATCH_NAME
+            mapping.match_confidence = 0.7
     mapping.save()
     return mapping
 
@@ -67,23 +95,117 @@ def match_all_zabbix_hosts(hosts: list) -> dict:
 
 
 def match_ci_to_zabbix(config_item):
-    """iTop 同步后，为新 CI 查找匹配的 Zabbix 主机"""
+    """iTop 同步后，为新 CI 查找匹配的 Zabbix 主机（IP 优先，名称降级）"""
     from ops.models import DeviceMapping
-    attrs = config_item.attributes or {}
-    ci_ip = (attrs.get('ip_address') or attrs.get('managementip') or '').strip()
-    if not ci_ip:
-        return None
+    ci_ip = _extract_ci_ip(config_item.attributes or {})
 
     existing = DeviceMapping.objects.filter(config_item=config_item).first()
     if existing:
         return existing
 
-    mapping = DeviceMapping.objects.filter(zabbix_ip=ci_ip, config_item__isnull=True).first()
-    if mapping:
-        mapping.config_item = config_item
-        mapping.match_confidence = 1.0
-        mapping.save(update_fields=['config_item', 'match_confidence'])
-    return mapping
+    # 主匹配：IP 精确匹配
+    if ci_ip:
+        mapping = DeviceMapping.objects.filter(zabbix_ip=ci_ip, config_item__isnull=True).first()
+        if mapping:
+            mapping.config_item = config_item
+            mapping.match_method = DeviceMapping.MATCH_IP
+            mapping.match_confidence = 1.0
+            mapping.save(update_fields=['config_item', 'match_method', 'match_confidence'])
+            return mapping
+
+    # 降级匹配：CI 名称匹配 Zabbix 主机名
+    ci_name = (config_item.name or '').strip()
+    if ci_name:
+        mapping = DeviceMapping.objects.filter(
+            zabbix_hostname__iexact=ci_name, config_item__isnull=True
+        ).first()
+        if mapping:
+            mapping.config_item = config_item
+            mapping.match_method = DeviceMapping.MATCH_NAME
+            mapping.match_confidence = 0.7
+            mapping.save(update_fields=['config_item', 'match_method', 'match_confidence'])
+            return mapping
+    return None
+
+
+def reconcile_device_mappings() -> dict:
+    """统一对账：双向匹配 Zabbix 主机 ↔ iTop CI，跳过人工确认的映射
+
+    在 iTop 同步完成和 Zabbix 主机导入完成时调用。
+    多次运行幂等，不会创建重复映射。
+    """
+    from ops.models import DeviceMapping
+    from cmdb.models import ConfigItem
+
+    stats = {'repaired': 0, 'created': 0, 'skipped_verified': 0, 'unchanged': 0}
+
+    # ---- 1. Zabbix → CI：修复断裂的映射 ----
+    for mapping in DeviceMapping.objects.select_related('config_item'):
+        if mapping.is_verified:
+            stats['skipped_verified'] += 1
+            continue
+
+        ci = mapping.config_item
+        need_repair = False
+
+        if ci is None:
+            # 映射断裂（旧 CI 被删除）
+            need_repair = True
+        else:
+            # 检查现有 CI 的 IP 是否仍匹配
+            ci_ip = _extract_ci_ip(ci.attributes or {})
+            if not ci_ip or ci_ip != mapping.zabbix_ip:
+                need_repair = True
+
+        if need_repair:
+            ci = None
+            if mapping.zabbix_ip:
+                ci = find_ci_by_ip(mapping.zabbix_ip)
+            if not ci:
+                ci = find_ci_by_name(mapping.zabbix_hostname)
+            if ci:
+                mapping.config_item = ci
+                mapping.match_method = DeviceMapping.MATCH_IP if (mapping.zabbix_ip and _extract_ci_ip(ci.attributes or {}) == mapping.zabbix_ip) else DeviceMapping.MATCH_NAME
+                mapping.match_confidence = 1.0 if mapping.match_method == DeviceMapping.MATCH_IP else 0.7
+                mapping.save(update_fields=['config_item', 'match_method', 'match_confidence'])
+                stats['repaired'] += 1
+            elif mapping.config_item_id is not None:
+                # 找不到新 CI，保留断裂状态
+                stats['unchanged'] += 1
+        else:
+            stats['unchanged'] += 1
+
+    # ---- 2. CI → Zabbix：为有 IP 但无映射的 CI 创建关联 ----
+    for ci in ConfigItem.objects.select_related('ci_type').all():
+        ci_ip = _extract_ci_ip(ci.attributes or {})
+        if not ci_ip:
+            continue
+        # 已有映射的跳过
+        if DeviceMapping.objects.filter(config_item=ci).exists():
+            continue
+        # 查找同 IP 的未关联 DeviceMapping
+        mapping = DeviceMapping.objects.filter(zabbix_ip=ci_ip, config_item__isnull=True).first()
+        if mapping:
+            mapping.config_item = ci
+            mapping.match_method = DeviceMapping.MATCH_IP
+            mapping.match_confidence = 1.0
+            mapping.save(update_fields=['config_item', 'match_method', 'match_confidence'])
+            stats['created'] += 1
+        else:
+            # 降级：名称匹配
+            ci_name = (ci.name or '').strip()
+            if ci_name:
+                mapping = DeviceMapping.objects.filter(
+                    zabbix_hostname__iexact=ci_name, config_item__isnull=True
+                ).first()
+                if mapping:
+                    mapping.config_item = ci
+                    mapping.match_method = DeviceMapping.MATCH_NAME
+                    mapping.match_confidence = 0.7
+                    mapping.save(update_fields=['config_item', 'match_method', 'match_confidence'])
+                    stats['created'] += 1
+
+    return stats
 
 
 def get_device_mapping_for_hosts(host_ids: list) -> dict:

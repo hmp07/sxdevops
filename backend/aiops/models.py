@@ -207,6 +207,8 @@ class AIOpsKnowledgeEnvironment(models.Model):
     alert_environments = models.JSONField('告警中心环境', default=list, blank=True)
     k8s_cluster_ids = models.JSONField('K8s 集群', default=list, blank=True)
     k8s_namespaces = models.JSONField('K8s 命名空间', default=dict, blank=True)
+    zabbix_datasource_ids = models.JSONField('Zabbix 数据源', default=list, blank=True)
+    itop_datasource_ids = models.JSONField('iTop 数据源', default=list, blank=True)
     docker_host_ids = models.JSONField('Docker 环境', default=list, blank=True)
     task_resource_environment_ids = models.JSONField('任务资源底座环境', default=list, blank=True)
     association_snapshot = models.JSONField('关联快照', default=dict, blank=True)

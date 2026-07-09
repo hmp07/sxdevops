@@ -30,3 +30,6 @@ def sync_config_item_after_save(sender, instance, **kwargs):
 @receiver(post_delete, sender=ConfigItem)
 def sync_config_item_after_delete(sender, instance, **kwargs):
     delete_host_for_config_item(instance)
+    # 清理 DeviceMapping 关联，后续 reconcile 会自动修复
+    from ops.models import DeviceMapping
+    DeviceMapping.objects.filter(config_item=instance).update(config_item=None)

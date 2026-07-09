@@ -225,7 +225,7 @@ const menuItems = [
       { path: '/observability/metrics', title: '指标查询', icon: 'DataAnalysis', permission: 'ops.metric.query' },
       { path: '/logs/query', title: '日志中心', icon: 'Search', permission: 'ops.log.query' },
       { path: '/observability/tracing', title: '链路追踪', icon: 'Connection', permission: 'ops.trace.view' },
-      { path: '/observability/datasources', title: '数据源', icon: 'DataBoard', anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view', 'ops.trace.datasource.view', 'ops.observability.link.view'] },
+      { path: '/observability/datasources', title: '数据源', icon: 'DataBoard', anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.zabbix.datasource.view'] },
       { path: '/alerts', title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
       { path: '/observability/zabbix', title: 'Zabbix 监控', icon: 'Monitor', permission: 'ops.zabbix.view' },
     ],
@@ -277,7 +277,7 @@ const menuItems = [
       { path: '/cmdb/dashboard', title: 'CMDB 总览', icon: 'DataLine', permission: 'cmdb.dashboard.view' },
       { path: '/cmdb/config-items', title: '配置项', icon: 'Monitor', permission: 'cmdb.ci.view' },
       { path: '/cmdb/topology', title: '资源拓扑', icon: 'Share', permission: 'cmdb.topology.view' },
-      { path: '/cmdb/itop', title: 'iTop 对接', icon: 'Connection', permission: 'cmdb.itop.view' },
+      { path: '/cmdb/datasources', title: 'CMDB 数据源', icon: 'Connection', permission: 'cmdb.itop.datasource.view' },
     ],
   },
   {
@@ -302,12 +302,18 @@ const observabilityQueryPaths = new Set([
   '/logs/query',
   '/observability/tracing',
 ])
+const cmdbDatasourcePaths = new Set([
+  '/cmdb/datasources',
+  '/cmdb/datasources/itop',
+])
+
 const observabilityDatasourcePaths = new Set([
   '/observability/datasources',
   '/observability/metrics/datasources',
   '/logs/datasources',
   '/observability/tracing/datasources',
   '/observability/datasource-links',
+  '/observability/zabbix/datasources',
 ])
 
 
@@ -357,6 +363,9 @@ const normalizedMenuPath = computed(() => {
   if (observabilityQueryPaths.has(route.path) && route.query.tab !== 'datasources') {
     if (route.path === '/observability/query') return '/observability/metrics'
     return route.path
+  }
+  if (cmdbDatasourcePaths.has(route.path)) {
+    return '/cmdb/datasources'
   }
   if (observabilityDatasourcePaths.has(route.path) || (route.path === '/observability/metrics' && route.query.tab === 'datasources') || (route.path === '/observability/tracing' && route.query.tab === 'datasources')) {
     return '/observability/datasources'

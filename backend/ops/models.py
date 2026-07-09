@@ -39,6 +39,8 @@ class Host(models.Model):
     ssh_port = models.IntegerField('SSH \u7aef\u53e3', default=22)
     ssh_user = models.CharField('SSH \u7528\u6237', max_length=64, default='root')
     ssh_password = models.CharField('SSH \u5bc6\u7801', max_length=256, blank=True, default='')
+    source = models.CharField('\u6765\u6e90', max_length=32, default='manual')
+    external_id = models.CharField('\u5916\u90e8 ID', max_length=128, blank=True, default='', db_index=True)
     created_at = models.DateTimeField('\u521b\u5efa\u65f6\u95f4', auto_now_add=True)
     updated_at = models.DateTimeField('\u66f4\u65b0\u65f6\u95f4', auto_now=True)
 
@@ -132,6 +134,8 @@ class TaskResource(models.Model):
     ssh_port = models.PositiveIntegerField('SSH 端口', default=22)
     ssh_user = models.CharField('SSH 用户', max_length=64, blank=True, default='root')
     ssh_password = models.CharField('SSH 密码', max_length=256, blank=True, default='')
+    host = models.ForeignKey('Host', on_delete=models.SET_NULL, null=True, blank=True, related_name='task_resources', verbose_name='关联主机')
+    external_id = models.CharField('外部 ID', max_length=128, blank=True, default='', db_index=True)
     cluster = models.ForeignKey('K8sCluster', on_delete=models.SET_NULL, null=True, blank=True, related_name='task_resources', verbose_name='K8s 集群')
     namespace = models.CharField('命名空间', max_length=128, blank=True, default='default')
     owner = models.CharField('负责人', max_length=64, blank=True, default='')
@@ -1714,3 +1718,143 @@ class TransactionTicket(models.Model):
 
     def __str__(self):
         return self.title
+
+
+# ---- Signals ----
+
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+
+
+@receiver(post_save, sender=ZabbixDataSource)
+def _sync_zabbix_hosts(sender, instance, **kwargs):
+    """Zabbix 数据源保存时，将其主机同步到平台 Host 表。"""
+    if not instance.is_enabled:
+        return
+    url = (instance.api_url or '').strip()
+    if not url:
+        return
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or '').lower()
+    if not hostname:
+        return
+    # 管理员已配置的数据源 URL 无需 SSRF 检查，直接开始主机导入
+    try:
+        from .zabbix_client import ZabbixClient
+        client = ZabbixClient(instance)
+        result = client.get_hosts()
+        hosts = result if isinstance(result, list) else []
+        created = 0
+        for zh in hosts:
+            hostid = zh.get('hostid', '')
+            if not hostid:
+                continue
+            ip = '0.0.0.0'
+            interfaces = zh.get('interfaces') or []
+            for iface in interfaces:
+                if str(iface.get('main', '')) == '1':
+                    ip = iface.get('ip', '') or '0.0.0.0'
+                    break
+            if ip == '0.0.0.0' and interfaces:
+                ip = interfaces[0].get('ip', '') or '0.0.0.0'
+            avail = str(zh.get('available', '0'))
+            status = 'online' if avail != '2' else 'offline'
+            host_obj, is_new = Host.objects.update_or_create(
+                external_id=f'zabbix:{hostid}',
+                defaults={
+                    'hostname': (zh.get('name') or zh.get('host', ''))[:64],
+                    'ip_address': ip or '',
+                    'status': status,
+                    'source': 'zabbix',
+                    'admin_user': '',
+                    'business_line': '',
+                    'description': f'Zabbix: {zh.get("name", zh.get("host", ""))}'[:255],
+                },
+            )
+            if is_new:
+                created += 1
+            # 同步为 TaskResource
+            try:
+                zabbix_env, _ = TaskResourceGroup.objects.get_or_create(
+                    code='zabbix-monitored',
+                    defaults={
+                        'name': 'Zabbix 监控主机',
+                        'group_type': TaskResourceGroup.GROUP_ENVIRONMENT,
+                        'description': f'从 Zabbix 数据源 {instance.name} 自动导入',
+                    },
+                )
+                TaskResource.objects.update_or_create(
+                    external_id=f'zabbix:{hostid}',
+                    defaults={
+                        'name': (zh.get('name') or zh.get('host', ''))[:128],
+                        'resource_type': TaskResource.RESOURCE_HOST,
+                        'environment': zabbix_env,
+                        'host': host_obj,
+                        'ip_address': ip or None,
+                        'status': TaskResource.STATUS_ACTIVE if status == 'online' else TaskResource.STATUS_WARNING,
+                        'description': f'Zabbix 自动导入: {zh.get("name", zh.get("host", ""))}'[:255],
+                    },
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning('TaskResource creation failed for Zabbix host %s: %s', hostid, e)
+        if created:
+            import logging
+            logging.getLogger(__name__).info(
+                'Zabbix host sync: %s created for datasource %s', created, instance.name
+            )
+        # 创建设备映射 + 对账
+        try:
+            from ops.device_matcher import match_all_zabbix_hosts, reconcile_device_mappings
+            match_all_zabbix_hosts(hosts)
+            reconcile_device_mappings()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning('Device matching failed in Zabbix host sync: %s', e)
+
+        # 创建 MetricDataSource 路由标记（知识图谱指标选择器可见）
+        try:
+            MetricDataSource.objects.get_or_create(
+                tsdb_type='zabbix',
+                defaults={
+                    'name': f'Zabbix - {instance.name}',
+                    'provider': MetricDataSource.PROVIDER_PROMETHEUS,
+                    'is_enabled': True,
+                    'description': f'Zabbix 路由标记 (数据源 #{instance.id})',
+                },
+            )
+        except Exception:
+            pass
+
+        # 主机导入后拉取一次 Zabbix 告警
+        try:
+            from ops.zabbix_alert_bridge import upsert_alert_from_zabbix_problem
+            _, __, problems = _fetch_zabbix_problems(instance.name, client)
+            for p in problems:
+                try:
+                    host_name = ''
+                    trigger_id = p.get('objectid', '')
+                    if trigger_id:
+                        triggers_resp = client.get_triggers(trigger_ids=[trigger_id])
+                        if isinstance(triggers_resp, list) and triggers_resp:
+                            trigger_hosts = triggers_resp[0].get('hosts', [])
+                            if trigger_hosts:
+                                host_name = trigger_hosts[0].get('host', '')
+                    upsert_alert_from_zabbix_problem(p, host_name=host_name, env_name=instance.name)
+                except Exception:
+                    pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning('Alert polling failed in Zabbix host sync: %s', e)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning('Zabbix host sync failed for datasource %s: %s', instance.name, e)
+
+
+def _fetch_zabbix_problems(ds_name, client):
+    """从 Zabbix 拉取活跃问题列表"""
+    problems = client.get_problems()
+    if isinstance(problems, dict) and 'error' in problems:
+        return [], [], []
+    return [], [], problems if isinstance(problems, list) else []

@@ -45,7 +45,7 @@
         <el-table-column prop="ci_type_name" label="CI 类型" width="120" />
         <el-table-column label="IP 地址" width="150">
           <template #default="{ row }">
-            {{ row.attributes?.ip_address || row.attributes?.managementip || '--' }}
+            {{ row.attributes?.ip_address || row.attributes?.managementip || row.attributes?.managementip_id_friendlyname || '--' }}
           </template>
         </el-table-column>
         <el-table-column prop="business_line" label="业务线" width="120" />

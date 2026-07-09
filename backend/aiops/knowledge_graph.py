@@ -1533,6 +1533,7 @@ def build_knowledge_graph(params=None):
     selected_log_datasource_ids = set()
     selected_tracing_datasource_ids = set()
     selected_zabbix_datasource_ids = set()
+    selected_itop_datasource_ids = set()
     selected_observability_link_ids = set()
     selected_k8s_cluster_ids = set()
     selected_k8s_namespaces = defaultdict(set)
@@ -1554,6 +1555,7 @@ def build_knowledge_graph(params=None):
             selected_log_datasource_ids.update(_int_list(config.log_datasource_ids))
             selected_tracing_datasource_ids.update(_int_list(config.tracing_datasource_ids))
             selected_zabbix_datasource_ids.update(_int_list(getattr(config, 'zabbix_datasource_ids', []) or []))
+            selected_itop_datasource_ids.update(_int_list(getattr(config, 'itop_datasource_ids', []) or []))
             selected_observability_link_ids.update(_int_list(getattr(config, 'observability_link_ids', []) or []))
             config_k8s_cluster_ids = _int_list(config.k8s_cluster_ids)
             selected_k8s_cluster_ids.update(config_k8s_cluster_ids)
@@ -1566,6 +1568,84 @@ def build_knowledge_graph(params=None):
         for link in ObservabilityDataSourceLink.objects.filter(id__in=selected_observability_link_ids, is_enabled=True):
             selected_log_datasource_ids.add(link.log_datasource_id)
             selected_tracing_datasource_ids.add(link.tracing_datasource_id)
+
+    # === CMDB 预加载索引（Zabbix-CMDB 去重 + 富化） ===
+    _cmdb_ci_lookup = {}          # ci_id → ConfigItem
+    _cmdb_mapping_by_ip = {}      # IP → DeviceMapping (TaskResource 去重)
+    _cmdb_mapping_by_ci_id = {}   # ci_id → DeviceMapping
+    _cmdb_ci_to_taskresource_node = {}  # ci_id → TaskResource node_id (CIRelation 边解析)
+    _cmdb_system_nodes = {}       # business_line → node_id (系统去重)
+    _cmdb_enabled = False
+
+    try:
+        from cmdb.models import ConfigItem, CIRelation, CIType
+        from ops.models import DeviceMapping
+
+        # 加载所有 CI（包括 iTop 同步的和 Zabbix 信号创建的）
+        ci_queryset_all = ConfigItem.objects.select_related('ci_type').all()
+        ci_queryset_itop = ci_queryset_all.filter(itop_datasource__is_enabled=True)
+        if use_knowledge_env and selected_itop_datasource_ids:
+            ci_queryset_itop = ci_queryset_itop.filter(
+                itop_datasource_id__in=selected_itop_datasource_ids
+            )
+
+        for ci in ci_queryset_all:
+            _cmdb_ci_lookup[ci.id] = ci
+        _cmdb_itop_ci_ids = set(ci_queryset_itop.values_list('id', flat=True))
+
+        # 建立 DeviceMapping 双向索引（IP + 主机名 + CI 维度）
+        dm_queryset = DeviceMapping.objects.filter(
+            config_item__isnull=False
+        ).select_related('config_item')
+        _cmdb_mapping_by_name = {}  # zabbix_hostname → DeviceMapping
+        for dm in dm_queryset:
+            if dm.zabbix_ip:
+                _cmdb_mapping_by_ip[dm.zabbix_ip.strip()] = dm
+            if dm.zabbix_hostname:
+                _cmdb_mapping_by_name[dm.zabbix_hostname.strip().lower()] = dm
+            _cmdb_mapping_by_ci_id[dm.config_item_id] = dm
+
+        # 通过 CIRelation 传播 business_line（从 ApplicationSolution → 下游 CI）
+        _cmdb_business_line = {}  # ci_id → business_line
+        ci_ids = set(_cmdb_ci_lookup.keys())
+        # 预加载所有 CIRelation 邻接表（双向）
+        _cmdb_children = {}  # ci_id → [邻接 ci_id]
+        for rel in CIRelation.objects.filter(
+            source_id__in=ci_ids, target_id__in=ci_ids
+        ):
+            _cmdb_children.setdefault(rel.source_id, []).append(rel.target_id)
+            _cmdb_children.setdefault(rel.target_id, []).append(rel.source_id)
+
+        for ci_id, ci in _cmdb_ci_lookup.items():
+            ci_type_name = ci.ci_type.name if ci.ci_type else ''
+            if ci_type_name == '应用方案' and ci.business_line:
+                from collections import deque
+                q = deque([ci_id])
+                bl = ci.business_line
+                while q:
+                    cur = q.popleft()
+                    if cur in _cmdb_business_line:
+                        continue
+                    _cmdb_business_line[cur] = bl
+                    for neighbor in _cmdb_children.get(cur, []):
+                        if neighbor in ci_ids and neighbor not in _cmdb_business_line:
+                            q.append(neighbor)
+
+        # 建立 iTop CI IP/名称→business_line 索引（使用 BFS 传播后的值）
+        _cmdb_itop_bl_by_ip = {}   # ip → business_line
+        _cmdb_itop_bl_by_name = {}  # name_lower → business_line
+        for ci in ci_queryset_itop:
+            bl = ci.business_line or _cmdb_business_line.get(ci.id, '')
+            if bl:
+                ip = (ci.attributes or {}).get('ip_address', '') or \
+                     (ci.attributes or {}).get('managementip_id_friendlyname', '')
+                if ip:
+                    _cmdb_itop_bl_by_ip[ip.strip()] = bl
+                _cmdb_itop_bl_by_name[ci.name.strip().lower()] = bl
+
+        _cmdb_enabled = True
+    except ImportError:
+        pass
 
     def graph_environment(source_environment, kind=''):
         environment = _clean(source_environment, UNKNOWN_ENV)
@@ -2205,12 +2285,37 @@ def build_knowledge_graph(params=None):
             for resource in resources:
                 if task_resource_is_represented(resource, concrete_infra_names, concrete_infra_ips, concrete_cluster_ids):
                     continue
+
+                # === CMDB 富化: 通过 IP 或主机名查找 DeviceMapping → ConfigItem ===
+                cmdb_ci = None
+                cmdb_dm = None
+                if _cmdb_enabled:
+                    if resource.ip_address:
+                        cmdb_dm = _cmdb_mapping_by_ip.get(str(resource.ip_address).strip())
+                    if not cmdb_dm and resource.name:
+                        cmdb_dm = _cmdb_mapping_by_name.get(resource.name.strip().lower())
+                    if cmdb_dm and cmdb_dm.config_item:
+                        cmdb_ci = cmdb_dm.config_item
+                        # 记录 CI→TaskResource node 映射, 供后续 CIRelation 边解析
+                        if cmdb_ci.id not in _cmdb_ci_to_taskresource_node:
+                            _cmdb_ci_to_taskresource_node[cmdb_ci.id] = _node_key('infrastructure', 'task_resource', resource.id)
+                    # 如果 Zabbix CI 没有 business_line，尝试从 iTop CI 索引补充
+                    cmdb_bl = ''
+                    if cmdb_ci:
+                        cmdb_bl = cmdb_ci.business_line or ''
+                    # 尝试 IP 匹配 iTop CI
+                    if not cmdb_bl and resource.ip_address:
+                        cmdb_bl = _cmdb_itop_bl_by_ip.get(str(resource.ip_address).strip(), '')
+                    # 尝试名称匹配 iTop CI
+                    if not cmdb_bl and resource.name:
+                        cmdb_bl = _cmdb_itop_bl_by_name.get(resource.name.strip().lower(), '')
+
                 node_id = _node_key('infrastructure', 'task_resource', resource.id)
                 details = [
                     {'label': '来源', 'value': '任务中心资源底座'},
                     {'label': '资源类型', 'value': 'K8s' if resource.resource_type == TaskResource.RESOURCE_K8S else '主机'},
                     {'label': '资源环境', 'value': resource_env.name},
-                    {'label': '系统', 'value': resource.system.name if resource.system_id else '-'},
+                    {'label': '系统', 'value': resource.system.name if resource.system_id else (cmdb_ci.business_line if cmdb_ci else '-')},
                     {'label': '状态', 'value': resource.get_status_display() if hasattr(resource, 'get_status_display') else resource.status},
                 ]
                 if resource.ip_address:
@@ -2220,6 +2325,15 @@ def build_knowledge_graph(params=None):
                         {'label': 'K8s 集群', 'value': resource.cluster.name if resource.cluster_id else '-'},
                         {'label': '命名空间', 'value': resource.namespace or '-'},
                     ])
+                # CMDB 富化字段
+                if cmdb_ci:
+                    details.extend([
+                        {'label': 'CMDB 类型', 'value': cmdb_ci.ci_type.name if cmdb_ci.ci_type else '-'},
+                        {'label': 'CMDB 业务线', 'value': cmdb_bl or '-'},
+                        {'label': 'CMDB 状态', 'value': cmdb_ci.get_status_display() if hasattr(cmdb_ci, 'get_status_display') else cmdb_ci.status},
+                    ])
+
+                resolved_system_name = resource.system.name if resource.system_id else (cmdb_bl or '')
                 add_node(
                     node_id,
                     resource.name,
@@ -2231,9 +2345,13 @@ def build_knowledge_graph(params=None):
                     description=resource.description or f'任务中心资源底座资源：{resource.name}',
                     environment=environment,
                     source_environment=resource_env.name,
-                    system_name=resource.system.name if resource.system_id else '',
+                    system_name=resolved_system_name,
                     infra_type=task_resource_infra_type(resource),
                     details=details,
+                    # CMDB 关联信息（用于后续 system→infrastructure 边）
+                    cmdb_ci_id=cmdb_ci.id if cmdb_ci else None,
+                    cmdb_ci_type=cmdb_ci.ci_type.name if cmdb_ci and cmdb_ci.ci_type else '',
+                    cmdb_business_line=cmdb_bl,
                 )
                 add_edge(env_id, node_id, '关联资源底座', 'environment_resource_base', 1)
                 if resource_env_node_id:
@@ -2435,6 +2553,8 @@ def build_knowledge_graph(params=None):
     try:
         from cmdb.models import iTopDataSource
         itop_queryset = iTopDataSource.objects.filter(is_enabled=True).order_by('name')
+        if use_knowledge_env:
+            itop_queryset = itop_queryset.filter(id__in=selected_itop_datasource_ids) if selected_itop_datasource_ids else iTopDataSource.objects.none()
         for ds in itop_queryset:
             node_id = _node_key('itop_ds', ds.id)
             desc = f'iTop {ds.api_url}'
@@ -2452,6 +2572,142 @@ def build_knowledge_graph(params=None):
             add_edge(_node_key('capability', 'cmdb'), node_id, '接入 iTop', 'capability_datasource')
     except ImportError:
         pass
+
+    # === CMDB 系统 / 服务 / 组件节点（从 iTop 同步的 CI 数据） ===
+    def _cmdb_resolve_node(ci):
+        """将 CMDB ConfigItem 解析为知识图谱中已有的 node_id，用于 CIRelation 边"""
+        ci_type = ci.ci_type.name if ci.ci_type else ''
+
+        if ci_type == '应用方案':
+            return _cmdb_system_nodes.get(ci.name)
+        if ci_type == '业务流程':
+            return _node_key('cmdb_service', ci.id)
+        if ci_type in ('数据库服务器', 'Web服务器', 'Web应用'):
+            return _node_key('cmdb_component', ci.id)
+        if ci_type in ('云主机(ECS)', '虚拟机', '网络设备', '存储系统', '虚拟化平台'):
+            # 优先用 Zabbix TaskResource 节点 ID
+            tr_node = _cmdb_ci_to_taskresource_node.get(ci.id)
+            if tr_node:
+                return tr_node
+            return _node_key('cmdb_infra', ci.id)
+        return None
+
+    if _cmdb_enabled:
+        _cmdb_ci_covered = set(_cmdb_mapping_by_ci_id.keys())  # 已有 Zabbix 映射的 CI，不重复创建主机节点
+
+        for ci_id, ci in _cmdb_ci_lookup.items():
+            ci_type_name = ci.ci_type.name if ci.ci_type else ''
+            is_itop_ci = ci_id in _cmdb_itop_ci_ids
+            bl = _cmdb_business_line.get(ci_id, ci.business_line or '') if is_itop_ci else (ci.business_line or '')
+
+            # -- ApplicationSolution → system 节点 --
+            if ci_type_name == '应用方案':
+                node_id = _node_key('cmdb_system', ci.name)
+                if node_id not in nodes:
+                    add_node(
+                        node_id, ci.name, 'system', '系统',
+                        system_name=ci.name, business_line=bl or ci.name,
+                        environment=ci.environment,
+                        description=f'来自 iTop CMDB | 状态: {ci.status}',
+                        route=f'/cmdb/config-items?business_line={ci.name}',
+                        details=[
+                            {'label': '来源', 'value': 'iTop CMDB'},
+                            {'label': '业务线', 'value': bl or ci.name},
+                            {'label': '状态', 'value': ci.status},
+                        ],
+                    )
+                    add_edge(env_id, node_id, '包含系统', 'environment_system')
+                _cmdb_system_nodes[ci.name] = node_id
+
+            # -- BusinessProcess → service 节点 --
+            elif ci_type_name == '业务流程':
+                node_id = _node_key('cmdb_service', ci.id)
+                sys_node = _cmdb_system_nodes.get(bl)
+                add_node(
+                    node_id, ci.name, 'service', '服务',
+                    system_name=bl, business_line=bl,
+                    environment=ci.environment,
+                    description=f'业务流程 (iTop CMDB) | 状态: {ci.status}',
+                    route=f'/cmdb/config-items/{ci.id}',
+                    details=[
+                        {'label': 'CI 类型', 'value': '业务流程'},
+                        {'label': '业务线', 'value': bl or '-'},
+                        {'label': '来源', 'value': 'iTop CMDB'},
+                    ],
+                )
+                if sys_node:
+                    add_edge(sys_node, node_id, '包含流程', 'system_service')
+                elif bl:
+                    add_edge(env_id, node_id, '业务流程', 'environment_service')
+
+            # -- DBServer / WebServer / WebApplication → runtime_component 节点 --
+            elif ci_type_name in ('数据库服务器', 'Web服务器', 'Web应用'):
+                category = 'DB' if ci_type_name == '数据库服务器' else ('中间件' if ci_type_name == 'Web服务器' else '服务')
+                node_id = _node_key('cmdb_component', ci.id)
+                add_node(
+                    node_id, ci.name, 'runtime_component', category,
+                    system_name=bl, business_line=bl,
+                    environment=ci.environment,
+                    description=f'{ci_type_name} (iTop CMDB) | 状态: {ci.status}',
+                    route=f'/cmdb/config-items/{ci.id}',
+                    technology=ci_type_name,
+                    details=[
+                        {'label': 'CI 类型', 'value': ci_type_name},
+                        {'label': '业务线', 'value': bl or '-'},
+                        {'label': '来源', 'value': 'iTop CMDB'},
+                    ],
+                )
+                sys_node = _cmdb_system_nodes.get(bl)
+                if sys_node:
+                    add_edge(sys_node, node_id, '依赖组件', 'system_runtime_component')
+
+            # -- Server / VirtualMachine 等主机类, 仅当无 Zabbix 映射时创建 --
+            elif ci_type_name in ('云主机(ECS)', '虚拟机', '网络设备', '存储系统', '虚拟化平台'):
+                if ci_id in _cmdb_ci_covered:
+                    continue  # 已有 Zabbix TaskResource 节点，已在 1b 中富化
+                node_id = _node_key('cmdb_infra', ci.id)
+                ip = (ci.attributes or {}).get('ip_address', '') or \
+                     (ci.attributes or {}).get('managementip_id_friendlyname', '')
+                add_node(
+                    node_id, ci.name, 'infrastructure', ci_type_name,
+                    environment=ci.environment,
+                    description=f'IP: {ip} | 来自 iTop CMDB (未接入 Zabbix)',
+                    route=f'/cmdb/config-items/{ci.id}',
+                    details=[
+                        {'label': 'IP', 'value': ip or '-'},
+                        {'label': 'CI 类型', 'value': ci_type_name},
+                        {'label': '来源', 'value': 'iTop CMDB'},
+                        {'label': '监控状态', 'value': '未接入 Zabbix'},
+                    ],
+                )
+                sys_node = _cmdb_system_nodes.get(bl)
+                if sys_node:
+                    add_edge(sys_node, node_id, '包含主机', 'system_infrastructure')
+                else:
+                    add_edge(env_id, node_id, '孤立主机', 'environment_infrastructure')
+
+        # -- 加载 CIRelation 作为图谱边 --
+        ci_ids = set(_cmdb_ci_lookup.keys())
+        for rel in CIRelation.objects.filter(
+            source_id__in=ci_ids, target_id__in=ci_ids
+        ).select_related('source', 'target'):
+            src_ci = _cmdb_ci_lookup.get(rel.source_id)
+            tgt_ci = _cmdb_ci_lookup.get(rel.target_id)
+            if not src_ci or not tgt_ci:
+                continue
+
+            src_node_id = _cmdb_resolve_node(src_ci)
+            tgt_node_id = _cmdb_resolve_node(tgt_ci)
+            if src_node_id and tgt_node_id and src_node_id != tgt_node_id:
+                add_edge(src_node_id, tgt_node_id, rel.relation_type, 'cmdb_relation')
+
+    # === 连接 Zabbix infrastructure → CMDB system 边 ===
+    if _cmdb_enabled and _cmdb_system_nodes:
+        for node_id in infrastructure_node_ids:
+            node = nodes.get(node_id, {})
+            node_bl = node.get('cmdb_business_line', '')
+            if node_bl and node_bl in _cmdb_system_nodes:
+                add_edge(_cmdb_system_nodes[node_bl], node_id, '包含主机', 'system_infrastructure')
 
     dashboard_nodes = {}
     dashboard_folder_counts = Counter()
