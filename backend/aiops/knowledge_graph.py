@@ -1578,7 +1578,7 @@ def build_knowledge_graph(params=None):
     _cmdb_enabled = False
 
     try:
-        from cmdb.models import ConfigItem, CIRelation, CIType
+        from cmdb.models import ConfigItem, CIRelation
         from ops.models import DeviceMapping
 
         # 加载所有 CI（包括 iTop 同步的和 Zabbix 信号创建的）
@@ -2315,7 +2315,7 @@ def build_knowledge_graph(params=None):
                     {'label': '来源', 'value': '任务中心资源底座'},
                     {'label': '资源类型', 'value': 'K8s' if resource.resource_type == TaskResource.RESOURCE_K8S else '主机'},
                     {'label': '资源环境', 'value': resource_env.name},
-                    {'label': '系统', 'value': resource.system.name if resource.system_id else (cmdb_ci.business_line if cmdb_ci else '-')},
+                    {'label': '系统', 'value': resource.system.name if resource.system_id else (cmdb_bl or '-')},
                     {'label': '状态', 'value': resource.get_status_display() if hasattr(resource, 'get_status_display') else resource.status},
                 ]
                 if resource.ip_address:

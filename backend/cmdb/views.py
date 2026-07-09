@@ -937,8 +937,6 @@ def cmdb_dashboard(request):
         for business_line, value in business_totals.items()
     ]
     ci_by_biz.sort(key=lambda item: (-item['total_cost'], item['business_line']))
-    for item in ci_by_biz:
-        item['total_cost'] = _to_float(item['total_cost'])
     total_monthly_cost = sum((row['amount'] for row in cost_rows), Decimal('0'))
     relation_count = CIRelation.objects.count()
     pending_requests = ResourceRequest.objects.filter(status='pending').count()

@@ -24,15 +24,16 @@ def _extract_ci_ip(attrs: dict) -> str:
 
 
 def find_ci_by_ip(ip: str):
-    """按 IP 在 ConfigItem 中查找匹配的 CI"""
+    """按 IP 在 ConfigItem 中查找匹配的 CI（JSONField 查询）"""
     if not ip:
         return None
     from cmdb.models import ConfigItem
-    for ci in ConfigItem.objects.select_related('ci_type').all():
-        ci_ip = _extract_ci_ip(ci.attributes or {})
-        if ci_ip and ci_ip == ip:
-            return ci
-    return None
+    from django.db.models import Q
+    return ConfigItem.objects.filter(
+        Q(attributes__ip_address=ip) |
+        Q(attributes__managementip=ip) |
+        Q(attributes__managementip_id_friendlyname=ip)
+    ).select_related('ci_type').first()
 
 
 def find_ci_by_name(name: str):
@@ -169,8 +170,8 @@ def reconcile_device_mappings() -> dict:
                 mapping.match_confidence = 1.0 if mapping.match_method == DeviceMapping.MATCH_IP else 0.7
                 mapping.save(update_fields=['config_item', 'match_method', 'match_confidence'])
                 stats['repaired'] += 1
-            elif mapping.config_item_id is not None:
-                # 找不到新 CI，保留断裂状态
+            else:
+                # 找不到新 CI（含 config_item 为 None 的情况），保留状态
                 stats['unchanged'] += 1
         else:
             stats['unchanged'] += 1

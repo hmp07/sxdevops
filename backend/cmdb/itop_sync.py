@@ -54,9 +54,11 @@ def _call_itop_api(ds, json_data):
 
 def test_connection(ds):
     """测试 iTop 连接"""
-    result = _call_itop_api(ds, '{"operation":"core/check_credentials","user":"%s","password":"%s"}' % (
-        ds.auth_user, ds.auth_password
-    ))
+    result = _call_itop_api(ds, json.dumps({
+        'operation': 'core/check_credentials',
+        'user': ds.auth_user,
+        'password': ds.auth_password,
+    }))
     return result.get('authorized', False) and result.get('code') == 0
 
 
@@ -130,10 +132,6 @@ def sync_cis(ds):
             if created:
                 stats['created'] += 1
             else:
-                for k, v in defaults.items():
-                    if k not in ('external_id',):
-                        setattr(ci, k, v)
-                ci.save()
                 stats['updated'] += 1
 
             # 触发设备关联匹配

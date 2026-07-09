@@ -9397,7 +9397,7 @@ def query_cmdb_topology(session, user_message, user, business_line='', ci_name='
                     q.append(edge.source_id)
 
     nodes_qs = ConfigItem.objects.filter(id__in=node_ids).select_related('ci_type')
-    edges_qs = CIRelation.objects.filter(source_id__in=node_ids, target_id__in=node_ids)
+    edges_qs = CIRelation.objects.filter(source_id__in=node_ids, target_id__in=node_ids).select_related('source', 'target')
 
     # 批量查 DeviceMapping（Zabbix 关联状态）
     ci_ids = list(node_ids)
@@ -14456,7 +14456,7 @@ def _request_model_completion(provider, payload, *, session=None, message=None, 
                             detail=data,
                         )
                         if (
-                            _should_retry_with_developer_role(data, resilient_payload)
+                            _should_retry_with_developer_role(data, resilient_payload, model_name=model_name)
                             or _should_retry_without_tool_role(data, resilient_payload)
                         ):
                             break

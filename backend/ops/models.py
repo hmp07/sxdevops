@@ -1815,10 +1815,10 @@ def _sync_zabbix_hosts(sender, instance, **kwargs):
 
         # 创建 MetricDataSource 路由标记（知识图谱指标选择器可见）
         try:
-            MetricDataSource.objects.get_or_create(
-                tsdb_type='zabbix',
+            MetricDataSource.objects.update_or_create(
+                name=f'Zabbix - {instance.name}',
                 defaults={
-                    'name': f'Zabbix - {instance.name}',
+                    'tsdb_type': 'zabbix',
                     'provider': MetricDataSource.PROVIDER_PROMETHEUS,
                     'is_enabled': True,
                     'description': f'Zabbix 路由标记 (数据源 #{instance.id})',

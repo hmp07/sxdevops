@@ -664,11 +664,6 @@ const analysisHintText = computed(() => {
   if (forcedAnalysisOnly.value) return '平台已关闭待执行任务生成'
   return effectiveAnalysisOnly.value ? '本轮会强制只分析，不生成待执行任务' : '具备权限时可生成待执行动作'
 })
-const currentEnvironmentName = computed(() => {
-  const value = currentSession.value?.context?.current_environment
-  if (!value) return ''
-  return typeof value === 'string' ? value : (value.name || '')
-})
 const fabStyle = computed(() => {
   if (!fabPosition.value || visible.value) return null
   return {
@@ -1998,6 +1993,7 @@ function handleComposerKeydown(event) {
   }
   if (event.key !== 'Enter') return
   if (event.shiftKey) return
+  if (event.isComposing) return
   event.preventDefault()
   handleSend()
 }
