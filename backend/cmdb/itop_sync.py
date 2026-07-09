@@ -323,7 +323,7 @@ def _ensure_ci_class(itop_class, ds):
 
 def _ensure_ci_from_itop(itop_key, ds):
     """确保 iTop 对象在本地有对应 ConfigItem（不存在则从 iTop 按需拉取）"""
-    ci = _find_ci_by_itop_key(itop_key, '')
+    ci = _find_ci_by_itop_key(itop_key)
     if ci:
         return ci
 
@@ -378,7 +378,7 @@ def _ensure_ci_from_itop(itop_key, ds):
     return None
 
 
-def _find_ci_by_itop_key(itop_key, name):
+def _find_ci_by_itop_key(itop_key):
     """根据 iTop key 查找对应的 ConfigItem（优先 external_id 精确匹配）"""
     # 1. 直接匹配 external_id
     ci = ConfigItem.objects.filter(external_id=itop_key).first()
@@ -393,11 +393,6 @@ def _find_ci_by_itop_key(itop_key, name):
     # 3. 如果已经是 'itop:ClassName:id' 格式，尝试反向匹配
     if (itop_key or '').startswith('itop:'):
         ci = ConfigItem.objects.filter(external_id=itop_key).first()
-        if ci:
-            return ci
-    # 4. 降级：按名称查找
-    if name:
-        ci = ConfigItem.objects.filter(name=name).first()
         if ci:
             return ci
     return None

@@ -2240,8 +2240,7 @@ onBeforeUnmount(() => {
 .toolbar-hint{font-size:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .quick-palette{padding:6px 12px 0}
 .aiops-quick-questions,.aiops-secondary-actions{display:flex;gap:8px;flex-wrap:wrap}
-.quick-chip{border:none;border-radius:999px;padding:6px 10px;cursor:pointer;transition:transform .18s ease,box-shadow .18s ease;font-size:12px}
-.quick-chip{background:#e0f2fe;color:#075985}
+.quick-chip{border:none;border-radius:999px;padding:6px 10px;cursor:pointer;transition:transform .18s ease,box-shadow .18s ease;font-size:12px;background:#e0f2fe;color:#075985}
 .quick-chip:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(15,23,42,.08)}
 .message-stage{position:relative;flex:1;min-height:0;overflow:hidden}
 .aiops-message-list{height:100%;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;touch-action:pan-y}

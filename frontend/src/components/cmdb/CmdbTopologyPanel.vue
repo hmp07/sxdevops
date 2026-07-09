@@ -311,7 +311,6 @@ const labels = {
   maintenance: '\u7ef4\u62a4\u4e2d',
   decommissioned: '\u5df2\u4e0b\u7ebf',
   online: '\u5728\u7ebf',
-  offline: '\u79bb\u7ebf',
   alert: '\u544a\u8b66',
   matchMethod: '\u5339\u914d\u65b9\u5f0f',
 }
