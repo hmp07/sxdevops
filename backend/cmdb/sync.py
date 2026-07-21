@@ -201,6 +201,9 @@ def _matching_host_like_items(hostname='', ip_address='', exclude_pk=None):
 def sync_host_to_config_item(host):
     if _sync_suppressed() or not host:
         return None
+    # Zabbix 来源的主机不创建独立 ConfigItem，通过 DeviceMapping 关联 iTop CI
+    if getattr(host, 'source', '') == 'zabbix':
+        return None
 
     matching_items = _matching_host_like_items(hostname=host.hostname, ip_address=host.ip_address)
     config_item = matching_items[0] if matching_items else None

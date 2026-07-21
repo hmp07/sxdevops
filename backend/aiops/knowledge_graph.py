@@ -2592,6 +2592,12 @@ def build_knowledge_graph(params=None):
             return _node_key('cmdb_infra', ci.id)
         return None
 
+    _INFRA_CI_TYPES = {'云主机(ECS)', '虚拟机', '网络设备', '存储系统', '虚拟化平台'}
+    def _is_infra_ci(ci):
+        """判断 CI 是否属于基础设施层（物理/虚拟设备）"""
+        ci_type = ci.ci_type.name if ci.ci_type else ''
+        return ci_type in _INFRA_CI_TYPES
+
     if _cmdb_enabled:
         _cmdb_ci_covered = set(_cmdb_mapping_by_ci_id.keys())  # 已有 Zabbix 映射的 CI，不重复创建主机节点
 
@@ -2699,7 +2705,15 @@ def build_knowledge_graph(params=None):
             src_node_id = _cmdb_resolve_node(src_ci)
             tgt_node_id = _cmdb_resolve_node(tgt_ci)
             if src_node_id and tgt_node_id and src_node_id != tgt_node_id:
-                add_edge(src_node_id, tgt_node_id, rel.relation_type, 'cmdb_relation')
+                # 区分基础设施关系 vs 业务关系
+                src_is_infra = _is_infra_ci(src_ci)
+                tgt_is_infra = _is_infra_ci(tgt_ci)
+                if src_is_infra and tgt_is_infra:
+                    # 基础设施层：物理设备之间的拓扑
+                    add_edge(src_node_id, tgt_node_id, rel.relation_type, 'infrastructure_relation')
+                else:
+                    # 业务层：系统/服务/组件之间的依赖
+                    add_edge(src_node_id, tgt_node_id, rel.relation_type, 'cmdb_relation')
 
     # === 连接 Zabbix infrastructure → CMDB system 边 ===
     if _cmdb_enabled and _cmdb_system_nodes:
@@ -3206,6 +3220,18 @@ def build_knowledge_graph(params=None):
         ],
         key=lambda item: (item['kind'], item['label'], item['id']),
     )
+    # === 跨层关联：APM 服务 → 基础设施主机（按业务线匹配） ===
+    service_nodes = [n for n in filtered_nodes if n.get('kind') in ('service',)]
+    infra_nodes = [n for n in filtered_nodes if n.get('kind') == 'infrastructure']
+    for svc in service_nodes:
+        svc_bl = svc.get('business_line') or svc.get('system_name', '')
+        if not svc_bl:
+            continue
+        for infra in infra_nodes:
+            infra_bl = infra.get('cmdb_business_line') or infra.get('system_name', '')
+            if infra_bl and infra_bl == svc_bl:
+                add_edge(svc['id'], infra['id'], '运行在', 'service_infrastructure')
+
     visible_ids = {node['id'] for node in filtered_nodes}
     filtered_edges = [
         edge for edge in edges.values()
@@ -3252,19 +3278,24 @@ def build_knowledge_graph(params=None):
             'services': service_options,
         },
         'relation_legend': [
-            {'key': 'observability_link', 'label': '可观测性跳转配置'},
             {'key': 'environment_system', 'label': '环境包含系统'},
             {'key': 'system_service', 'label': '系统承载服务'},
             {'key': 'service_capability', 'label': '服务产生数据'},
-            {'key': 'system_dependency', 'label': '系统依赖'},
             {'key': 'capability_datasource', 'label': '能力接入数据源'},
             {'key': 'capability_event_source', 'label': '能力接入事件源'},
             {'key': 'environment_observability', 'label': '环境关联可观测性'},
             {'key': 'environment_infrastructure', 'label': '环境运行于基础设施'},
-            {'key': 'service_deployment', 'label': '部署在'},
+            {'key': 'environment_resource_base', 'label': '环境关联资源底座'},
+            {'key': 'environment_service', 'label': '环境直接包含服务'},
             {'key': 'infrastructure_member', 'label': '集群包含主机'},
-            {'key': 'service_runtime', 'label': '服务依赖'},
-            {'key': 'system_runtime', 'label': '系统依赖运行组件'},
+            {'key': 'infrastructure_relation', 'label': '基础设施拓扑（物理设备依赖）'},
+            {'key': 'system_infrastructure', 'label': '系统包含主机'},
+            {'key': 'system_runtime_component', 'label': '系统依赖组件'},
+            {'key': 'service_infrastructure', 'label': '服务运行在主机'},
+            {'key': 'service_deployment', 'label': '组件部署在'},
+            {'key': 'service_runtime', 'label': '服务依赖运行组件'},
+            {'key': 'cmdb_relation', 'label': 'CMDB 业务关系'},
+            {'key': 'observability_link', 'label': '可观测性跳转配置'},
         ],
     }
     _cache_set(cache_key, result, GRAPH_RESPONSE_CACHE_TTL)
