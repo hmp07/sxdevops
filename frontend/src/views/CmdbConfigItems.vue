@@ -43,6 +43,13 @@
       <el-table :data="items" v-loading="loading" stripe>
         <el-table-column prop="name" label="名称" min-width="160" />
         <el-table-column prop="ci_type_name" label="CI 类型" width="120" />
+        <el-table-column label="数据来源" width="100">
+          <template #default="{ row }">
+            <el-tag v-if="row.itop_datasource" type="success" size="small" effect="plain">iTop</el-tag>
+            <el-tag v-else-if="row.zabbix_mapping" type="warning" size="small" effect="plain">Zabbix</el-tag>
+            <span v-else style="color: #94a3b8; font-size: 12px">手动</span>
+          </template>
+        </el-table-column>
         <el-table-column label="IP 地址" width="150">
           <template #default="{ row }">
             {{ row.attributes?.ip_address || row.attributes?.managementip || row.attributes?.managementip_id_friendlyname || '--' }}

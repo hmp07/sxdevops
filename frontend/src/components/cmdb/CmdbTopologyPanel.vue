@@ -19,6 +19,11 @@
           <el-option :label="labels.neighborScope" value="neighbors" />
           <el-option :label="labels.exactScope" value="exact" />
         </el-select>
+        <el-select v-model="topoLayer" :placeholder="labels.layer" style="width: 140px">
+          <el-option :label="labels.layerAll" value="all" />
+          <el-option :label="labels.layerInfra" value="infrastructure" />
+          <el-option :label="labels.layerApp" value="application" />
+        </el-select>
       </div>
       <div class="toolbar-actions">
         <el-button @click="resetFilters">{{ labels.resetFilters }}</el-button>
@@ -37,7 +42,7 @@
       </div>
       <div class="topology-kpi">
         <span class="kpi-label">{{ labels.edgeCount }}</span>
-        <span class="kpi-value">{{ topology.edges.length }}</span>
+        <span class="kpi-value">{{ filteredEdges.length }}<template v-if="topoLayer !== 'all'"> / {{ topology.edges.length }}</template></span>
       </div>
       <div class="topology-kpi">
         <span class="kpi-label">{{ labels.matchedNodeCount }}</span>
@@ -57,7 +62,7 @@
         <CmdbTopologyCanvas
           ref="topologyCanvasRef"
           :nodes="topology.nodes"
-          :edges="topology.edges"
+          :edges="filteredEdges"
           :ci-types="ciTypes"
           :resource-tree="resourceTree"
           :matched-node-ids="topology.meta?.matched_node_ids || []"
@@ -263,6 +268,10 @@ const labels = {
   filterConditions: '\u6761\u4ef6\u7b5b\u9009',
   neighborScope: '\u5e26\u4e00\u8df3\u90bb\u5c45',
   exactScope: '\u53ea\u770b\u547d\u4e2d\u8282\u70b9',
+  layer: '\u62d3\u6251\u5c42\u7ea7',
+  layerAll: '\u5168\u90e8',
+  layerInfra: '\u57fa\u7840\u8bbe\u65bd\u5c42',
+  layerApp: '\u5e94\u7528\u670d\u52a1\u5c42',
   resetFilters: '\u91cd\u7f6e\u7b5b\u9009',
   resetCanvas: '\u91cd\u7f6e\u753b\u5e03',
   addRelation: '\u6dfb\u52a0\u5173\u7cfb',
@@ -341,7 +350,17 @@ const topoFilterBiz = ref(null)
 const topoFilterEnv = ref(null)
 const topoFilterType = ref(null)
 const topologyScope = ref('neighbors')
+const topoLayer = ref('all')
 const topology = ref({ nodes: [], edges: [], meta: { matched_node_ids: [] } })
+
+// 按拓扑层级过滤边
+const INFRA_RELATIONS = new Set(['infrastructure_relation', 'system_infrastructure', 'infrastructure_member', 'environment_infrastructure', 'environment_resource_base'])
+const APP_RELATIONS = new Set(['cmdb_relation', 'system_runtime_component', 'system_service', 'service_runtime', 'service_infrastructure', 'service_deployment', 'service_capability', 'environment_system', 'environment_service'])
+const filteredEdges = computed(() => {
+  if (topoLayer.value === 'all') return topology.value.edges
+  const allowed = topoLayer.value === 'infrastructure' ? INFRA_RELATIONS : APP_RELATIONS
+  return topology.value.edges.filter(e => allowed.has(e.relation))
+})
 const allCiList = ref([])
 const selectedNodeId = ref(null)
 const selectedEdgeId = ref(null)
