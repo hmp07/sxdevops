@@ -373,13 +373,16 @@ const graphEdges = computed(() => (graph.value.edges || []).filter(edge => {
   const target = graphNodeById.value.get(edge.target)
   if (!source || !target) return false
   const kinds = new Set([source.kind, target.kind])
-  return (
-    (edge.relation === 'system_service' && kinds.has('system') && kinds.has('service'))
-    || edge.relation === 'service_deployment'
-    || edge.relation === 'infrastructure_member'
-    || edge.relation === 'service_runtime'
-    || edge.relation === 'system_runtime'
-  )
+  const rel = edge.relation || ''
+
+  // 上下文感知：system_service 必须连接 system 和 service
+  if (rel === 'system_service') return kinds.has('system') && kinds.has('service')
+
+  // 排除纯内部管理关系
+  if (rel === 'event_context') return false
+
+  // 所有其他关系类型默认展示
+  return true
 }))
 const visibleSummary = computed(() => {
   const kindCounts = graphNodes.value.reduce((acc, node) => {
@@ -1784,6 +1787,68 @@ onBeforeUnmount(() => {
 .board-edge.is-event_context {
   stroke: rgba(249, 115, 22, 0.68);
   stroke-dasharray: 11 8;
+}
+
+/* CMDB / iTop 拓扑关系 */
+.board-edge.is-cmdb_relation,
+.board-edge.is-system_runtime_component {
+  stroke: rgba(139, 92, 246, 0.58);
+  stroke-width: 1.8;
+}
+
+/* 基础设施层物理拓扑 */
+.board-edge.is-infrastructure_relation {
+  stroke: rgba(99, 102, 241, 0.65);
+  stroke-width: 2.2;
+  stroke-dasharray: 6 3;
+}
+
+/* 系统包含主机 */
+.board-edge.is-system_infrastructure {
+  stroke: rgba(59, 130, 246, 0.55);
+  stroke-width: 1.6;
+}
+
+/* 跨层：服务运行在主机 */
+.board-edge.is-service_infrastructure {
+  stroke: rgba(16, 185, 129, 0.50);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+}
+
+/* 环境直接包含服务 */
+.board-edge.is-environment_service {
+  stroke: rgba(168, 85, 247, 0.50);
+  stroke-width: 1.4;
+  stroke-dasharray: 3 5;
+}
+
+/* 能力接入数据源 */
+.board-edge.is-capability_datasource {
+  stroke: rgba(100, 116, 139, 0.50);
+  stroke-width: 1.4;
+  stroke-dasharray: 2 4;
+}
+
+/* 环境关联可观测性 */
+.board-edge.is-environment_observability {
+  stroke: rgba(71, 85, 105, 0.45);
+  stroke-width: 1.2;
+  stroke-dasharray: 2 4;
+}
+
+/* 环境关联资源底座 */
+.board-edge.is-environment_resource_base {
+  stroke: rgba(100, 116, 139, 0.40);
+  stroke-width: 1.0;
+  stroke-dasharray: 2 3;
+}
+
+/* 默认回退样式 */
+.board-edge:not([class*='is-']) {
+  stroke: rgba(148, 163, 184, 0.50);
+  stroke-width: 1.2;
+  stroke-dasharray: 3 3;
 }
 
 .board-edge.focused {
