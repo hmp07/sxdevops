@@ -228,6 +228,7 @@ ALERT_QUERY_NOISE_PATTERNS = [
     '\u72b6\u6001', '\u67e5\u770b', '\u67e5\u8be2', '\u5217\u51fa', '\u5e2e\u6211', '\u770b\u4e0b', '\u4e00\u4e0b', '\u5168\u90e8', '\u6240\u6709',
     '今天', '今日', '当天', '这个', '环境', '活跃', '现存', '未恢复', '还在', '仍在', '还有啥', '还有哪些',
     '请', '一下', '风险', '影响', '情况', '怎么样', '是否', '产生', '发生', '出现', '最新',
+    '统计', '级别', '按级别', '按告警级别', '按告警', '告警级别',
     '最近一小时', '近一小时', '过去一小时', '最近 1 小时', '近 1 小时', '过去 1 小时', '一小时', '1小时', '1 小时',
     '交易系统', '交易',
 ]
@@ -294,7 +295,7 @@ BUILTIN_MCP_SERVERS = [
         'name': '知识图谱 MCP',
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
         'description': '查询知识图谱中的环境关联、系统拓扑、服务依赖与主机资源关系。',
-        'tool_whitelist': ['query_knowledge_graph', 'query_hosts', 'query_cmdb_items', 'query_cmdb_topology', 'query_device_detail', 'query_zabbix_hosts', 'query_zabbix_problems', 'query_zabbix_items', 'query_zabbix_history'],
+        'tool_whitelist': ['query_knowledge_graph', 'query_hosts', 'query_cmdb_items', 'query_cmdb_topology', 'query_device_detail', 'query_zabbix_hosts', 'query_zabbix_problems', 'query_zabbix_items', 'query_zabbix_history', 'query_zabbix_host_metrics'],
     },
     {
         'name': '可观测性 MCP',
@@ -839,7 +840,7 @@ BUILTIN_SKILLS = [
         'source_type': AIOpsSkill.SOURCE_INLINE,
         'applicable_actions': ['zabbix.problem_analysis', 'cross_system.root_cause'],
         'examples': ['帮我查 Zabbix 上的严重告警', '分析生产环境 Zabbix 告警根因', '这个主机在 Zabbix 上有什么异常'],
-        'builtin_tools': ['query_zabbix_problems', 'query_zabbix_hosts', 'query_zabbix_items', 'query_zabbix_history'],
+        'builtin_tools': ['query_zabbix_problems', 'query_zabbix_hosts', 'query_zabbix_items', 'query_zabbix_history', 'query_zabbix_host_metrics'],
         'recommended_tools': ['query_alerts', 'query_logs', 'query_knowledge_graph'],
         'max_iterations': 4,
         'risk_level': AIOpsSkill.RISK_READ_ONLY,
@@ -935,6 +936,8 @@ BUILTIN_ACTION_REGISTRY = [
             'query_traces',
             'query_recent_changes',
             'query_knowledge_graph',
+            'query_zabbix_problems',
+            'query_zabbix_hosts',
         ],
         'skills': [
             'sx-alert-evidence-checklist',
@@ -1177,6 +1180,7 @@ BUILTIN_ACTION_REGISTRY = [
             'query_zabbix_hosts',
             'query_zabbix_items',
             'query_zabbix_history',
+            'query_zabbix_host_metrics',
             'query_alerts',
             'query_logs',
             'query_knowledge_graph',
@@ -1235,7 +1239,7 @@ BUILTIN_ACTION_REGISTRY = [
         'agent_mode': 'plan_react',
         'required_context': ['environment'],
         'allowed_tools': [
-            'query_zabbix_problems', 'query_zabbix_hosts', 'query_zabbix_items', 'query_zabbix_history',
+            'query_zabbix_problems', 'query_zabbix_hosts', 'query_zabbix_items', 'query_zabbix_history', 'query_zabbix_host_metrics',
             'query_alerts', 'query_logs', 'query_traces', 'query_knowledge_graph',
             'query_recent_changes', 'query_event_wall',
         ],
@@ -2181,9 +2185,12 @@ ACTION_ROUTE_PRIORITY = [
     'log.query_generate',
     'change.correlation',
     'k8s.diagnose',
+    'zabbix.problem_analysis',
+    'cross_system.root_cause',
     'slo.analysis',
     'alert.root_cause',
     'cmdb.query',
+    'itop.change_impact',
 ]
 
 
@@ -2236,6 +2243,9 @@ def _action_question_matches(action_code, question, analysis_scope=None):
             _question_contains_any(lowered, ['deploy', 'deployment'])
             and _question_contains_any(lowered, ['之后', '以后', '后', '变更', '发布', '上线', '关联', '关系', '相关', '导致'])
         )
+        # 排除明确指向告警中心的查询（"告警事件"≠事件墙事件）
+        if _question_contains_any(lowered, ['告警中心', '告警级别', '按级别统计']):
+            return False
         has_change_or_event_scope = _question_contains_any(lowered, [
             '变更', '发布', '工单', '部署', '回滚', '上线', '事件',
             'change', 'changes', 'event', 'events',
@@ -2313,7 +2323,21 @@ def _action_question_matches(action_code, question, analysis_scope=None):
             ])
             or bool(re.search(r'(查询|查看|搜索|有哪些|多少|列出).*(系统|业务|服务器|数据库|主机|资产|拓扑|配置)', question))
             or bool(re.search(r'(电商|交易|订单|支付|用户|商品|库存).*(平台|系统|服务)', question))
+            or bool(re.search(r'(什么|哪个|哪台).*(服务器|主机|设备|机器|系统)', question))
+            or bool(re.search(r'(属于|归属).*(业务线|系统|部门|环境)', question))
         )
+    if action_code == 'zabbix.problem_analysis':
+        return _question_contains_any(lowered, ['zabbix', '监控系统', '监控告警']) and _question_contains_any(lowered, [
+            '告警', '问题', '异常', '故障', '报警', 'alert', 'problem',
+        ])
+    if action_code == 'cross_system.root_cause':
+        return _question_contains_any(lowered, ['根因', '原因', '为什么']) and _question_contains_any(lowered, [
+            '跨系统', '跨服务', '全链路', '整体',
+        ])
+    if action_code == 'itop.change_impact':
+        return _question_contains_any(lowered, ['itop', 'iTop', 'ITOP', '变更影响', 'cmdb变更']) and _question_contains_any(lowered, [
+            '变更', '影响', '依赖', '关联', 'change', 'impact',
+        ])
     return False
 
 
@@ -4180,6 +4204,7 @@ def _build_analysis_scope(knowledge_environment):
         'k8s_cluster_ids': knowledge_environment.get('k8s_cluster_ids') or [],
         'docker_host_ids': knowledge_environment.get('docker_host_ids') or [],
         'task_resource_environment_ids': knowledge_environment.get('task_resource_environment_ids') or [],
+        'zabbix_datasource_ids': knowledge_environment.get('zabbix_datasource_ids') or [],
     }
 
 
@@ -4902,6 +4927,7 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
         [
             '分析', '排查', '异常', '根因', '最近', '当前', '生产', '测试', '开发',
             'prod', 'test', 'dev', '服务', '告警', '有哪些', '是什么', '情况',
+            '统计', '按级别', '按告警级别', '今天', '今日', '告警级别',
         ],
     )
     tokens = _clean_alert_query_tokens(service_query)
@@ -4928,10 +4954,13 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
         _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
         return {'error': '当前账号无权查看告警。', 'sections': [], 'citations': []}
 
+    # DEBUG-REMOVED: open('d:/projects/sxdevops/backend/alert_debug.log','a').write(f'[ALERT-DEBUG] query_alerts called: q={str(query)[:60]} lvl={level} st={status} df={date_filter} ke={bool(knowledge_environment)}\n')
     queryset = Alert.objects.select_related('host').all()
+    # DEBUG-REMOVED: open('d:/projects/sxdevops/backend/alert_debug.log','a').write(f'[ALERT-DEBUG] Initial total: {queryset.count()}\n')
     if knowledge_environment:
         alert_environments = knowledge_environment.get('alert_environments') or []
         queryset = queryset.filter(Q(environment__in=alert_environments) | Q(host__environment__in=alert_environments)) if alert_environments else Alert.objects.none()
+        # DEBUG-REMOVED: open('d:/projects/sxdevops/backend/alert_debug.log','a').write(f'[ALERT-DEBUG] After KE filter: {queryset.count()}\n')
     elif environment:
         queryset = queryset.filter(Q(environment=environment) | Q(host__environment=environment) | Q(message__icontains=environment))
     if only_unacknowledged:
@@ -4946,7 +4975,9 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
             Q(created_at__date=today)
             | Q(starts_at__date=today)
             | Q(last_received_at__date=today)
+            | Q(status=Alert.STATUS_ACTIVE)  # 今天的告警 = 今天仍然活跃的告警
         )
+        # DEBUG-REMOVED: open('d:/projects/sxdevops/backend/alert_debug.log','a').write(f'[ALERT-DEBUG] After date_filter=today: {queryset.count()}\n')
     elif date_filter == 'last_hour':
         cutoff = timezone.now() - timedelta(hours=1)
         queryset = queryset.filter(
@@ -4966,7 +4997,11 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
         )
     if tokens:
         queryset = _queryset_search(queryset, ['title', 'source', 'message', 'host__hostname', 'service', 'resource'], tokens)
+        # DEBUG-REMOVED: open('d:/projects/sxdevops/backend/alert_debug.log','a').write(f'[ALERT-DEBUG] After tokens ({tokens}): {queryset.count()}\n')
+    if system_name:
+        # DEBUG-REMOVED: open('d:/projects/sxdevops/backend/alert_debug.log','a').write(f'[ALERT-DEBUG] After system_name={system_name}: {queryset.count()}\n')
     alerts = list(queryset.order_by('-last_received_at', '-created_at', '-id')[:limit])
+    # DEBUG-REMOVED: open('d:/projects/sxdevops/backend/alert_debug.log','a').write(f'[ALERT-DEBUG] Final alerts (limit={limit}): {len(alerts)}\n')
     counter = Counter(alert.level for alert in alerts)
     status_counter = Counter(alert.status for alert in alerts)
     sections = [{
@@ -6667,7 +6702,9 @@ def _is_direct_alert_list_question(question):
     if any(keyword in lowered for keyword in ['分析', '排查', '定位']):
         return False
     return any(keyword in lowered for keyword in [
-        '今天', '今日', '当天', '当前', '活跃', '未恢复', '还在', '还有啥', '有哪些', '多少', '列表', '最近', '近期',
+        '今天', '今日', '当天', '当前', '活跃', '未恢复', '还在', '还有啥', '有哪些', '有什么',
+        '多少', '列表', '最近', '近期', '帮我查', '查一下', '查看', '看看', '查询', '有没有',
+        '统计', '告警中心', '级别', '按级别',
         'active', 'open', 'today', 'list',
     ])
 
@@ -6982,6 +7019,9 @@ def _is_direct_promql_question(question):
 
 def _is_direct_event_list_question(question):
     lowered = str(question or '').lower()
+    # 排除明确指向告警中心的查询（"告警事件" 是告警术语，非事件墙事件）
+    if any(keyword in lowered for keyword in ['告警中心', '告警级别', '告警事件']):
+        return False
     if _is_analysis_or_action_question(question):
         return False
     has_event_scope = any(keyword in lowered for keyword in ['事件', '变更', '发布', 'event', 'events'])
@@ -7099,8 +7139,34 @@ def _is_k8s_analysis_question(question):
     return has_scope and has_analysis
 
 
+def _is_host_metric_question(question):
+    """检测是否为主机监控指标查询（CPU/内存/磁盘/网络等），避免被误判为服务异常"""
+    lowered = str(question or '').lower()
+    has_metric = any(kw in lowered for kw in ['cpu', '内存', '磁盘', '网络流量', '带宽', '监控', '趋势', '指标', '使用率', '负载', '利用率', '吞吐', 'history'])
+    has_hostname = bool(re.search(r'[A-Za-z][A-Za-z0-9_-]*\d+[A-Za-z0-9_-]*', str(question or '')))
+    return has_metric and has_hostname
+
+
+def _is_host_monitoring_question(question):
+    """检测是否为主机监控指标分析问题（需走 Zabbix 查询路径）"""
+    lowered = str(question or '').lower()
+    has_metric = any(kw in lowered for kw in ['cpu', '内存', '磁盘', '网络', '趋势', '使用率', '负载', '流量', '带宽', '监控'])
+    has_lookup = any(kw in lowered for kw in ['分析', '查看', '查询', '查', '趋势', '最近', '一周', '一天', '监控'])
+    has_host = bool(re.search(r'[A-Za-z][A-Za-z0-9_-]*\d+', str(question or ''))) or \
+               any(kw in lowered for kw in ['服务器', '主机', 'server', 'host'])
+    return has_metric and has_lookup and has_host
+
+
+def _extract_hostname_from_question(question):
+    """从问题文本中提取主机名（如 Dataease2、db1、vm-mysql57）"""
+    match = re.search(r'([A-Za-z][A-Za-z0-9_-]*\d+[A-Za-z0-9_-]*)', str(question or ''))
+    return match.group(1) if match else ''
+
+
 def _is_service_anomaly_question(question):
     text = str(question or '').lower()
+    if _is_host_metric_question(question):
+        return False
     if any(keyword in text for keyword in ['k8s', 'kubernetes', 'pod', 'pods', '容器', '集群', 'namespace', '工作负载', 'workload', 'workloads']):
         return False
     has_analysis = any(keyword in text for keyword in ['分析', '排查', '异常', '根因', '原因', '最近一小时', '最近', '有没有问题'])
@@ -8161,6 +8227,63 @@ def _run_slo_analysis_evidence(session, user_message, user, question, scoped_que
     return _attach_selected_action_metadata(result, action, extra_metadata={'action_route': 'deterministic_slo_analysis'})
 
 
+def _direct_host_metrics_fastpath(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit):
+    """主机监控指标分析快速通道：主机名 → Zabbix hostid → 指标摘要 + 历史趋势"""
+    hostname = _extract_hostname_from_question(question)
+    emit(
+        step={'title': '主机监控指标查询', 'detail': f'检测到主机名 {hostname}，查询 Zabbix 监控指标。', 'status': PROCESSING_STATUS_COMPLETED},
+        text=f'正在查询 {hostname} 的监控指标',
+    )
+    sections, citations, tool_names, collected = [], [], [], []
+
+    # Step 1: 通过 DeviceMapping 获取 Zabbix hostid + CMDB 信息
+    device_args = {'hostname': hostname}
+    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_device_detail', device_args, emit=emit)
+
+    # 从 device_detail 结果中提取 zabbix_hostid
+    zabbix_hostid = ''
+    for output in collected:
+        if output.get('found') and output.get('zabbix_hostid'):
+            zabbix_hostid = output['zabbix_hostid']
+            break
+
+    # Step 2: 获取核心指标摘要
+    if zabbix_hostid:
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_zabbix_host_metrics', {'hostid': zabbix_hostid}, emit=emit)
+
+    # Step 3: 如涉及历史趋势，查询历史数据
+    lowered = str(question or '').lower()
+    if any(kw in lowered for kw in ['趋势', '历史', '一周', '最近', '过去', '一天', '小时']):
+        emit(
+            step={'title': '历史趋势查询', 'detail': '检测到历史趋势需求，拉取历史数据。', 'status': PROCESSING_STATUS_COMPLETED},
+            text='正在拉取历史趋势数据',
+        )
+        if zabbix_hostid:
+            # 获取 CPU 监控项并查历史
+            from ops.zabbix_client import ZabbixClient
+            from ops.models import ZabbixDataSource
+            try:
+                ds = ZabbixDataSource.objects.filter(is_enabled=True).first()
+                if ds:
+                    client = ZabbixClient(ds)
+                    items = client.get_items(host_ids=[int(zabbix_hostid)], search_key='system.cpu.util', filter_status='0', limit=5)
+                    if isinstance(items, list) and items:
+                        cpu_item_ids = [it['itemid'] for it in items[:3]]
+                        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_zabbix_history', {'item_ids': cpu_item_ids, 'limit': 30}, emit=emit)
+            except Exception:
+                pass
+
+    return _build_evidence_bundle_result(
+        question=question, scoped_question=scoped_question,
+        knowledge_environment=knowledge_environment, analysis_scope=analysis_scope,
+        provider=provider, active_skills=active_skills,
+        sections=sections, citations=citations, tool_names=tool_names,
+        collected_tool_outputs=collected,
+        execution_mode='deterministic_host_metrics',
+        extra_metadata={'hostname': hostname, 'zabbix_hostid': zabbix_hostid},
+    )
+
+
 def _run_service_anomaly_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit):
     emit(
         step={'title': '服务异常证据收集', 'detail': '同时收集告警、日志、链路、事件和相关 K8s 工作负载。', 'status': PROCESSING_STATUS_COMPLETED},
@@ -8190,6 +8313,11 @@ def _run_service_anomaly_evidence(session, user_message, user, question, scoped_
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_events', {'query': evidence_query, 'date_filter': 'last_hour' if duration_minutes <= 60 else '', 'limit': 8}, emit=emit)
     if analysis_scope.get('k8s_cluster_ids'):
         _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_k8s_resources', {'query': scoped_question, 'resource_type': 'workloads', 'limit': 8}, emit=emit)
+    # 补充 Zabbix 主机监控指标（如有 Zabbix 数据源）
+    if analysis_scope.get('zabbix_datasource_ids'):
+        hostname_match = re.search(r'([A-Za-z][A-Za-z0-9_-]*\d+[A-Za-z0-9_-]*)', str(scoped_question))
+        if hostname_match:
+            _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_device_detail', {'hostname': hostname_match.group(1)}, emit=emit)
     return _build_evidence_bundle_result(
         question=question,
         scoped_question=scoped_question,
@@ -8298,6 +8426,8 @@ def _run_alert_environment_analysis_evidence(session, user_message, user, questi
         })
     if analysis_scope.get('k8s_cluster_ids'):
         _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_k8s_resources', {'query': scoped_question, 'resource_type': 'workloads', 'limit': 8}, emit=emit)
+    if analysis_scope.get('zabbix_datasource_ids'):
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_zabbix_problems', {'min_severity': 2, 'limit': 20}, emit=emit)
     metric_context = _collect_metric_context(collected)
     result = _build_evidence_bundle_result(
         question=question,
@@ -9077,7 +9207,9 @@ def query_zabbix_items(session, user_message, user, datasource_id=None, host_ids
             items.append({
                 'itemid': it.get('itemid'), 'name': it.get('name'),
                 'key_': it.get('key_'), 'lastvalue': it.get('lastvalue'),
-                'units': it.get('units'), 'hostid': it.get('hostid'),
+                'lastclock': it.get('lastclock'), 'units': it.get('units'),
+                'hostid': it.get('hostid'),
+                'status': it.get('status'), 'value_type': it.get('value_type'),
             })
         _finish_tool_invocation(invocation, {'item_count': len(items)}, started_at, success=True)
         return {'items': items, 'total': len(items)}
@@ -9086,8 +9218,8 @@ def query_zabbix_items(session, user_message, user, datasource_id=None, host_ids
         return {'error': str(e)}
 
 
-def query_zabbix_history(session, user_message, user, datasource_id=None, item_ids=None, limit=50):
-    """查询 Zabbix 监控项历史数据"""
+def query_zabbix_history(session, user_message, user, datasource_id=None, item_ids=None, limit=50, value_type=None):
+    """查询 Zabbix 监控项历史数据（自动匹配 value_type）"""
     from ops.zabbix_client import ZabbixClient
     from ops.models import ZabbixDataSource
     started_at = time.time()
@@ -9103,7 +9235,18 @@ def query_zabbix_history(session, user_message, user, datasource_id=None, item_i
         iid_list = [int(i) for i in item_ids] if isinstance(item_ids, list) else None
         if not iid_list:
             return {'error': '请提供 item_ids'}
-        result = client.get_history(iid_list)
+
+        # 自动探测 value_type（Zabbix history.get 必须传入正确的 history 值类型）
+        if value_type is None:
+            vt_result = client._call('item.get', {
+                'output': ['itemid', 'value_type'],
+                'itemids': [str(i) for i in iid_list],
+            })
+            if isinstance(vt_result, list) and vt_result:
+                types = set(it.get('value_type', '0') for it in vt_result)
+                value_type = next(iter(types)) if len(types) == 1 else (types.pop() if types else '0')
+
+        result = client.get_history(iid_list, history=int(value_type) if value_type is not None else None)
         if 'error' in result:
             return {'error': result['error']}
         history = []
@@ -9114,6 +9257,100 @@ def query_zabbix_history(session, user_message, user, datasource_id=None, item_i
             })
         _finish_tool_invocation(invocation, {'point_count': len(history)}, started_at, success=True)
         return {'history': history, 'total': len(history)}
+    except Exception as e:
+        _finish_tool_invocation(invocation, {}, started_at, success=False)
+        return {'error': str(e)}
+
+
+def query_zabbix_host_metrics(session, user_message, user, hostid=None, datasource_id=None):
+    """查询 Zabbix 主机核心性能指标摘要（CPU/内存/磁盘/网络）
+
+    一次调用获取主机的四大类关键指标，返回结构化摘要供 AI 分析使用。
+    """
+    from ops.zabbix_client import ZabbixClient
+    from ops.models import ZabbixDataSource
+    started_at = time.time()
+    invocation = _create_tool_invocation(session, user_message, 'query_zabbix_host_metrics',
+                                         {'hostid': hostid})
+    if not user_has_permissions(user, ['ops.zabbix.view']):
+        _finish_tool_invocation(invocation, {}, started_at, success=False)
+        return {'error': '权限不足'}
+    try:
+        ds = _resolve_zabbix_datasource(datasource_id)
+        if not ds:
+            return {'error': '未找到可用的 Zabbix 数据源'}
+        if not hostid:
+            return {'error': '请提供 hostid（主机 ID），可先通过 query_zabbix_hosts 获取'}
+        client = ZabbixClient(ds)
+        hostid_int = int(hostid)
+
+        # 四类核心指标搜索
+        categories = {
+            'cpu': {'search_key': 'system.cpu.util', 'label': 'CPU 使用率'},
+            'memory': {'search_key': 'vm.memory', 'label': '内存'},
+            'filesystem': {'search_key': 'vfs.fs', 'label': '文件系统'},
+            'network': {'search_key': 'net.if', 'label': '网络接口'},
+        }
+
+        metrics = {}
+        for cat_key, cat_cfg in categories.items():
+            result = client.get_items(
+                host_ids=[hostid_int], search_key=cat_cfg['search_key'],
+                filter_status='0', limit=200,
+            )
+            if isinstance(result, list):
+                metrics[cat_key] = [
+                    {
+                        'itemid': it.get('itemid'), 'name': it.get('name'),
+                        'key_': it.get('key_'), 'lastvalue': it.get('lastvalue'),
+                        'lastclock': it.get('lastclock'), 'units': it.get('units'),
+                        'value_type': it.get('value_type'),
+                    }
+                    for it in result
+                ]
+
+        # 补充负载信息
+        load_result = client.get_items(
+            host_ids=[hostid_int], search_key='system.cpu.load',
+            filter_status='0', limit=10,
+        )
+        if isinstance(load_result, list):
+            metrics['load'] = [
+                {
+                    'itemid': it.get('itemid'), 'name': it.get('name'),
+                    'key_': it.get('key_'), 'lastvalue': it.get('lastvalue'),
+                    'lastclock': it.get('lastclock'), 'units': it.get('units'),
+                    'value_type': it.get('value_type'),
+                }
+                for it in load_result
+            ]
+
+        # 补充 uptime
+        uptime_result = client.get_items(
+            host_ids=[hostid_int], search_key='system.uptime',
+            filter_status='0', limit=5,
+        )
+        if isinstance(uptime_result, list):
+            system_items = uptime_result
+            # 也获取主机名
+            hostname_result = client.get_items(
+                host_ids=[hostid_int], search_key='system.hostname',
+                filter_status='0', limit=5,
+            )
+            if isinstance(hostname_result, list):
+                system_items.extend(hostname_result)
+            metrics['system'] = [
+                {
+                    'itemid': it.get('itemid'), 'name': it.get('name'),
+                    'key_': it.get('key_'), 'lastvalue': it.get('lastvalue'),
+                    'lastclock': it.get('lastclock'), 'units': it.get('units'),
+                }
+                for it in system_items
+            ]
+
+        total_items = sum(len(v) for v in metrics.values())
+        _finish_tool_invocation(invocation, {'item_count': total_items}, started_at, success=True)
+        return {'metrics': metrics, 'hostid': hostid, 'total_items': total_items}
     except Exception as e:
         _finish_tool_invocation(invocation, {}, started_at, success=False)
         return {'error': str(e)}
@@ -9973,6 +10210,22 @@ PLATFORM_MCP_TOOL_DEFINITIONS = [
         },
     },
     {
+        'name': 'sxdevops.query_alert_root_cause',
+        'title': '分析告警根因',
+        'description': '分析单条告警的根因，综合 K8s、事件、日志、链路和指标证据。用户给出告警 ID/指纹，或询问某环境最新告警的原因、根因、为什么、怎么处理时必须使用本工具。',
+        'permission': 'ops.alert.view',
+        'handler': 'query_alert_root_cause',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'alert_id': {'type': 'integer', 'minimum': 1},
+                'fingerprint': {'type': 'string'},
+                'latest': {'type': 'boolean'},
+            },
+        },
+    },
+    {
         'name': 'sxdevops.query_alert_metrics',
         'title': '查询告警指标证据包',
         'description': '按告警上下文生成受预算约束的 PromQL 查询计划，返回指标趋势和异常摘要。',
@@ -10099,15 +10352,31 @@ PLATFORM_MCP_TOOL_DEFINITIONS = [
     {
         'name': 'sxdevops.query_zabbix_history',
         'title': '查询 Zabbix 历史数据',
-        'description': '查询指定监控项的历史数据，用于绘制趋势图或分析指标变化。需要先通过 query_zabbix_items 获取监控项 ID。',
+        'description': '查询指定监控项的历史数据，用于绘制趋势图或分析指标变化。需要先通过 query_zabbix_items 获取监控项 ID 和 value_type。支持自动探测 value_type，也可手动指定（0=float, 1=char, 3=unsigned, 4=text）。',
         'permission': 'ops.zabbix.view',
         'handler': 'query_zabbix_history',
         'input_schema': {
             'type': 'object',
             'properties': {
                 'item_ids': {'type': 'array', 'items': {'type': 'integer'}, 'description': '监控项 ID 列表'},
+                'value_type': {'type': 'integer', 'minimum': 0, 'maximum': 4, 'description': 'value_type: 0=float, 1=char, 3=unsigned, 4=text。不传则自动探测'},
                 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200, 'default': 50},
             },
+        },
+    },
+    {
+        'name': 'sxdevops.query_zabbix_host_metrics',
+        'title': '查询 Zabbix 主机核心指标',
+        'description': '一次查询获取主机的 CPU 使用率、内存、文件系统、网络流量四类核心性能指标摘要。用于快速评估主机健康状态，无需多次调用 query_zabbix_items。需要先通过 query_zabbix_hosts 获取主机 hostid。',
+        'permission': 'ops.zabbix.view',
+        'handler': 'query_zabbix_host_metrics',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'hostid': {'type': 'string', 'description': 'Zabbix 主机 ID'},
+                'datasource_id': {'type': 'integer', 'description': 'Zabbix 数据源 ID，可选'},
+            },
+            'required': ['hostid'],
         },
     },
     {
@@ -10245,6 +10514,16 @@ def _invoke_platform_mcp_handler(handler_name, session, user, arguments):
             date_filter=str(arguments.get('date_filter') or '').strip(),
             limit=limit,
         )
+    if handler_name == 'query_alert_root_cause':
+        return query_alert_root_cause(
+            session,
+            None,
+            user,
+            query=query,
+            alert_id=arguments.get('alert_id'),
+            fingerprint=str(arguments.get('fingerprint') or '').strip(),
+            latest=bool(arguments.get('latest')),
+        )
     if handler_name == 'query_alert_metrics':
         return query_alert_metrics(
             session,
@@ -10298,7 +10577,7 @@ def _invoke_platform_mcp_handler(handler_name, session, user, arguments):
     if handler_name == 'query_zabbix_items':
         return query_zabbix_items(session, None, user, host_ids=arguments.get('host_ids'), search=arguments.get('search', ''), limit=arguments.get('limit', 50))
     if handler_name == 'query_zabbix_history':
-        return query_zabbix_history(session, None, user, item_ids=arguments.get('item_ids'), limit=arguments.get('limit', 50))
+        return query_zabbix_history(session, None, user, item_ids=arguments.get('item_ids'), limit=arguments.get('limit', 50), value_type=arguments.get('value_type'))
     if handler_name == 'query_device_detail':
         return query_device_detail(session, None, user, hostname=arguments.get('hostname', ''))
     if handler_name == 'query_cmdb_items':
@@ -15117,6 +15396,10 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         '- “生成 Ansible Playbook 安装 nginx” => 调用 generate_host_task，task_kind=run_playbook，填写 playbook_content；不要只生成 nginx 状态检查。',
         '- “修改 monitoring 命名空间下的 svc kube-prome type 为 NodePort” => 先用 query_task_resources(resource_type=k8s) 查任务资源底座，再调用 generate_host_task，task_kind=k8s_command，namespace=monitoring，service_name=kube-prome，patch={"spec":{"type":"NodePort"}}；系统会生成通用 K8s 命令任务并通过 K8s API 执行 kubectl patch。',
         '- “把 monitoring 下 deployment checkout 扩到 3 个副本 / 重启 monitoring 下 pod api-xxx” => 先查 query_task_resources(resource_type=k8s)，再调用 generate_host_task 生成 k8s_scale_workload 或 k8s_restart_pod 草稿；query_k8s_resources 不是前置条件。',
+        '- “分析 xxx 服务器 CPU/内存/磁盘趋势 / 查某台机器的监控数据” => 先调用 query_zabbix_hosts 按主机名搜索获取 hostid，再调用 query_zabbix_host_metrics (hostid=xxx) 获取 CPU/内存/磁盘/网络核心指标。如需查历史趋势，继续用 query_zabbix_items 获取具体 itemid，再调用 query_zabbix_history。',
+        '- “查某设备/服务器/主机的 CMDB 和监控合并信息 / xxx 是什么服务器” => 调用 query_device_detail(hostname=”主机名或IP”)，一次获取 Zabbix 监控状态和 iTop CMDB 属性、业务线、环境。',
+        '- “查 CMDB / 某业务线的配置项 / 系统拓扑” => 先调用 query_cmdb_items(query=”关键词”) 搜索 CI，再按需调用 query_cmdb_topology(business_line=”业务线”) 查看上下游拓扑关系。',
+        '- “Zabbix 有什么告警 / 查 Zabbix 当前活跃问题 / 监控系统告警” => 调用 query_zabbix_problems，可按 min_severity 过滤（1=信息,2=警告,4=严重,5=灾难）；需要主机详情时再用 query_zabbix_hosts。',
     ]
     parts.append('- “任务中心资源底座/资源底座里的主机/某环境全部主机/K8s 修改任务目标集群” => 调用 query_task_resources；如果用户要求新建或修改类任务，先查资源底座，再把 resource_ids 传给 generate_host_task。')
     return '\n'.join(parts)
@@ -15200,6 +15483,8 @@ def _tool_allowed(user, tool_name):
     if tool_name == 'query_zabbix_items':
         return user_has_permissions(user, ['ops.zabbix.view'])
     if tool_name == 'query_zabbix_history':
+        return user_has_permissions(user, ['ops.zabbix.view'])
+    if tool_name == 'query_zabbix_host_metrics':
         return user_has_permissions(user, ['ops.zabbix.view'])
     return False
 
@@ -15449,6 +15734,17 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
             'properties': {
                 'item_ids': {'type': 'array', 'items': {'type': 'string'}, 'description': '监控项 ID 列表'},
                 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 50},
+            },
+        },
+    }
+
+    catalog['query_zabbix_host_metrics'] = {
+        'description': '一次查询获取指定 Zabbix 主机的 CPU 使用率、内存、文件系统、网络接口四类核心性能指标摘要。用于快速评估主机健康状态。',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'hostid': {'type': 'string', 'description': 'Zabbix 主机 ID，通过 query_zabbix_hosts 获取'},
+                'datasource_id': {'type': 'integer', 'description': 'Zabbix 数据源 ID，可选'},
             },
         },
     }
@@ -16070,7 +16366,10 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
         result = query_zabbix_items(session, user_message, user, host_ids=arguments.get('host_ids'), search=arguments.get('search', ''), limit=arguments.get('limit') or 50)
         return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
     if tool_name == 'query_zabbix_history':
-        result = query_zabbix_history(session, user_message, user, item_ids=arguments.get('item_ids'), limit=arguments.get('limit') or 50)
+        result = query_zabbix_history(session, user_message, user, item_ids=arguments.get('item_ids'), limit=arguments.get('limit') or 50, value_type=arguments.get('value_type'))
+        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
+    if tool_name == 'query_zabbix_host_metrics':
+        result = query_zabbix_host_metrics(session, user_message, user, hostid=arguments.get('hostid'), datasource_id=arguments.get('datasource_id'))
         return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
     raise ValueError(f'Unsupported tool: {tool_name}')
 
@@ -16453,6 +16752,11 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             step_detail='命中 K8s/Pod/容器状态类事实问题，直接查询容器环境，LLM 只用于结果总结。',
             step_text='正在通过平台接口查询容器环境',
             selected_action=_action_registry_item_by_code('k8s.diagnose', user=user),
+        )
+    if _is_host_monitoring_question(question):
+        return _direct_host_metrics_fastpath(
+            session, user_message, user, question, scoped_question,
+            knowledge_environment, analysis_scope, formatter_provider, active_skills, emit,
         )
     if _is_service_anomaly_question(question):
         return _run_service_anomaly_evidence(

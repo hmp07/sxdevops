@@ -70,6 +70,7 @@ class Command(BaseCommand):
             created = 0
             updated = 0
             for problem in problems:
+                event_id = problem.get('eventid', '')
                 host_name = ''
                 try:
                     # objectid 是触发器 ID，需通过 trigger.get 获取关联主机
@@ -78,8 +79,18 @@ class Command(BaseCommand):
                         hosts = triggers_resp[0].get('hosts', [])
                         if hosts:
                             host_name = hosts[0].get('host', '')
-                except Exception:
-                    pass
+                            # 尝试通过 DeviceMapping 按 hostid 查找 Host 记录
+                            if not host_name:
+                                hostid = hosts[0].get('hostid', '')
+                                if hostid:
+                                    from ops.models import DeviceMapping
+                                    dm = DeviceMapping.objects.filter(zabbix_hostid=hostid).select_related('config_item').first()
+                                    if dm and dm.config_item:
+                                        host_name = dm.config_item.name
+                except (ValueError, KeyError, TypeError) as e:
+                    self.stderr.write(f'    主机查找失败 (problem={event_id}): {e}')
+                except Exception as e:
+                    self.stderr.write(f'    网络/API 错误 (problem={event_id}): {e}')
 
                 alert, is_new = upsert_alert_from_zabbix_problem(problem, host_name=host_name, env_name=ds.name)
                 if alert:

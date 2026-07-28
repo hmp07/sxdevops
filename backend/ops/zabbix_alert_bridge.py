@@ -35,10 +35,14 @@ def _build_normalized(problem, host_name='', env_name=''):
     event_id = str(problem.get('eventid', ''))
     severity = int(problem.get('severity', 0))
 
+    r_eventid = problem.get('r_eventid')
+    # Zabbix JSON-RPC 返回数值字段为字符串，活跃问题的 r_eventid 为 "0"
+    is_active = r_eventid in (None, '', '0', 0, 0.0)
+
     return {
         'title': problem.get('name', 'Zabbix 告警')[:256],
         'level': SEVERITY_MAP.get(severity, 'warning'),
-        'status': 'active' if not problem.get('r_eventid') else 'resolved',
+        'status': 'active' if is_active else 'resolved',
         'source': 'zabbix_api',
         'source_type': 'zabbix',
         'external_id': event_id,
@@ -55,7 +59,7 @@ def _build_normalized(problem, host_name='', env_name=''):
         },
         'raw_payload': problem,
         'starts_at': _ts_to_datetime(problem.get('clock')),
-        'ends_at': _ts_to_datetime(problem.get('r_clock')) if problem.get('r_eventid') else None,
+        'ends_at': _ts_to_datetime(problem.get('r_clock')) if not is_active else None,
         'last_received_at': now(),
     }
 

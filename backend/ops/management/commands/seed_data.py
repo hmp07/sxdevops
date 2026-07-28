@@ -1288,15 +1288,20 @@ class Command(BaseCommand):
             ('磁盘空间不足', 'critical', 'Zabbix', '磁盘使用率超过 95%，请及时清理'),
             ('服务响应超时', 'warning', 'APM', '服务平均响应时间超过 3 秒'),
         ]
+        _SOURCE_TYPE_MAP = {'Prometheus': 'prometheus', 'Zabbix': 'zabbix', 'APM': 'generic'}
         for _ in range(12):
             title, level, source, message = random.choice(alert_templates)
+            host = random.choice(hosts)
             Alert.objects.create(
                 title=title,
                 level=level,
                 source=source,
+                source_type=_SOURCE_TYPE_MAP.get(source, 'generic'),
                 message=message,
+                status='active',
+                environment=host.environment or 'prod',
                 is_acknowledged=random.choice([True, False, False]),
-                host=random.choice(hosts),
+                host=host,
             )
         prod_hosts = [host for host in hosts if host.environment == 'prod']
         order_prod_host = next((host for host in prod_hosts if 'order' in host.hostname), None) or (prod_hosts[0] if prod_hosts else hosts[0])
@@ -1305,6 +1310,9 @@ class Command(BaseCommand):
                 title='order-center 库存校验超时',
                 level='critical',
                 source='APM',
+                source_type='generic',
+                status='active',
+                environment='prod',
                 message='order-service inventory timeout in prod',
                 is_acknowledged=False,
                 host=order_prod_host,
@@ -1313,6 +1321,9 @@ class Command(BaseCommand):
                 title='order-center 下游依赖重试激增',
                 level='critical',
                 source='APM',
+                source_type='generic',
+                status='active',
+                environment='prod',
                 message='inventory-service retry rate exceeded threshold in prod',
                 is_acknowledged=False,
                 host=order_prod_host,
@@ -1321,6 +1332,9 @@ class Command(BaseCommand):
                 title='order-center 发布后健康检查失败',
                 level='warning',
                 source='APM',
+                source_type='generic',
+                status='active',
+                environment='prod',
                 message='post-release health check failed for order-center in prod',
                 is_acknowledged=False,
                 host=order_prod_host,
@@ -1329,6 +1343,9 @@ class Command(BaseCommand):
                 title='payment-worker Deployment 副本不可用',
                 level='critical',
                 source='Prometheus',
+                source_type='prometheus',
+                status='active',
+                environment='prod',
                 message='kube_deployment_status_replicas_unavailable > 0 for deployment payment-worker in namespace production',
                 is_acknowledged=False,
                 host=next((host for host in prod_hosts if host.hostname == 'k8s-node-01'), order_prod_host),
@@ -1337,6 +1354,9 @@ class Command(BaseCommand):
                 title='member-api Deployment 滚动发布卡住',
                 level='critical',
                 source='Prometheus',
+                source_type='prometheus',
+                status='active',
+                environment='prod',
                 message='kube_deployment_status_condition indicates progressing timeout for deployment member-api in namespace production',
                 is_acknowledged=False,
                 host=next((host for host in prod_hosts if host.hostname == 'k8s-node-01'), order_prod_host),

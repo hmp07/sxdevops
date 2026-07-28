@@ -190,11 +190,12 @@
           <el-table-column prop="key_" label="键值" min-width="160" />
           <el-table-column prop="lastvalue" label="最新值" width="140" />
           <el-table-column prop="units" label="单位" width="80" />
-          <el-table-column label="状态" width="80">
+          <el-table-column label="状态" width="140">
             <template #default="{ row }">
               <el-tag :type="row.status === '0' ? 'success' : 'warning'" size="small">
                 {{ row.status === '0' ? '启用' : '禁用' }}
               </el-tag>
+              <el-tag v-if="row.state === '1'" type="danger" size="small" style="margin-left: 4px">不支持</el-tag>
             </template>
           </el-table-column>
         </el-table>

@@ -84,8 +84,10 @@ def zabbix_host_groups(request):
 def zabbix_items(request):
     client, err = _get_client(request.GET.get('datasource_id'))
     if err: return err
+    # 兼容 Axios 默认数组序列化 host_ids[]= 和 Django 标准 host_ids=
+    host_ids = request.GET.getlist('host_ids') or request.GET.getlist('host_ids[]') or None
     result = client.get_items(
-        host_ids=request.GET.getlist('host_ids') or None,
+        host_ids=host_ids,
         search=request.GET.get('search', '').strip() or None,
     )
     if 'error' in result:

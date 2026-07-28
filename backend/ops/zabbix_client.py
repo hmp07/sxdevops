@@ -179,22 +179,45 @@ class ZabbixClient:
             return {'error': '认证失败'}
         return self._call('hostgroup.get', params)
 
-    def get_items(self, host_ids=None, search=None):
-        """获取监控项列表。有 host_ids 时 limit=50000，否则限制 200"""
+    def get_items(self, host_ids=None, search=None, search_key=None,
+                  filter_status=None, filter_state=None,
+                  sortfield='name', sortorder='ASC', limit=1000):
+        """获取监控项列表。
+
+        search_key: 按 item key 模式搜索，如 'system.cpu' 匹配所有 system.cpu.* 监控项
+        filter_status: '0' 仅启用项, '1' 仅禁用项（None=不区分）
+        filter_state: '0' 仅正常项, '1' 仅不支持项（None=不区分）
+        """
         params = {
-            'output': ['itemid', 'hostid', 'name', 'key_', 'lastvalue', 'lastclock', 'units', 'value_type'],
-            'limit': 50000 if host_ids else 200,
+            'output': ['itemid', 'hostid', 'name', 'key_', 'lastvalue',
+                       'lastclock', 'units', 'value_type', 'status', 'state'],
+            'limit': min(limit, 50000),
+            'sortfield': sortfield,
+            'sortorder': sortorder,
         }
         if host_ids:
-            params['hostids'] = host_ids
+            params['hostids'] = [int(h) for h in host_ids]
+        if search_key:
+            params['search'] = {'key_': search_key}
         if search:
-            params['search'] = {'key_': search, 'name': search}
+            params.setdefault('search', {})
+            params['search'].update({'key_': search, 'name': search})
+        if filter_status is not None:
+            params.setdefault('filter', {})
+            params['filter']['status'] = str(filter_status)
+        if filter_state is not None:
+            params.setdefault('filter', {})
+            params['filter']['state'] = str(filter_state)
         if not self._ensure_auth():
             return {'error': '认证失败'}
         return self._call('item.get', params)
 
-    def get_history(self, item_ids, time_from=None, time_to=None, limit=500):
-        """获取历史数据（ASC 时间升序）"""
+    def get_history(self, item_ids, time_from=None, time_to=None, limit=500, history=None):
+        """获取历史数据（ASC 时间升序）
+
+        history: Zabbix value_type (0=float, 1=char, 3=unsigned, 4=text)
+                 不传则查询所有类型
+        """
         params = {
             'output': 'extend',
             'itemids': item_ids,
@@ -202,6 +225,8 @@ class ZabbixClient:
             'sortorder': 'ASC',
             'limit': limit,
         }
+        if history is not None:
+            params['history'] = history
         if time_from:
             params['time_from'] = time_from
         if time_to:

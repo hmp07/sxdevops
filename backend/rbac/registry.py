@@ -154,6 +154,7 @@ BUILTIN_ROLES = [
         'permissions': [
             'aiops.knowledge.view',
             'eventwall.view', 'eventwall.source.view', 'rbac.audit.view', 'aiops.chat.view', 'aiops.chat.analyze', 'aiops.runbook.view', 'aiops.review.view',
+            'ops.alert.view',
             'cmdb.dashboard.view', 'cmdb.topology.view', 'cmdb.cost.view', 'sqlaudit.datasource.view',
             'sqlaudit.order.view', 'sqlaudit.order.review', 'sqlaudit.query.view',
         ],
