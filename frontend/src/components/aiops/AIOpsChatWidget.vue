@@ -1711,7 +1711,7 @@ function parseAssistantContent(content) {
   pushCode()
 
   // 追加追问建议块
-  if (suggestions.length) {
+  if (suggestions && suggestions.length) {
     blocks.push({ type: 'quick_questions', items: suggestions })
   }
 
@@ -2061,24 +2061,22 @@ async function handleSend() {
   scrollToBottom(true)
 
   try {
-    // SSE 流式优先，不支持的浏览器或超时回退到异步轮询
-    const streamUsed = await tryStreamSend(sessionId, content)
-    if (!streamUsed) {
-      const response = await sendAIOpsMessageAsync(sessionId, {
-        content,
-        analysis_only: effectiveAnalysisOnly.value,
-        knowledge_environment: selectedEnvironment.value || '',
-      })
-      messages.value.push(response.user_message)
-      messages.value.push(response.assistant_message)
-      pendingAssistantMessage.value = null
-      await refreshSessionListOnly()
-      startMessagePolling(sessionId, response.assistant_message?.id)
-    }
+    // 异步轮询模式（SSE 流式仍在优化中）
+    const response = await sendAIOpsMessageAsync(sessionId, {
+      content,
+      analysis_only: effectiveAnalysisOnly.value,
+      knowledge_environment: selectedEnvironment.value || '',
+    })
+    messages.value.push(response.user_message)
+    messages.value.push(response.assistant_message)
+    pendingAssistantMessage.value = null
+    await refreshSessionListOnly()
+    startMessagePolling(sessionId, response.assistant_message?.id)
     await nextTick()
     scrollToBottom(true)
     focusComposer()
   } catch (error) {
+    console.error('[handleSend] error', error)
     composer.value = rawContent
     persistDraft(sessionId, rawContent)
     ElMessage.error(error?.response?.data?.detail || '发送失败，请稍后重试')
