@@ -212,6 +212,47 @@ class AuditMiddleware(AgentMiddleware):
             logger.warning("模型审计写入失败: %s", exc)
 
 
+class ProgressMiddleware(AgentMiddleware):
+    """实时进度回调中间件 — 通过 AgentMiddleware hook 更新 processing_steps。
+
+    每个工具调用和 LLM 推理完成后，直接更新 DB 中的
+    assistant_message.metadata.processing_steps，前端轮询可见。
+    替代 legacy 引擎的 _make_processing_callback → _update_chat_message_processing 机制。
+    """
+
+    def __init__(self, message_id: int):
+        self.message_id = message_id
+
+    def _update_step(self, title: str, detail: str, status: str = 'running'):
+        """通过 DB 直接更新 assistant_message.metadata.processing_steps"""
+        from aiops.services import _update_chat_message_processing
+        _update_chat_message_processing(
+            self.message_id,
+            step={
+                'title': title, 'detail': detail, 'status': status,
+                'timestamp': timezone.now().isoformat(),
+            },
+        )
+
+    def wrap_tool_call(self, request, handler):
+        """每次工具调用时推送进度。"""
+        tool_name = ''
+        if hasattr(request, 'tool_call') and isinstance(request.tool_call, dict):
+            tool_name = request.tool_call.get('name', 'unknown')
+        self._update_step(tool_name, f'正在调用工具', 'running')
+        try:
+            result = handler(request)
+            self._update_step(tool_name, '工具调用完成', 'completed')
+            return result
+        except Exception:
+            self._update_step(tool_name, '工具调用失败', 'failed')
+            raise
+
+    def after_model(self, state, runtime):
+        """LLM 推理完成后推送进度。"""
+        self._update_step('模型推理', '模型回复生成完成', 'completed')
+
+
 class PendingActionMiddleware(AgentMiddleware):
     """
     待确认动作中间件。

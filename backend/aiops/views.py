@@ -1072,67 +1072,77 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             content=content,
         )
 
-        # 检查 DeepAgents 是否可用
-        if _os.environ.get('DEEPAGENTS_ENABLED', '').lower() not in ('1', 'true', 'yes'):
-            # Fallback: 用 legacy async 处理
-            assistant_message = AIOpsChatMessage.objects.create(
-                session=session,
-                role=AIOpsChatMessage.ROLE_ASSISTANT,
-                message_type=AIOpsChatMessage.TYPE_TEXT,
-                content='正在分析平台数据，请稍等...',
-                metadata={'processing_status': 'pending'},
-            )
-            start_async_chat_processing(
-                session, user_message, request.user,
-                assistant_message, analysis_only=False,
-            )
-            return Response({
-                'user_message': AIOpsChatMessageSerializer(user_message).data,
-                'assistant_message': AIOpsChatMessageSerializer(assistant_message).data,
-                'streaming': False,
-            }, status=status.HTTP_201_CREATED)
+        # 创建 assistant_message 占位
+        assistant_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_ASSISTANT,
+            message_type=AIOpsChatMessage.TYPE_ANALYSIS,
+            content='正在分析平台数据...',
+            metadata={
+                'processing_status': 'running',
+                'engine': 'deepagents',
+                'processing_steps': [{
+                    'title': '初始化',
+                    'detail': '正在启动 SSE 流式引擎',
+                    'status': 'running',
+                    'timestamp': timezone.now().isoformat(),
+                }],
+            },
+        )
 
-        # SSE 流式输出 — 用线程+队列避免 Django async/sync ORM 冲突
-        import queue as _queue
+        # SSE 流式输出 — 同步 dispatcher + 字符级切块
         import threading as _threading
         from django.http import StreamingHttpResponse
 
         def event_stream():
-            q = _queue.Queue()
+            result_container = {'msg': None, 'error': None}
+            ready = _threading.Event()
 
             def worker():
-                """后台线程：同步调用 DeepAgents 引擎，结果放入队列。"""
                 try:
                     from aiops.deepagents_engine.adapter import dispatch_chat_deepagents
-                    result_msg, _ = dispatch_chat_deepagents(
+                    result_container['msg'], _ = dispatch_chat_deepagents(
                         session, user_message, request.user, content,
+                        assistant_message=assistant_message,
                     )
-                    # 逐 token 模拟流式（将完整结果拆分为 chunks）
-                    full_content = result_msg.content or ''
-                    chunk_size = 80
-                    for i in range(0, len(full_content), chunk_size):
-                        chunk = full_content[i:i + chunk_size]
-                        q.put({'type': 'token', 'content': chunk})
-                    q.put({
-                        'type': 'done',
-                        'message_id': result_msg.id,
-                        'metadata': result_msg.metadata,
-                    })
                 except Exception as exc:
-                    import logging
-                    logging.getLogger(__name__).exception("SSE worker error")
-                    q.put({'type': 'error', 'message': type(exc).__name__})
+                    result_container['error'] = str(exc)
                 finally:
-                    q.put(None)  # 结束信号
+                    ready.set()
 
-            t = _threading.Thread(target=worker, daemon=True, name='sse-worker')
+            t = _threading.Thread(target=worker, daemon=True)
             t.start()
 
-            while True:
-                item = q.get()
-                if item is None:
-                    break
-                yield f"data: {_json.dumps(item, ensure_ascii=False, default=str)}\n\n".encode('utf-8')
+            # 发送初始化步骤
+            yield f"data: {_json.dumps({'type':'step','title':'初始化','detail':'DeepAgents 引擎已启动','status':'completed'},ensure_ascii=False)}\n\n".encode()
+
+            # 等待 dispatcher 完成
+            while not ready.wait(0.5):
+                # 每次循环重新读取 message 的 processing_steps
+                try:
+                    from aiops.models import AIOpsChatMessage as _Msg
+                    from django.db import close_old_connections as _close
+                    _close()
+                    msg = _Msg.objects.filter(id=assistant_message.id).first()
+                    if msg and isinstance(msg.metadata, dict):
+                        steps = msg.metadata.get('processing_steps', [])
+                        if steps:
+                            last = steps[-1]
+                            yield f"data: {_json.dumps({'type':'step','title':last.get('title',''),'detail':last.get('detail',''),'status':last.get('status','running')},ensure_ascii=False)}\n\n".encode()
+                except Exception:
+                    pass
+
+            if result_container['error']:
+                yield f"data: {_json.dumps({'type':'error','message':result_container['error']},ensure_ascii=False)}\n\n".encode()
+                return
+
+            msg = result_container['msg']
+            if msg:
+                full = msg.content or ''
+                chunk_size = 120
+                for i in range(0, len(full), chunk_size):
+                    yield f"data: {_json.dumps({'type':'token','content':full[i:i+chunk_size]},ensure_ascii=False)}\n\n".encode()
+                yield f"data: {_json.dumps({'type':'done','message_id':msg.id,'metadata':msg.metadata},ensure_ascii=False)}\n\n".encode()
 
         response = StreamingHttpResponse(
             event_stream(),

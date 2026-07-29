@@ -19,7 +19,7 @@ from langgraph.graph import StateGraph
 from langgraph.store.memory import InMemoryStore
 
 from .checkpointer import get_checkpointer
-from .middleware import AuditMiddleware, RBACMiddleware
+from .middleware import AuditMiddleware, ProgressMiddleware, RBACMiddleware
 from .state import AIOpsAgentState
 from .store import get_store
 from .system_prompt import build_system_prompt
@@ -175,6 +175,8 @@ def create_sxdevops_agent(
                 user=user,
             )
         )
+    if assistant_message_id:
+        middleware.append(ProgressMiddleware(message_id=assistant_message_id))
     # SummarizationMiddleware 是 DeepAgents 内置中间件，
     # 默认在 ~170k tokens 时自动触发，无需显式添加
 

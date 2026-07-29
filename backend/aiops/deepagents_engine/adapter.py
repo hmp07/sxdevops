@@ -29,14 +29,15 @@ def dispatch_chat_deepagents(
     user,
     question: str,
     analysis_only: bool = False,
+    assistant_message: AIOpsChatMessage = None,   # ★ 可选：复用已有消息
 ) -> tuple[AIOpsChatMessage, Optional[AIOpsPendingAction]]:
     """
     DeepAgents 版本的 dispatch_chat。
 
-    签名与 services.dispatch_chat() 完全兼容，
-    返回 (assistant_message, pending_action) 元组。
+    如果调用方已创建 assistant_message（如 async worker），传入后复用，
+    不再重复创建 DB 记录。否则自动创建新消息。
 
-    通过环境变量 DEEPAGENTS_ENABLED=true 激活。
+    返回 (assistant_message, pending_action) 元组。
     """
     from .agent import (
         create_sxdevops_agent,
@@ -52,24 +53,43 @@ def dispatch_chat_deepagents(
     except EnvironmentError as exc:
         return _build_env_error_response(session, str(exc))
 
-    # 2. 创建 assistant message
-    assistant_message = AIOpsChatMessage.objects.create(
-        session=session,
-        role=AIOpsChatMessage.ROLE_ASSISTANT,
-        message_type=AIOpsChatMessage.TYPE_ANALYSIS,
-        content='正在分析平台数据...',
-        metadata={
+    # 2. 创建或复用 assistant message
+    if assistant_message is None:
+        assistant_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_ASSISTANT,
+            message_type=AIOpsChatMessage.TYPE_ANALYSIS,
+            content='正在分析平台数据...',
+            metadata={
+                'processing_status': 'running',
+                'engine': 'deepagents',
+                'processing_steps': [{
+                    'title': '初始化',
+                    'detail': '已确认环境，正在启动 DeepAgents 引擎',
+                    'status': 'completed',
+                    'timestamp': timezone.now().isoformat(),
+                }],
+                'tool_events': [],
+            },
+        )
+    else:
+        # 复用已有消息，更新为 running 状态
+        existing_meta = dict(assistant_message.metadata or {})
+        assistant_message.content = '正在分析平台数据...'
+        assistant_message.message_type = AIOpsChatMessage.TYPE_ANALYSIS
+        assistant_message.metadata = {
+            **existing_meta,
             'processing_status': 'running',
             'engine': 'deepagents',
-            'processing_steps': [{
+            'processing_steps': (existing_meta.get('processing_steps') or []) + [{
                 'title': '初始化',
                 'detail': '已确认环境，正在启动 DeepAgents 引擎',
-                'status': 'completed',
+                'status': 'running',
                 'timestamp': timezone.now().isoformat(),
             }],
-            'tool_events': [],
-        },
-    )
+            'tool_events': existing_meta.get('tool_events', []),
+        }
+        assistant_message.save(update_fields=['content', 'message_type', 'metadata'])
 
     # 3. 构建 initial state
     page_context = (

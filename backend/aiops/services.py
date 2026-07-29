@@ -17485,20 +17485,10 @@ def _run_async_chat_worker(session_id, user_message_id, user_id, assistant_messa
         if not os.environ.get('DEEPAGENTS_LEGACY_FALLBACK', '').lower() in ('1', 'true', 'yes'):
             try:
                 from aiops.deepagents_engine.adapter import dispatch_chat_deepagents
-                result_msg, pending_action = dispatch_chat_deepagents(
-                    session, user_message, user, question, analysis_only
+                dispatch_chat_deepagents(
+                    session, user_message, user, question, analysis_only,
+                    assistant_message=assistant_message,  # ★ 复用已有消息
                 )
-                # 将 deepagents 结果合并到已有的 assistant_message
-                existing_meta = dict(assistant_message.metadata or {})
-                result_meta = dict(result_msg.metadata or {})
-                assistant_message.content = result_msg.content
-                assistant_message.message_type = result_msg.message_type
-                assistant_message.tool_calls = result_msg.tool_calls
-                assistant_message.citations = result_msg.citations
-                assistant_message.metadata = {**existing_meta, **result_meta,
-                    'processing_steps': (existing_meta.get('processing_steps') or []) + (result_meta.get('processing_steps') or []),
-                }
-                assistant_message.save(update_fields=['content', 'message_type', 'tool_calls', 'citations', 'metadata'])
                 _touch_chat_session(session, question=question)
                 return
             except Exception as exc:
