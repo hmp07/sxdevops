@@ -1106,7 +1106,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                         assistant_message=assistant_message,
                     )
                 except Exception as exc:
-                    result_container['error'] = str(exc)
+                    result_container['error'] = type(exc).__name__
                 finally:
                     ready.set()
 
