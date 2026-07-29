@@ -93,66 +93,123 @@ class RBACMiddleware(AgentMiddleware):
 
 
 class AuditMiddleware(AgentMiddleware):
+    """工具调用 + 模型调用审计中间件。
+
+    通过 AgentMiddleware hook 自动记录：
+    - wrap_tool_call → AIOpsToolInvocation (每次工具调用)
+    - wrap_model_call → AIOpsModelInvocation (每次 LLM 调用)
+
+    替代 services.py 中分散的 _create_tool_invocation / _finish_tool_invocation /
+    _record_model_invocation 调用。
     """
-    工具调用审计中间件。
 
-    每次工具调用后自动创建/更新 AIOpsToolInvocation 记录，
-    替代 services.py 中分散的 _create_tool_invocation /
-    _finish_tool_invocation 调用。
-
-    用法：
-        middleware=[AuditMiddleware(session_id=session.id)]
-    """
-
-    def __init__(self, session_id: int = None, message_id: int = None):
+    def __init__(self, session_id: int = None, message_id: int = None, user=None):
         self.session_id = session_id
         self.message_id = message_id
-        self._invocations: dict[str, int] = {}  # tool_name → invocation_id
+        self.user = user
 
-    def record_tool_start(self, tool_name: str, arguments: dict) -> Optional[int]:
-        """工具调用开始 — 创建 AIOpsToolInvocation 记录。"""
+    # ── 工具调用审计 ─────────────────────────────────────────────────
+
+    def _tool_name_from_request(self, request) -> str:
+        if hasattr(request, 'tool_call') and isinstance(request.tool_call, dict):
+            return request.tool_call.get('name', 'unknown')
+        return 'unknown'
+
+    def _tool_args_from_request(self, request) -> dict:
+        if hasattr(request, 'tool_call') and isinstance(request.tool_call, dict):
+            return request.tool_call.get('args', {})
+        return {}
+
+    def wrap_tool_call(self, request, handler):
+        """AgentMiddleware hook — 拦截每次工具调用，创建审计记录。"""
+        tool_name = self._tool_name_from_request(request)
+        args = self._tool_args_from_request(request)
+        started_at = time.time()
+
+        # 执行工具调用
+        try:
+            result = handler(request)
+            success = True
+            error_msg = ''
+        except Exception as exc:
+            result = None
+            success = False
+            error_msg = str(exc)[:500]
+
+        elapsed_ms = int((time.time() - started_at) * 1000)
+
+        # 写入审计记录
+        if self.session_id:
+            try:
+                close_old_connections()
+                from aiops.models import AIOpsToolInvocation
+                AIOpsToolInvocation.objects.create(
+                    session_id=self.session_id,
+                    message_id=self.message_id,
+                    tool_name=tool_name,
+                    status='success' if success else 'failed',
+                    request_payload=args,
+                    response_summary={'summary': str(result)[:500]} if result else {'error': error_msg},
+                    latency_ms=elapsed_ms,
+                )
+            except Exception as exc:
+                logger.warning("工具审计写入失败 (%s): %s", tool_name, exc)
+
+        if not success:
+            raise  # re-raise after audit
+
+        return result
+
+    # ── 模型调用审计 ─────────────────────────────────────────────────
+
+    def after_model(self, state, runtime):
+        """AgentMiddleware hook — LLM 调用完成后，从 state 提取 token 信息并审计。"""
         if not self.session_id:
-            return None
-        close_old_connections()
-        from aiops.models import AIOpsToolInvocation
-
-        try:
-            invocation = AIOpsToolInvocation.objects.create(
-                session_id=self.session_id,
-                message_id=self.message_id,
-                tool_name=tool_name,
-                input_args=arguments,
-                status='running',
-                started_at=timezone.now(),
-            )
-            self._invocations[tool_name] = invocation.id
-            return invocation.id
-        except Exception as exc:
-            logger.warning(f"创建工具审计记录失败 ({tool_name}): {exc}")
-            return None
-
-    def record_tool_end(
-        self, tool_name: str, result: Any,
-        success: bool = True, error: str = '',
-    ) -> None:
-        """工具调用结束 — 更新 AIOpsToolInvocation 记录。"""
-        invocation_id = self._invocations.pop(tool_name, None)
-        if not invocation_id:
             return
-        close_old_connections()
-        from aiops.models import AIOpsToolInvocation
-
         try:
-            result_summary = (
-                str(result)[:500] if result else ''
-            )
-            AIOpsToolInvocation.objects.filter(id=invocation_id).update(
-                status='completed' if success else 'failed',
-                output_result={'summary': result_summary, 'error': error},
-                finished_at=timezone.now(),
-            )
+            # 从 state messages 中找最后一条 AI 消息的 response_metadata
+            messages = state.get('messages', [])
+            model_name = ''
+            input_tokens = 0
+            output_tokens = 0
+
+            for msg in reversed(messages):
+                if hasattr(msg, 'response_metadata') and msg.response_metadata:
+                    rm = msg.response_metadata
+                    model_name = rm.get('model_name', '')
+                    usage = rm.get('token_usage', {}) or rm.get('usage', {})
+                    input_tokens = usage.get('prompt_tokens', 0) or usage.get('input_tokens', 0)
+                    output_tokens = usage.get('completion_tokens', 0) or usage.get('output_tokens', 0)
+                    if input_tokens or output_tokens:
+                        break
+
+            # 也从 usage_metadata 尝试
+            if not input_tokens:
+                for msg in reversed(messages):
+                    if hasattr(msg, 'usage_metadata') and msg.usage_metadata:
+                        um = msg.usage_metadata
+                        input_tokens = um.get('input_tokens', 0)
+                        output_tokens = um.get('output_tokens', 0)
+                        break
+
+            if model_name or input_tokens or output_tokens:
+                close_old_connections()
+                from aiops.models import AIOpsModelInvocation
+                AIOpsModelInvocation.objects.create(
+                    session_id=self.session_id,
+                    message_id=self.message_id,
+                    username=getattr(self.user, 'username', '') if self.user else '',
+                    purpose='agent_llm_call',
+                    requested_model=model_name or 'unknown',
+                    resolved_model=model_name or 'unknown',
+                    status='success',
+                    prompt_tokens=input_tokens or 0,
+                    completion_tokens=output_tokens or 0,
+                    total_tokens=(input_tokens or 0) + (output_tokens or 0),
+                )
+                logger.debug("模型审计已记录: model=%s tokens=%d", model_name, (input_tokens or 0) + (output_tokens or 0))
         except Exception as exc:
-            logger.warning(f"更新工具审计记录失败 ({tool_name}): {exc}")
+            logger.warning("模型审计写入失败: %s", exc)
 
 
 class PendingActionMiddleware(AgentMiddleware):

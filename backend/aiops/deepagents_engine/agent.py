@@ -173,6 +173,7 @@ def create_sxdevops_agent(
             AuditMiddleware(
                 session_id=session_id,
                 message_id=assistant_message_id,
+                user=user,
             )
         )
     # SummarizationMiddleware 是 DeepAgents 内置中间件，

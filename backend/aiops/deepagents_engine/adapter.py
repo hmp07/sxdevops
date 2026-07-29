@@ -217,6 +217,10 @@ def dispatch_chat_deepagents(
     }
     assistant_message.save()
 
+    # 8.5 更新 session 审计信息 (last_message_at + title)
+    from aiops.services import _touch_chat_session
+    _touch_chat_session(session, question)
+
     # 9. 处理 pending actions
     pending_action = _process_pending_actions(
         result, session, assistant_message, user
