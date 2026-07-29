@@ -1372,6 +1372,8 @@ function isMessageProcessing(message) {
 
 function shouldShowProcessCard(message) {
   if (message?.role !== 'assistant') return false
+  const status = getProcessingStatus(message)
+  if (status === 'completed' || status === 'failed') return false
   return Boolean(
     isMessageProcessing(message)
     || message?.metadata?.processing_text
