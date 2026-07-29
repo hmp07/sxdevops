@@ -275,6 +275,19 @@
                             </li>
                           </ul>
                           <pre v-else-if="block.type === 'code'" class="rich-code">{{ block.text }}</pre>
+                          <!-- Markdown 表格渲染 -->
+                          <table v-else-if="block.type === 'table'" class="rich-table">
+                            <thead v-if="block.header">
+                              <tr>
+                                <th v-for="(cell, ci) in block.header" :key="'h'+ci">{{ cell }}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr v-for="(row, ri) in block.rows" :key="'r'+ri">
+                                <td v-for="(cell, ci) in row" :key="'c'+ci">{{ cell }}</td>
+                              </tr>
+                            </tbody>
+                          </table>
                           <!-- P1 增强：图表块 -->
                           <div v-else-if="block.type === 'chart'" class="rich-chart">
                             <ChartRenderer :chart-json="block.text" />
@@ -1589,6 +1602,32 @@ function parseAssistantContent(content) {
   let inCode = false
   let codeLang = ''        // ``` 后面的语言标签
   let suggestions = null    // 追问建议 (null=未进入追问区)
+  let tableRows = []         // 表格行缓冲
+  let tableHeader = null     // 表格头
+
+  const pushTable = () => {
+    if (tableRows.length < 2) { tableRows = []; tableHeader = null; return }
+    // 检测分隔行 (|---|---|)
+    let headerRow = null
+    let sepIdx = -1
+    for (let i = 0; i < tableRows.length - 1; i++) {
+      if (/^\|[\s\-:|]+\|$/.test(tableRows[i + 1])) {
+        headerRow = tableRows[i]; sepIdx = i + 1; break
+      }
+    }
+    if (headerRow && sepIdx > 0) {
+      const parseRow = (r) => r.replace(/^\||\|$/g, '').split('|').map(c => c.trim())
+      blocks.push({
+        type: 'table',
+        header: parseRow(headerRow),
+        rows: tableRows.slice(sepIdx + 1).map(parseRow).filter(r => r.some(c => c)),
+      })
+    } else {
+      // 不是有效表格，回退为段落
+      paragraphLines.push(...tableRows)
+    }
+    tableRows = []; tableHeader = null
+  }
 
   const pushParagraph = () => {
     if (!paragraphLines.length) return
@@ -1671,9 +1710,19 @@ function parseAssistantContent(content) {
     }
 
     if (!trimmed) {
-      pushParagraph()
-      pushList()
+      pushTable(); pushParagraph(); pushList()
       continue
+    }
+
+    // 表格检测：以 | 开头结尾的行
+    const isTableLine = /^\|.+\|$/.test(trimmed)
+    if (isTableLine) {
+      pushParagraph(); pushList()
+      tableRows.push(trimmed)
+      continue
+    }
+    if (tableRows.length && !isTableLine) {
+      pushTable()
     }
 
     if (/^\*\*.*\*\*$/.test(trimmed)) {
@@ -1708,6 +1757,7 @@ function parseAssistantContent(content) {
     paragraphLines.push(trimmed)
   }
 
+  pushTable()
   pushParagraph()
   pushList()
   pushCode()
@@ -2487,6 +2537,12 @@ onBeforeUnmount(() => {
 .rich-inline-link{color:#2563eb;text-decoration:none}
 .rich-inline-link:hover{text-decoration:underline}
 .rich-code{margin:8px 0 0;padding:8px 10px;border-radius:10px;background:#0f172a;color:#e2e8f0;font-size:11px;line-height:1.5;white-space:pre-wrap;overflow:auto}
+/* Markdown 表格 */
+.rich-table{margin:10px 0;width:100%;border-collapse:collapse;font-size:12px;line-height:1.5}
+.rich-table th,.rich-table td{padding:6px 10px;border:1px solid #e5e7eb;text-align:left}
+.rich-table th{background:#f1f5f9;font-weight:600;color:#374151}
+.rich-table td{color:#4b5563}
+.rich-table tbody tr:nth-child(even){background:#f8fafc}
 /* P1: 图表块 */
 .rich-chart{margin:12px 0;padding:8px;background:#fff;border-radius:12px;border:1px solid #e5e7eb}
 /* P1: 指标卡片 */
