@@ -275,6 +275,48 @@
                             </li>
                           </ul>
                           <pre v-else-if="block.type === 'code'" class="rich-code">{{ block.text }}</pre>
+                          <!-- P1 增强：图表块 -->
+                          <div v-else-if="block.type === 'chart'" class="rich-chart">
+                            <ChartRenderer :chart-json="block.text" />
+                          </div>
+                          <!-- P1 增强：指标卡片块 -->
+                          <div v-else-if="block.type === 'metrics'" class="rich-metrics">
+                            <div class="metrics-card-row">
+                              <span v-for="(seg, segIdx) in block.text.split('|')" :key="segIdx" class="metrics-chip">
+                                {{ seg.trim() }}
+                              </span>
+                            </div>
+                          </div>
+                          <!-- P2 增强：时间线块 -->
+                          <div v-else-if="block.type === 'timeline'" class="rich-timeline">
+                            <div v-for="(item, ti) in block.items" :key="ti" class="timeline-row">
+                              <span class="timeline-time">{{ item.time }}</span>
+                              <span class="timeline-icon">{{ item.icon }}</span>
+                              <span class="timeline-text">{{ item.text }}</span>
+                            </div>
+                          </div>
+                          <!-- P2 增强：操作链接块 -->
+                          <div v-else-if="block.type === 'actions'" class="rich-actions">
+                            <a v-for="(item, ai) in block.items" :key="ai"
+                               class="action-link-chip"
+                               :class="{ clickable: !!item.url }"
+                               :href="item.url || undefined"
+                               :target="item.url ? '_blank' : undefined"
+                               @click.stop="item.url && item.url.startsWith('action:') ? handleActionLink(item) : null"
+                            >
+                              {{ item.label }}
+                            </a>
+                          </div>
+                          <!-- P0 增强：追问建议块 -->
+                          <div v-else-if="block.type === 'quick_questions'" class="rich-suggestions">
+                            <div class="suggestions-label">💡 你可能还想问：</div>
+                            <div class="suggestions-chips">
+                              <button v-for="(q, qi) in block.items" :key="qi"
+                                      type="button" class="quick-chip suggestion-chip"
+                                      @click="applySuggestedQuestion(q)"
+                              >{{ q }}</button>
+                            </div>
+                          </div>
                         </template>
                       </div>
                       <div v-else class="message-content user-content">{{ message.content }}</div>
@@ -589,8 +631,10 @@ import {
   getAIOpsMessages,
   getAIOpsSessions,
   sendAIOpsMessageAsync,
+  sendAIOpsMessageStream,
 } from '@/api/modules/aiops'
 import botAvatar from '@/assets/aiops-bot.svg'
+import ChartRenderer from '@/components/aiops/ChartRenderer.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const props = defineProps({
@@ -1535,6 +1579,8 @@ function parseAssistantContent(content) {
   let listItems = []
   let codeLines = []
   let inCode = false
+  let codeLang = ''        // ``` 后面的语言标签
+  let suggestions = []      // 追问建议
 
   const pushParagraph = () => {
     if (!paragraphLines.length) return
@@ -1550,13 +1596,53 @@ function parseAssistantContent(content) {
 
   const pushCode = () => {
     if (!codeLines.length) return
-    blocks.push({ type: 'code', text: codeLines.join('\n') })
+    if (codeLang === 'chart') {
+      try {
+        blocks.push({ type: 'chart', text: codeLines.join('\n') })
+      } catch { blocks.push({ type: 'code', text: codeLines.join('\n') }) }
+    } else if (codeLang === 'metrics') {
+      blocks.push({ type: 'metrics', text: codeLines.join('\n').trim() })
+    } else if (codeLang === 'timeline') {
+      const items = codeLines.map(line => {
+        const parts = line.split('|').map(s => s.trim())
+        return { time: parts[0] || '', icon: parts[1] || '', text: parts[2] || line }
+      })
+      blocks.push({ type: 'timeline', items })
+    } else if (codeLang === 'actions') {
+      const items = codeLines.filter(l => l.startsWith('→')).map(line => {
+        const pipeIdx = line.lastIndexOf('|')
+        if (pipeIdx > 0) {
+          return { label: line.slice(1, pipeIdx).trim(), url: line.slice(pipeIdx + 1).trim() }
+        }
+        return { label: line.replace(/^→\s*/, '').trim(), url: '' }
+      })
+      blocks.push({ type: 'actions', items })
+    } else {
+      blocks.push({ type: 'code', text: codeLines.join('\n') })
+    }
     codeLines = []
+    codeLang = ''
   }
 
   for (const line of lines) {
     const rawLine = line.replace(/\t/g, '  ')
     const trimmed = rawLine.trim()
+
+    // 检测追问区域
+    if (trimmed === '💡 **你可能还想问：**') {
+      pushParagraph()
+      pushList()
+      pushCode()
+      suggestions = []
+      continue
+    }
+    if (suggestions !== null && trimmed.startsWith('→') && blocks.length > 0) {
+      suggestions.push(trimmed.replace(/^→\s*/, '').trim())
+      if (suggestions.length === 1) {
+        // 不立即 push，等收集完
+      }
+      continue
+    }
 
     if (trimmed.startsWith('```')) {
       pushParagraph()
@@ -1566,6 +1652,7 @@ function parseAssistantContent(content) {
         inCode = false
       } else {
         inCode = true
+        codeLang = trimmed.replace(/^```/, '').trim().toLowerCase()
       }
       continue
     }
@@ -1600,10 +1687,10 @@ function parseAssistantContent(content) {
       continue
     }
 
-    if (/^(-|•)\s+/.test(trimmed) || /^\d+\.\s+/.test(trimmed)) {
+    if (/^(-|\*)\s+/.test(trimmed) || /^\d+\.\s+/.test(trimmed)) {
       pushParagraph()
       listItems.push({
-        text: trimmed.replace(/^(-|•)\s+/, '').replace(/^\d+\.\s+/, '').trim(),
+        text: trimmed.replace(/^(-|\*)\s+/, '').replace(/^\d+\.\s+/, '').trim(),
         children: [],
       })
       continue
@@ -1616,6 +1703,12 @@ function parseAssistantContent(content) {
   pushParagraph()
   pushList()
   pushCode()
+
+  // 追加追问建议块
+  if (suggestions.length) {
+    blocks.push({ type: 'quick_questions', items: suggestions })
+  }
+
   return blocks.length ? blocks : [{ type: 'paragraph', text: source }]
 }
 
@@ -1826,6 +1919,110 @@ async function ensureSession() {
   return session.id
 }
 
+async function tryStreamSend(sessionId, content) {
+  /** 尝试 SSE 流式发送。成功返回 {userMessage, assistantMessage}，失败返回 null。 */
+  const abortController = new AbortController()
+  const streamTimeout = setTimeout(() => abortController.abort(), 120000)
+
+  try {
+    const response = await sendAIOpsMessageStream(sessionId, {
+      content,
+      analysis_only: effectiveAnalysisOnly.value,
+      knowledge_environment: selectedEnvironment.value || '',
+    }, { signal: abortController.signal })
+
+    if (!response.ok || !response.body) return null
+
+    // 检查 response body 是不是 JSON（表示 fallback 到 polling）
+    const contentType = response.headers.get('content-type') || ''
+    if (!contentType.includes('text/event-stream')) {
+      // 非 SSE — 服务器返回了常规 JSON
+      const data = await response.json()
+      if (data.streaming === false) return null  // 显式 fallback
+      return null
+    }
+
+    // 创建 user message 和 assistant message
+    const userMessage = {
+      id: Date.now(),
+      role: 'user',
+      content,
+      created_at: new Date().toISOString(),
+    }
+    messages.value.push(userMessage)
+
+    const assistantMessage = {
+      localKey: `stream-${Date.now()}`,
+      role: 'assistant',
+      content: '',
+      pending: true,
+      created_at: new Date().toISOString(),
+      metadata: { processing_status: 'streaming', engine: 'deepagents', processing_steps: [], tool_events: [] },
+    }
+    messages.value.push(assistantMessage)
+    await nextTick()
+    scrollToBottom(true)
+
+    // 解析 SSE 流
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      const lines = buffer.split('\n\n')
+      buffer = lines.pop()  // 保留不完整的最后一个
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const event = JSON.parse(line.slice(6))
+
+        switch (event.type) {
+          case 'token':
+            assistantMessage.content += event.content
+            break
+          case 'tool_end':
+            assistantMessage.metadata.tool_events.push({
+              name: event.name,
+              detail: event.summary || '',
+            })
+            break
+          case 'done': {
+            assistantMessage.pending = false
+            assistantMessage.id = event.message_id || assistantMessage.localKey
+            assistantMessage.metadata = {
+              ...assistantMessage.metadata,
+              ...(event.metadata || {}),
+              processing_status: 'completed',
+            }
+            break
+          }
+          case 'error':
+            assistantMessage.metadata.processing_status = 'failed'
+            assistantMessage.pending = false
+            break
+        }
+      }
+    }
+
+    if (!assistantMessage.content && !assistantMessage.id) {
+      assistantMessage.content = '(空响应)'
+    }
+
+    return { userMessage, assistantMessage }
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      console.warn('SSE stream timeout')
+    }
+    return null
+  } finally {
+    clearTimeout(streamTimeout)
+  }
+}
+
 async function handleSend() {
   if (!composer.value.trim() || loading.value.send || loading.value.poll) return
   if (authStore.currentUser?.is_demo_account) {
@@ -1852,16 +2049,20 @@ async function handleSend() {
   scrollToBottom(true)
 
   try {
-    const response = await sendAIOpsMessageAsync(sessionId, {
-      content,
-      analysis_only: effectiveAnalysisOnly.value,
-      knowledge_environment: selectedEnvironment.value || '',
-    })
-    messages.value.push(response.user_message)
-    messages.value.push(response.assistant_message)
-    pendingAssistantMessage.value = null
-    await refreshSessionListOnly()
-    startMessagePolling(sessionId, response.assistant_message?.id)
+    // SSE 流式优先，不支持的浏览器或超时回退到异步轮询
+    const streamUsed = await tryStreamSend(sessionId, content)
+    if (!streamUsed) {
+      const response = await sendAIOpsMessageAsync(sessionId, {
+        content,
+        analysis_only: effectiveAnalysisOnly.value,
+        knowledge_environment: selectedEnvironment.value || '',
+      })
+      messages.value.push(response.user_message)
+      messages.value.push(response.assistant_message)
+      pendingAssistantMessage.value = null
+      await refreshSessionListOnly()
+      startMessagePolling(sessionId, response.assistant_message?.id)
+    }
     await nextTick()
     scrollToBottom(true)
     focusComposer()
@@ -2268,6 +2469,26 @@ onBeforeUnmount(() => {
 .rich-inline-link{color:#2563eb;text-decoration:none}
 .rich-inline-link:hover{text-decoration:underline}
 .rich-code{margin:8px 0 0;padding:8px 10px;border-radius:10px;background:#0f172a;color:#e2e8f0;font-size:11px;line-height:1.5;white-space:pre-wrap;overflow:auto}
+/* P1: 图表块 */
+.rich-chart{margin:12px 0;padding:8px;background:#fff;border-radius:12px;border:1px solid #e5e7eb}
+/* P1: 指标卡片 */
+.rich-metrics{margin:10px 0}.metrics-card-row{display:flex;flex-wrap:wrap;gap:8px}
+.metrics-chip{display:inline-flex;align-items:center;padding:6px 12px;background:#f1f5f9;border-radius:20px;font-size:12px;font-weight:500;white-space:nowrap}
+/* P2: 时间线 */
+.rich-timeline{margin:10px 0;padding:8px 0}.timeline-row{display:flex;align-items:flex-start;gap:10px;padding:4px 0;font-size:12px;line-height:1.5}
+.timeline-time{color:#6b7280;min-width:48px;font-variant-numeric:tabular-nums}
+.timeline-icon{font-size:14px}
+.timeline-text{flex:1}
+/* P2: 操作链接 */
+.rich-actions{margin:10px 0;display:flex;flex-wrap:wrap;gap:6px}
+.action-link-chip{display:inline-flex;padding:5px 12px;font-size:12px;border-radius:16px;background:#eff6ff;color:#1d4ed8;text-decoration:none;transition:background .15s}
+.action-link-chip.clickable{cursor:pointer}.action-link-chip.clickable:hover{background:#dbeafe}
+/* P0: 追问建议 */
+.rich-suggestions{margin:12px 0 0;padding:10px 12px;background:#f8fafc;border-radius:10px;border:1px dashed #d1d5db}
+.suggestions-label{font-size:12px;font-weight:600;color:#6b7280;margin-bottom:6px}
+.suggestions-chips{display:flex;flex-wrap:wrap;gap:6px}
+.suggestion-chip{padding:4px 12px;font-size:12px;border-radius:14px;border:1px solid #d1d5db;background:#fff;color:#374151;cursor:pointer;transition:all .15s}
+.suggestion-chip:hover{border-color:#3b82f6;color:#1d4ed8;background:#eff6ff}
 .response-block-list{display:flex;flex-direction:column;gap:8px;margin-top:10px}
 .response-block-card{padding:9px 10px;border-radius:12px;border:1px solid #dbe4f0;background:linear-gradient(180deg,#fbfdff 0%,#fff 100%);box-shadow:0 4px 12px rgba(15,23,42,.035)}
 .response-block-card.type-tool_trace{background:#f8fafc;border-color:#e2e8f0}

@@ -18,6 +18,24 @@ export const getAIOpsMessages = (id) => request.get(`/aiops/sessions/${id}/messa
 export const sendAIOpsMessage = (id, data) => request.post(`/aiops/sessions/${id}/send_message/`, data, { timeout: AIOPS_CHAT_TIMEOUT })
 export const sendAIOpsMessageAsync = (id, data) => request.post(`/aiops/sessions/${id}/send_message_async/`, data, { timeout: 20000 })
 
+// SSE 流式 — 返回 Response 对象，调用方用 ReadableStream 解析
+export const sendAIOpsMessageStream = (id, data, { signal } = {}) => {
+  const token = request.defaults.headers?.Authorization
+    || request.defaults.headers?.common?.Authorization
+    || ''
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: token } : {}),
+  }
+  const baseURL = request.defaults.baseURL || ''
+  return fetch(`${baseURL}/aiops/sessions/${id}/send_message_stream/`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(data),
+    signal,
+  })
+}
+
 export const confirmAIOpsAction = (id) => request.post(`/aiops/actions/${id}/confirm/`)
 export const cancelAIOpsAction = (id) => request.post(`/aiops/actions/${id}/cancel/`)
 

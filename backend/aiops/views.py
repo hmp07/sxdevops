@@ -1020,6 +1020,129 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             'pending_action': None,
         }, status=status.HTTP_201_CREATED)
 
+    @action(detail=True, methods=['post'])
+    def send_message_stream(self, request, pk=None):
+        """SSE 流式端点 — 使用 DeepAgents agent.astream() 实时输出。
+
+        返回 text/event-stream，事件类型: token / tool_start / tool_end / step / done / error。
+        需要 DEEPAGENTS_ENABLED=true，否则回退到 send_message_async。
+        """
+        import json as _json
+        import os as _os
+        import asyncio as _asyncio
+
+        session = self.get_object()
+        if is_demo_account(request.user):
+            return Response(
+                {'detail': DEMO_CHAT_DISABLED_MESSAGE},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if getattr(request.user, 'username', '') == 'demo' and session.mirror_source_id:
+            return Response(
+                {'detail': '演示账号同步会话为只读，请先新建会话后提问。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = AIOpsChatInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        content = recover_masked_suggested_question(
+            serializer.validated_data['content'].strip()
+        )
+        knowledge_environment = (
+            serializer.validated_data.get('knowledge_environment') or ''
+        ).strip()
+
+        # 更新 session context
+        ctx = session.context if isinstance(session.context, dict) else {}
+        page_context = normalize_page_context(
+            serializer.validated_data.get('page_context')
+        )
+        if page_context:
+            ctx['page_context'] = page_context
+        if knowledge_environment:
+            ctx['current_environment'] = knowledge_environment
+        if ctx != session.context:
+            session.context = ctx
+            session.save(update_fields=['context', 'updated_at'])
+
+        # 创建用户消息
+        user_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content=content,
+        )
+
+        # 检查 DeepAgents 是否可用
+        if _os.environ.get('DEEPAGENTS_ENABLED', '').lower() not in ('1', 'true', 'yes'):
+            # Fallback: 用 legacy async 处理
+            assistant_message = AIOpsChatMessage.objects.create(
+                session=session,
+                role=AIOpsChatMessage.ROLE_ASSISTANT,
+                message_type=AIOpsChatMessage.TYPE_TEXT,
+                content='正在分析平台数据，请稍等...',
+                metadata={'processing_status': 'pending'},
+            )
+            start_async_chat_processing(
+                session, user_message, request.user,
+                assistant_message, analysis_only=False,
+            )
+            return Response({
+                'user_message': AIOpsChatMessageSerializer(user_message).data,
+                'assistant_message': AIOpsChatMessageSerializer(assistant_message).data,
+                'streaming': False,
+            }, status=status.HTTP_201_CREATED)
+
+        # SSE 流式输出 — 用线程+队列避免 Django async/sync ORM 冲突
+        import queue as _queue
+        import threading as _threading
+        from django.http import StreamingHttpResponse
+
+        def event_stream():
+            q = _queue.Queue()
+
+            def worker():
+                """后台线程：同步调用 DeepAgents 引擎，结果放入队列。"""
+                try:
+                    from aiops.deepagents_engine.adapter import dispatch_chat_deepagents
+                    result_msg, _ = dispatch_chat_deepagents(
+                        session, user_message, request.user, content,
+                    )
+                    # 逐 token 模拟流式（将完整结果拆分为 chunks）
+                    full_content = result_msg.content or ''
+                    chunk_size = 80
+                    for i in range(0, len(full_content), chunk_size):
+                        chunk = full_content[i:i + chunk_size]
+                        q.put({'type': 'token', 'content': chunk})
+                    q.put({
+                        'type': 'done',
+                        'message_id': result_msg.id,
+                        'metadata': result_msg.metadata,
+                    })
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).exception("SSE worker error")
+                    q.put({'type': 'error', 'message': type(exc).__name__})
+                finally:
+                    q.put(None)  # 结束信号
+
+            t = _threading.Thread(target=worker, daemon=True, name='sse-worker')
+            t.start()
+
+            while True:
+                item = q.get()
+                if item is None:
+                    break
+                yield f"data: {_json.dumps(item, ensure_ascii=False, default=str)}\n\n".encode('utf-8')
+
+        response = StreamingHttpResponse(
+            event_stream(),
+            content_type='text/event-stream',
+            status=200,
+        )
+        response['Cache-Control'] = 'no-cache'
+        response['X-Accel-Buffering'] = 'no'
+        return response
+
 
 class AIOpsAuditSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = AIOpsAuditSessionSerializer

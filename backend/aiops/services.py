@@ -4999,7 +4999,7 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
         queryset = _queryset_search(queryset, ['title', 'source', 'message', 'host__hostname', 'service', 'resource'], tokens)
         # DEBUG-REMOVED: open('d:/projects/sxdevops/backend/alert_debug.log','a').write(f'[ALERT-DEBUG] After tokens ({tokens}): {queryset.count()}\n')
     if system_name:
-        # DEBUG-REMOVED: open('d:/projects/sxdevops/backend/alert_debug.log','a').write(f'[ALERT-DEBUG] After system_name={system_name}: {queryset.count()}\n')
+        pass  # DEBUG-REMOVED: system_name filter was inline debug logging
     alerts = list(queryset.order_by('-last_received_at', '-created_at', '-id')[:limit])
     # DEBUG-REMOVED: open('d:/projects/sxdevops/backend/alert_debug.log','a').write(f'[ALERT-DEBUG] Final alerts (limit={limit}): {len(alerts)}\n')
     counter = Counter(alert.level for alert in alerts)
@@ -16479,6 +16479,12 @@ def _run_selected_action(session, user_message, user, question, scoped_question,
 
 
 def _dispatch_with_tool_runtime(session, user_message, user, question, progress_callback=None, analysis_only=False):
+    """[DEPRECATED] Legacy 引擎主调度器。
+
+    当 DEEPAGENTS_ENABLED=true 时，此函数不再被调用。
+    替代路径：aiops.deepagents_engine.adapter.dispatch_chat_deepagents()
+    保留此函数用于 feature flag 回退。
+    """
     emit = progress_callback or (lambda **kwargs: None)
     config = get_agent_config()
     provider = get_active_provider(config)
@@ -17474,6 +17480,34 @@ def _run_async_chat_worker(session_id, user_message_id, user_id, assistant_messa
         user_message = AIOpsChatMessage.objects.get(pk=user_message_id)
         assistant_message = AIOpsChatMessage.objects.get(pk=assistant_message_id)
         user = session.user if session.user_id == user_id else session.user.__class__.objects.get(pk=user_id)
+
+        # Feature flag: DeepAgents 引擎接管
+        if os.environ.get('DEEPAGENTS_ENABLED', '').lower() in ('1', 'true', 'yes'):
+            try:
+                from aiops.deepagents_engine.adapter import dispatch_chat_deepagents
+                result_msg, pending_action = dispatch_chat_deepagents(
+                    session, user_message, user, question, analysis_only
+                )
+                # 将 deepagents 结果合并到已有的 assistant_message
+                existing_meta = dict(assistant_message.metadata or {})
+                result_meta = dict(result_msg.metadata or {})
+                assistant_message.content = result_msg.content
+                assistant_message.message_type = result_msg.message_type
+                assistant_message.tool_calls = result_msg.tool_calls
+                assistant_message.citations = result_msg.citations
+                assistant_message.metadata = {**existing_meta, **result_meta,
+                    'processing_steps': (existing_meta.get('processing_steps') or []) + (result_meta.get('processing_steps') or []),
+                }
+                assistant_message.save(update_fields=['content', 'message_type', 'tool_calls', 'citations', 'metadata'])
+                _touch_chat_session(session, question=question)
+                return
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    'DeepAgents async worker 失败，回退 legacy: %s', type(exc).__name__
+                )
+                # 继续走 legacy 路径
+
         emit = _make_processing_callback(assistant_message_id)
         result = _build_chat_result(session, user_message, user, question, progress_callback=emit, analysis_only=analysis_only)
         _apply_dispatch_result_to_message(session, assistant_message, result, user, enable_stream=True, progress_callback=emit, question=question, analysis_only=analysis_only)
@@ -17515,6 +17549,27 @@ def start_async_chat_processing(session, user_message, user, assistant_message, 
 
 
 def dispatch_chat(session, user_message, user, question, analysis_only=False):
+    # Feature flag: 启用 DeepAgents 新引擎
+    if os.environ.get('DEEPAGENTS_ENABLED', '').lower() in ('1', 'true', 'yes'):
+        try:
+            from aiops.deepagents_engine.adapter import dispatch_chat_deepagents
+            return dispatch_chat_deepagents(
+                session, user_message, user, question, analysis_only
+            )
+        except ImportError as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                f'DeepAgents 引擎导入失败，回退到 legacy 引擎: {exc}'
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).error(
+                f'DeepAgents 引擎异常，回退到 legacy 引擎: {exc}'
+            )
+            # AB 模式记录异常
+            if os.environ.get('DEEPAGENTS_AB_MODE', '').lower() in ('1', 'true', 'yes'):
+                _log_engine_fallback(session.id, 'deepagents', str(exc)[:500])
+
     assistant_message = AIOpsChatMessage.objects.create(
         session=session,
         role=AIOpsChatMessage.ROLE_ASSISTANT,
@@ -17527,6 +17582,24 @@ def dispatch_chat(session, user_message, user, question, analysis_only=False):
     emit = _make_processing_callback(assistant_message.id)
     result = _build_chat_result(session, user_message, user, question, progress_callback=emit, analysis_only=analysis_only)
     return _apply_dispatch_result_to_message(session, assistant_message, result, user, enable_stream=False, progress_callback=emit, question=question, analysis_only=analysis_only)
+
+
+def _log_engine_fallback(session_id: int, engine: str, error: str) -> None:
+    """记录引擎回退事件（AB 模式诊断）。"""
+    try:
+        import json as _json
+        from tempfile import gettempdir
+        log_path = os.path.join(gettempdir(), 'deepagents_ab_events.jsonl')
+        fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with open(fd, 'a', encoding='utf-8') as f:
+            f.write(_json.dumps({
+                'session_id': session_id,
+                'engine': engine,
+                'error': error,
+                'timestamp': timezone.now().isoformat(),
+            }, ensure_ascii=False) + '\n')
+    except Exception:
+        pass
 
 
 def build_audit_overview():
