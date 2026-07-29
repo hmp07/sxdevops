@@ -20,12 +20,10 @@ export const sendAIOpsMessageAsync = (id, data) => request.post(`/aiops/sessions
 
 // SSE 流式 — 返回 Response 对象，调用方用 ReadableStream 解析
 export const sendAIOpsMessageStream = (id, data, { signal } = {}) => {
-  const token = request.defaults.headers?.Authorization
-    || request.defaults.headers?.common?.Authorization
-    || ''
+  const token = localStorage.getItem('sxdevops_token')
   const headers = {
     'Content-Type': 'application/json',
-    ...(token ? { Authorization: token } : {}),
+    ...(token ? { Authorization: `Token ${token}` } : {}),
   }
   const baseURL = request.defaults.baseURL || ''
   return fetch(`${baseURL}/aiops/sessions/${id}/send_message_stream/`, {
