@@ -1768,16 +1768,9 @@ function resumeMessagePolling(sessionId, list = messages.value) {
     }
     return
   }
-  // 跳过超过 5 分钟的卡住消息（防止无限轮询）
+  // 跳过超过 5 分钟的卡住消息（防止无限轮询阻塞 UI）
   const created = new Date(target.created_at).getTime()
-  const staleMs = Date.now() - created
-  if (staleMs > 5 * 60 * 1000 && getProcessingStatus(target) !== 'completed') {
-    // 本地标记为失败，不再轮询
-    if (target.metadata) {
-      target.metadata.processing_status = 'failed'
-      target.metadata.processing_text = '处理超时，请重新提问'
-    }
-    target.pending = false
+  if (Date.now() - created > 5 * 60 * 1000 && getProcessingStatus(target) !== 'completed') {
     stopMessagePolling()
     return
   }
