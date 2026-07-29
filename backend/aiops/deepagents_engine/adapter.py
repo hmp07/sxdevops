@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import os
 import time
@@ -21,6 +22,9 @@ from aiops.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ── 外部 MCP 会话追踪（用于请求结束后的资源清理） ──
+_managed_mcp_sessions: list = []
 
 
 def dispatch_chat_deepagents(
@@ -52,6 +56,54 @@ def dispatch_chat_deepagents(
         )
     except EnvironmentError as exc:
         return _build_env_error_response(session, str(exc))
+
+    # 1.5 加载配置、Skill、MCP、Preflight ─────────────────────────────
+    from aiops.services import (
+        get_agent_config,
+        get_active_provider,
+        _get_selected_mcp_servers,
+    )
+
+    config = get_agent_config()
+    provider = get_active_provider(config)
+
+    # -- 模型可用性检查 --
+    try:
+        from aiops.services import _provider_is_ready
+        provider_ready = _provider_is_ready(provider)
+    except Exception:
+        provider_ready = bool(provider)
+    if not provider_ready:
+        logger.warning("无可用 AIOpsModelProvider")
+        return _build_no_model_response(session)
+
+    # -- Skill 加载 --
+    from .skills import load_active_skills, build_skill_trace
+
+    active_skills = load_active_skills(config=config, action_code=None, user=user)
+
+    # -- 外部 MCP 加载 --
+    external_tools = []
+    mcp_registry = {}
+    mcp_diagnostics = []
+    global _managed_mcp_sessions
+
+    try:
+        active_mcp_servers = _get_selected_mcp_servers(config)
+        from .mcp_tools import build_external_mcp_tools
+
+        external_tools, mcp_registry, mcp_sessions, mcp_diagnostics = (
+            build_external_mcp_tools(active_mcp_servers, user=user)
+        )
+        _managed_mcp_sessions = mcp_sessions
+    except ImportError:
+        logger.debug("mcp_tools 模块不可用，跳过外部 MCP 加载")
+    except Exception as exc:
+        logger.warning("外部 MCP 加载失败: %s", type(exc).__name__)
+        logger.debug("MCP 加载异常详情", exc_info=True)
+
+    # -- analysis_only 工具过滤 --
+    analysis_only_filtered_tools = None  # 稍后在 agent 创建时使用
 
     # 2. 创建或复用 assistant message
     if assistant_message is None:
@@ -137,7 +189,7 @@ def dispatch_chat_deepagents(
                 # 失败时 fall through 到 LLM
                 fastpath_result = None
 
-    # 5. 选择 action（用于工具子集过滤）
+    # 5. 选择 action（用于工具子集过滤）+ 按 action 过滤 Skill
     from aiops.business.routing import _select_action_for_question
 
     selected_action = _select_action_for_question(
@@ -146,6 +198,18 @@ def dispatch_chat_deepagents(
     action_code = (
         selected_action.get('code') if selected_action else None
     )
+
+    # 按 action 重新过滤 Skill（对齐 _skills_for_action）
+    if action_code:
+        active_skills = load_active_skills(
+            config=config, action_code=action_code, user=user
+        )
+
+    # 解析 Agent 执行模式
+    agent_mode = _resolve_agent_mode(action_code)
+
+    # -- analysis_only 工具过滤 --
+    all_tools_for_agent = None  # None = 使用 agent.py 内部的默认过滤
 
     # 6. 创建 agent 并执行
     agent = create_sxdevops_agent(
@@ -156,11 +220,25 @@ def dispatch_chat_deepagents(
         session_id=session.id,
         assistant_message_id=assistant_message.id,
         action_code=action_code,
+        active_skills=active_skills,
+        external_tools=external_tools if external_tools else None,
+        mcp_diagnostics=mcp_diagnostics,
+        agent_mode=agent_mode,
     )
 
     start_time = time.time()
 
     try:
+        # analysis_only: 注入约束消息
+        if analysis_only:
+            initial_messages.append({
+                'role': 'user',
+                'content': (
+                    '约束：本轮为只分析模式，只能做查询、分析、解释和建议；'
+                    '禁止生成、创建、新建、安排待执行任务，禁止调用 generate_host_task 或任何写入操作。'
+                ),
+            })
+
         # Fastpath 预取数据，但始终通过 LLM 格式化输出
         # （直接返回原始 JSON 会跳过 system prompt 中的所有格式规则）
         effective_messages = initial_messages
@@ -185,6 +263,9 @@ def dispatch_chat_deepagents(
         logger.exception("DeepAgents agent.invoke() 异常")
         elapsed = time.time() - start_time
 
+        # 清理 MCP 会话
+        _close_managed_mcp_sessions()
+
         # 回退到 legacy 引擎
         if os.environ.get('DEEPAGENTS_FALLBACK_ON_ERROR', 'true').lower() == 'true':
             logger.warning("回退到 legacy 引擎: %s", type(exc).__name__)
@@ -205,6 +286,9 @@ def dispatch_chat_deepagents(
         }
         assistant_message.save(update_fields=['content', 'metadata'])
         return assistant_message, None
+    finally:
+        # 正常路径也清理 MCP 会话
+        _close_managed_mcp_sessions()
 
     elapsed = time.time() - start_time
 
@@ -217,6 +301,15 @@ def dispatch_chat_deepagents(
     existing_meta = dict(assistant_message.metadata or {})
     tc_data = tool_calls_data if 'tool_calls_data' in dir() else []
     tc_count = len(tc_data)
+    tc_names = [item.get('name', '') for item in tc_data]
+
+    # 构建 skill_trace
+    skill_trace = build_skill_trace(
+        active_skills,
+        action_code=action_code or '',
+        tool_calls=tc_names,
+    )
+
     assistant_message.content = final_content
     assistant_message.tool_calls = tc_data
     assistant_message.metadata = {
@@ -225,9 +318,15 @@ def dispatch_chat_deepagents(
         'processing_text': f'分析完成，耗时 {round(elapsed, 1)}s',
         'engine': 'deepagents',
         'action_code': action_code,
+        'agent_mode': agent_mode,
         'fastpath': fastpath_tool if fastpath_result else None,
         'elapsed_seconds': round(elapsed, 2),
         'tool_count': tc_count,
+        'skill_trace': skill_trace,
+        'skill_count': len(active_skills),
+        'mcp_diagnostics': mcp_diagnostics,
+        'external_tool_count': len(external_tools) if external_tools else 0,
+        'analysis_only': analysis_only,
         'processing_steps': (existing_meta.get('processing_steps') or []) + [{
             'title': '分析完成',
             'detail': f'DeepAgents 引擎完成，耗时 {round(elapsed, 1)}s，调用 {tc_count} 个工具',
@@ -241,9 +340,16 @@ def dispatch_chat_deepagents(
     from aiops.services import _touch_chat_session
     _touch_chat_session(session, question)
 
-    # 9. 处理 pending actions
+    # 9. 处理 pending actions（含 analysis_only/config 策略交互）
+    action_block_reason = None
+    if not getattr(config, 'allow_action_execution', True):
+        action_block_reason = 'execution_disabled'
+    elif analysis_only:
+        action_block_reason = 'analysis_only'
+
     pending_action = _process_pending_actions(
-        result, session, assistant_message, user
+        result, session, assistant_message, user,
+        block_reason=action_block_reason,
     )
 
     logger.info(
@@ -292,25 +398,69 @@ def _process_pending_actions(
     session: AIOpsChatSession,
     assistant_message: AIOpsChatMessage,
     user,
+    block_reason: str | None = None,
 ) -> Optional[AIOpsPendingAction]:
-    """检查 agent 结果中是否有待确认动作。"""
+    """检查 agent 结果中是否有待确认动作。
+
+    Args:
+        block_reason: 如果非 None，pending action 被标记为 blocked
+                      ('analysis_only' | 'execution_disabled')
+    """
     pending_actions = result.get('pending_actions', [])
     if not pending_actions:
         return None
 
     try:
         pa = pending_actions[0]
+        status = AIOpsPendingAction.STATUS_PENDING
+        payload = dict(pa.get('payload', {}))
+
+        if block_reason:
+            payload['_block_reason'] = block_reason
+
         return AIOpsPendingAction.objects.create(
             session=session,
             message=assistant_message,
             user=user,
             action_type=pa.get('type', 'unknown'),
-            payload=pa.get('payload', {}),
-            status=AIOpsPendingAction.STATUS_PENDING,
+            title=pa.get('title', ''),
+            risk_level=pa.get('risk_level', AIOpsPendingAction.RISK_LOW),
+            action_payload=payload,
+            status=status,
         )
     except Exception as exc:
         logger.warning("创建 PendingAction 失败: %s", type(exc).__name__)
         return None
+
+
+# ── 辅助函数 ──────────────────────────────────────────────────────────────
+
+def _close_managed_mcp_sessions() -> None:
+    """关闭所有外部 MCP 会话，释放资源。"""
+    global _managed_mcp_sessions
+    for session_obj in _managed_mcp_sessions:
+        try:
+            session_obj.close()
+        except Exception:
+            pass
+    _managed_mcp_sessions = []
+
+
+def _resolve_agent_mode(action_code: str | None) -> str:
+    """从 action registry 获取 agent_mode，默认 'react'。
+
+    对齐 legacy BUILTIN_ACTION_REGISTRY 中的 agent_mode 字段。
+    """
+    if not action_code:
+        return 'react'
+    try:
+        from aiops.services import _action_registry_item_by_code
+        action = _action_registry_item_by_code(action_code, user=None)
+        if action:
+            return action.get('agent_mode', 'react')
+    except Exception:
+        pass
+    return 'react'
 
 
 # ── P1.1: SSE 流式输出 ─────────────────────────────────────────────────
@@ -350,6 +500,24 @@ async def dispatch_chat_deepagents_stream(session, user_message, user, question)
         {'processing_status': 'running', 'engine': 'deepagents'},
     )
 
+    # 2.5 加载配置、Skill、MCP
+    from aiops.services import get_agent_config, _get_selected_mcp_servers
+    from .skills import load_active_skills
+
+    config = get_agent_config()
+    active_skills = load_active_skills(config=config, action_code=None, user=user)
+
+    external_tools = []
+    mcp_diagnostics = []
+    try:
+        active_mcp_servers = _get_selected_mcp_servers(config)
+        from .mcp_tools import build_external_mcp_tools
+        external_tools, _reg, _sessions, mcp_diagnostics = build_external_mcp_tools(
+            active_mcp_servers, user=user
+        )
+    except Exception as exc:
+        logger.debug("Stream MCP 加载跳过: %s", type(exc).__name__)
+
     # 3. Fastpath 检查 — 命中则预取数据，但仍走 LLM 格式化
     from .fastpath import fastpath_router
 
@@ -384,6 +552,12 @@ async def dispatch_chat_deepagents_stream(session, user_message, user, question)
     )
     action_code = selected_action.get('code') if selected_action else None
 
+    # 按 action 重新过滤 Skill
+    if action_code:
+        active_skills = load_active_skills(config=config, action_code=action_code, user=user)
+
+    agent_mode = _resolve_agent_mode(action_code)
+
     agent = create_sxdevops_agent(
         model=None,
         knowledge_environment=knowledge_environment,
@@ -392,6 +566,10 @@ async def dispatch_chat_deepagents_stream(session, user_message, user, question)
         session_id=session.id,
         assistant_message_id=assistant_message.id,
         action_code=action_code,
+        active_skills=active_skills,
+        external_tools=external_tools if external_tools else None,
+        mcp_diagnostics=mcp_diagnostics,
+        agent_mode=agent_mode,
     )
 
     config = {

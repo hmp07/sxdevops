@@ -115,6 +115,10 @@ def create_sxdevops_agent(
     session_id: Optional[int] = None,
     assistant_message_id: Optional[int] = None,
     action_code: Optional[str] = None,
+    active_skills: Optional[list[dict]] = None,
+    external_tools: Optional[list] = None,
+    mcp_diagnostics: Optional[list[dict]] = None,
+    agent_mode: str = 'react',
     enable_subagents: bool = True,
     enable_audit: bool = True,
     enable_rbac: bool = True,
@@ -131,6 +135,10 @@ def create_sxdevops_agent(
         session_id: AIOpsChatSession ID
         assistant_message_id: AIOpsChatMessage ID (用于审计追踪)
         action_code: 当前 action 代码 (用于工具子集过滤)
+        active_skills: load_active_skills() 的返回值，注入 system prompt
+        external_tools: build_external_mcp_tools() 的外部工具列表
+        mcp_diagnostics: MCP 连接诊断信息
+        agent_mode: 执行模式 (direct / react / plan_react)
         enable_subagents: 是否启用 SubAgent
         enable_audit: 是否启用审计中间件
         enable_rbac: 是否启用 RBAC 中间件
@@ -153,13 +161,20 @@ def create_sxdevops_agent(
         knowledge_environment or {},
         analysis_scope or {},
         user_permissions,
+        active_skills=active_skills or [],
+        mcp_diagnostics=mcp_diagnostics or [],
+        agent_mode=agent_mode,
     )
 
     # 按 action 过滤工具
     if action_code:
         tools = get_tools_for_action(action_code)
     else:
-        tools = SXDEVOPS_TOOLS
+        tools = list(SXDEVOPS_TOOLS)
+
+    # 合并外部 MCP 工具
+    if external_tools:
+        tools = list(tools) + list(external_tools)
 
     # 构建中间件
     middleware = []
@@ -175,6 +190,16 @@ def create_sxdevops_agent(
         )
     if assistant_message_id:
         middleware.append(ProgressMiddleware(message_id=assistant_message_id))
+    # PendingActionMiddleware: 工具调用后自动检查 pending_action_draft
+    if session_id and assistant_message_id:
+        from .middleware import PendingActionMiddleware
+        middleware.append(
+            PendingActionMiddleware(
+                session_id=session_id,
+                message_id=assistant_message_id,
+                user=user,
+            )
+        )
     # SummarizationMiddleware 是 DeepAgents 内置中间件，
     # 默认在 ~170k tokens 时自动触发，无需显式添加
 

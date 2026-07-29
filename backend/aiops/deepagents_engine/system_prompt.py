@@ -15,14 +15,35 @@ def build_system_prompt(
     knowledge_environment: dict,
     analysis_scope: dict,
     user_permissions: list[str],
+    active_skills: list[dict] | None = None,
+    mcp_diagnostics: list[dict] | None = None,
+    agent_mode: str = 'react',
 ) -> str:
-    """构建 DeepAgents Agent 的 system_prompt。"""
+    """构建 DeepAgents Agent 的 system_prompt。
+
+    Args:
+        knowledge_environment: 当前知识环境信息
+        analysis_scope: 分析范围
+        user_permissions: 用户权限列表
+        active_skills: load_active_skills() 的返回值
+        mcp_diagnostics: build_external_mcp_tools() 的诊断输出
+        agent_mode: 当前执行模式 (direct / react / plan_react)
+    """
     env_name = knowledge_environment.get('name', '未知环境')
     scope_summary = analysis_scope.get('summary', {})
     alert_sources = scope_summary.get('alert_sources', 0)
     host_count = scope_summary.get('host_count', 0)
     ci_count = scope_summary.get('ci_count', 0)
     perm_list = ', '.join(user_permissions) if user_permissions else '基础只读'
+
+    # 构建 Skill 段落
+    from .skills import build_skills_prompt_section
+    skills_section = build_skills_prompt_section(active_skills or [])
+
+    # 构建 MCP 诊断段落
+    mcp_diag_section = _build_mcp_diagnostics_section(mcp_diagnostics or [])
+    # 构建模式提示
+    mode_hint = _build_mode_hint(agent_mode)
 
     return f"""你是 SxDevOps AIOps 智能助手，负责运维数据分析与故障排查。
 
@@ -32,6 +53,17 @@ def build_system_prompt(
 - 可查询主机：{host_count} 台
 - CMDB 配置项：{ci_count} 个
 - 你的权限：{perm_list}
+- 执行模式：{agent_mode}
+
+## 启用 Skill
+
+{skills_section}
+
+## 外部 MCP 运行状态
+
+{mcp_diag_section}
+
+{mode_hint}
 
 ## 输出格式（按场景自适应）
 
@@ -237,3 +269,41 @@ def build_subagent_prompt(
     }
 
     return prompts.get(agent_type, f"你是 AIOps 分析专家。当前环境：{env_name}。")
+
+
+def _build_mcp_diagnostics_section(mcp_diagnostics: list[dict]) -> str:
+    """构建外部 MCP 运行状态段落（对齐 legacy line 15358）。"""
+    if not mcp_diagnostics:
+        return '- 当前无外部 MCP 诊断信息'
+
+    lines = []
+    for item in mcp_diagnostics:
+        status = item.get('status', 'unknown')
+        name = item.get('name', 'unknown')
+        if status == 'failed':
+            msg = item.get('message', '连接失败')
+            lines.append(f"- {name}：不可用，原因：{msg}")
+        elif status == 'connected':
+            tool_count = item.get('tool_count', 0)
+            server_type = item.get('server_type', '')
+            if server_type == 'platform_builtin':
+                continue  # 内置不重复显示
+            lines.append(f"- {name}：已连接，发现 {tool_count} 个外部工具")
+    return '\n'.join(lines) if lines else '- 当前无外部 MCP 诊断信息'
+
+
+def _build_mode_hint(agent_mode: str) -> str:
+    """根据执行模式返回追加提示。"""
+    if agent_mode == 'direct':
+        return (
+            "## 执行模式：Direct\n"
+            "当前为直接执行模式。系统已将数据预取到上下文中，"
+            "请直接基于提供的格式化数据回答用户问题，**不要**再调用工具。"
+        )
+    if agent_mode == 'plan_react':
+        return (
+            "## 执行模式：Plan+ReAct\n"
+            "当前为计划+执行模式。请先制定分析计划，再使用 task 工具调度 "
+            "SubAgent 逐步执行。每个 SubAgent 完成后再综合结果。"
+        )
+    return ""

@@ -79,12 +79,24 @@ FASTPATH_PATTERNS = [
         },
     },
     {
+        'name': 'alert_metrics_query',
+        'tool': 'query_alert_metrics_tool',
+        'matcher': lambda q: (
+            _question_contains_any(q, ['趋势', 'metric', '时序', '监控曲线'])
+            and _question_contains_any(q, ['查', '最近', '看', '有哪些'])
+        ),
+        'params': lambda q: {
+            'query': _strip_noise(q),
+            'limit': 10,
+        },
+    },
+    {
         'name': 'host_metrics',
         'tool': None,  # 需要两步：先查 hostid，再查指标
         'matcher': lambda q: (
             _question_contains_any(q, ['cpu', '内存', '磁盘', '网络', 'memory', 'disk',
                                        'network', '使用率', '性能', '负载'])
-            and not _question_contains_any(q, ['告警', '事件', '发布'])
+            and not _question_contains_any(q, ['告警', '事件', '发布', '趋势', '时序', '监控曲线'])
         ),
         'params': None,
     },
@@ -120,6 +132,76 @@ FASTPATH_PATTERNS = [
             and not _question_contains_any(q, ['分析', '影响', '关联'])
         ),
         'params': lambda q: {
+            'limit': 10,
+        },
+    },
+    # ── 新增: Phase 3 扩展 fastpath 模式 (6 → 12+) ──────────────────────
+    {
+        'name': 'log_query',
+        'tool': 'query_logs_tool',
+        'matcher': lambda q: (
+            _question_contains_any(q, ['日志', 'log', '错误日志', '报错'])
+            and _question_contains_any(q, ['查', '最近', '有哪些', '什么错误', '看'])
+        ),
+        'params': lambda q: {
+            'query': _strip_noise(q),
+            'duration_minutes': (
+                30 if _question_contains_any(q, ['最近半小时', '半小时', '30分钟'])
+                else 1440 if _question_contains_any(q, ['今天', '今日'])
+                else 60
+            ),
+            'limit': 20,
+        },
+    },
+    {
+        'name': 'trace_query',
+        'tool': 'query_traces_tool',
+        'matcher': lambda q: (
+            _question_contains_any(q, ['链路追踪', '调用链', 'trace', '追踪', 'tracing'])
+            and not _question_contains_any(q, ['配置', '设置', '部署', '安装'])
+        ),
+        'params': lambda q: {
+            'query': _strip_noise(q),
+            'errors_only': _question_contains_any(q, ['错误', '异常', 'error', '失败']),
+            'limit': 20,
+        },
+    },
+    {
+        'name': 'k8s_resource_lookup',
+        'tool': 'query_k8s_cluster_summary_tool',
+        'matcher': lambda q: (
+            _question_contains_any(q, ['k8s', 'kubernetes', 'pod', 'deployment', 'service',
+                                       'ingress', 'namespace', '节点', 'node',
+                                       '容器组', '服务发现'])
+            and not _question_contains_any(q, ['创建', '删除', '修改', '部署', '安装', '发布'])
+        ),
+        'params': lambda q: {
+            'query': _strip_noise(q),
+            'limit': 10,
+        },
+    },
+    {
+        'name': 'workorder_query',
+        'tool': 'query_recent_changes_tool',
+        'matcher': lambda q: (
+            _question_contains_any(q, ['工单', 'workorder', '变更单', '发布记录'])
+            and _question_contains_any(q, ['有哪些', '查', '最近', '今天', '昨天'])
+            and not _question_contains_any(q, ['影响', '关联', '分析'])
+        ),
+        'params': lambda q: {
+            'limit': 10,
+        },
+    },
+    {
+        'name': 'knowledge_graph_lookup',
+        'tool': 'query_knowledge_graph_tool',
+        'matcher': lambda q: (
+            _question_contains_any(q, ['知识图谱', '依赖关系', '系统依赖', '上下游', '拓扑'])
+            and _question_contains_any(q, ['有哪些', '查', '是什么', '如何'])
+            and not _question_contains_any(q, ['告警', 'cpu', '内存', '磁盘'])
+        ),
+        'params': lambda q: {
+            'query': _strip_noise(q),
             'limit': 10,
         },
     },

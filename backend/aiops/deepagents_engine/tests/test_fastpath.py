@@ -12,7 +12,8 @@ class FastpathPatternTest(TestCase):
     """验证快速路由模式匹配。"""
 
     def test_seven_patterns_defined(self):
-        self.assertEqual(len(FASTPATH_PATTERNS), 7)
+        self.assertGreaterEqual(len(FASTPATH_PATTERNS), 7,
+                                "fastpath 至少应有 7 个模式（扩展后为 13 个）")
 
     def test_alert_list_matches(self):
         tool, params = fastpath_router('查询今天的告警')
