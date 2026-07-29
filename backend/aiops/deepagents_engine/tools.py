@@ -148,15 +148,16 @@ def query_alerts_tool(
         limit: 返回数量上限，默认 6，最大 20
     """
     close_old_connections()
-    # 尝试缓存命中（常见查询如 date_filter='today' 高频重复）
-    cache_key = ['aiops', 'alerts', str(date_filter), str(level), str(status), str(limit)]
+    user = _get_user_from_config(config)
+    session = _get_session_from_config(config)
+
+    # 缓存键包含 user_id 防止跨用户数据泄露
+    cache_key = ['aiops', 'alerts', str(user.id if user else 'anon'), str(date_filter), str(level), str(status), str(limit)]
     cached = _try_cache(cache_key, ttl=120)
     if cached is not None:
         return cached
 
     from aiops.tools import query_alerts as _impl
-    user = _get_user_from_config(config)
-    session = _get_session_from_config(config)
     result = _impl(
         session, None, user,
         query=query, level=level, status=status,
