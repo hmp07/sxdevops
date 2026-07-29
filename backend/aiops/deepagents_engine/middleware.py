@@ -52,11 +52,11 @@ class RBACMiddleware(AgentMiddleware):
 
     def _tool_name_to_permission(self, tool_name: str) -> Optional[str]:
         """将工具名映射到 Django permission code。"""
-        from aiops.services import PLATFORM_MCP_TOOL_DEFINITIONS
+        from aiops.tools.registry import TOOL_REGISTRY
 
-        # 映射：tool_name → PLATFORM_MCP_TOOL_DEFINITIONS handler
+        # 映射：tool_name → TOOL_REGISTRY handler
         handler = tool_name.replace('_tool', '').replace('_', '-')
-        for plat_tool in PLATFORM_MCP_TOOL_DEFINITIONS:
+        for plat_tool in TOOL_REGISTRY:
             if plat_tool['handler'] == handler:
                 return plat_tool.get('permission')
         return None
@@ -79,6 +79,17 @@ class RBACMiddleware(AgentMiddleware):
                 f"用户 {getattr(self.user, 'username', 'anonymous')} "
                 f"缺少权限调用工具 {tool_name}"
             )
+
+    def wrap_tool_call(self, request, handler):
+        """AgentMiddleware hook — 每次工具调用前自动执行 RBAC 检查。"""
+        tool_name = ''
+        if hasattr(request, 'tool_call') and isinstance(request.tool_call, dict):
+            tool_name = request.tool_call.get('name', '')
+        elif hasattr(request, 'tool_name'):
+            tool_name = request.tool_name
+        if tool_name:
+            self.check_tool_access_or_raise(tool_name)
+        return handler(request)
 
 
 class AuditMiddleware(AgentMiddleware):

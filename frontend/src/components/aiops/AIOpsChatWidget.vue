@@ -300,8 +300,9 @@
                             <a v-for="(item, ai) in block.items" :key="ai"
                                class="action-link-chip"
                                :class="{ clickable: !!item.url }"
-                               :href="item.url || undefined"
-                               :target="item.url ? '_blank' : undefined"
+                               :href="isSafeUrl(item.url) ? item.url : undefined"
+                               :target="isSafeUrl(item.url) ? '_blank' : undefined"
+                               rel="noopener noreferrer"
                                @click.stop="item.url && item.url.startsWith('action:') ? handleActionLink(item) : null"
                             >
                               {{ item.label }}
@@ -781,6 +782,11 @@ const ASSISTANT_ERROR_DISPLAY = {
 }
 
 const DEMO_CHAT_DISABLED_MESSAGE = '演示账号问答权限已临时关闭，如需体验请联系作者：592095766@qq.com'
+
+function isSafeUrl(url) {
+  if (!url) return false
+  return /^https?:\/\//i.test(url) || url.startsWith('/')
+}
 
 function normalizeText(value) {
   return String(value || '').replace(/\r\n/g, '\n')

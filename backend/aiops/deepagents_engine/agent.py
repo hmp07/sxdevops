@@ -234,9 +234,9 @@ def create_sxdevops_agent(
 
 def _resolve_env_and_scope(session, question: str) -> tuple[dict, dict]:
     """解析知识环境和分析范围（复用 services.py 中的实现）。"""
-    from aiops.services import (
-        _resolve_chat_environment,
+    from aiops.business.environment import (
         _build_analysis_scope,
+        _resolve_chat_environment,
     )
 
     env_resolution = _resolve_chat_environment(session, question)

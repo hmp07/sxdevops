@@ -118,7 +118,7 @@ def dispatch_chat_deepagents(
                 fastpath_result = None
 
     # 5. 选择 action（用于工具子集过滤）
-    from aiops.services import _select_action_for_question
+    from aiops.business.routing import _select_action_for_question
 
     selected_action = _select_action_for_question(
         question, user=user, analysis_scope=analysis_scope
@@ -353,7 +353,7 @@ async def dispatch_chat_deepagents_stream(session, user_message, user, question)
         )
     else:
         format_question = question
-    from aiops.services import _select_action_for_question
+    from aiops.business.routing import _select_action_for_question
 
     selected_action = _select_action_for_question(
         question, user=user, analysis_scope=analysis_scope

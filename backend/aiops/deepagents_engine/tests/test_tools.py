@@ -101,11 +101,11 @@ class ToolRegistryTest(TestCase):
 
     def test_parity_with_platform_mcp_definitions(self):
         """验证工具列表与 PLATFORM_MCP_TOOL_DEFINITIONS 保持一致。"""
-        from aiops.services import PLATFORM_MCP_TOOL_DEFINITIONS
+        from aiops.tools.registry import TOOL_REGISTRY
 
         mcp_tool_handlers = {
             t['handler'].replace('-', '_') + '_tool'
-            for t in PLATFORM_MCP_TOOL_DEFINITIONS
+            for t in TOOL_REGISTRY
         }
         registered_tool_names = set(get_tool_names())
 

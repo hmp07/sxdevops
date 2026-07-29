@@ -154,7 +154,7 @@ def query_alerts_tool(
         limit: 返回数量上限，默认 6，最大 20
     """
     close_old_connections()
-    from aiops.services import query_alerts as _impl
+    from aiops.tools import query_alerts as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(
@@ -188,7 +188,7 @@ def query_knowledge_graph_tool(
         limit: 返回数量上限，默认 8，最大 20
     """
     close_old_connections()
-    from aiops.services import query_knowledge_graph as _impl
+    from aiops.tools import query_knowledge_graph as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(
@@ -217,7 +217,7 @@ def query_cmdb_items_tool(
         limit: 返回数量上限，默认 6，最大 20
     """
     close_old_connections()
-    from aiops.services import query_cmdb_items as _impl
+    from aiops.tools import query_cmdb_items as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(
@@ -243,7 +243,7 @@ def query_zabbix_hosts_tool(
         limit: 返回数量上限，默认 50，最大 200
     """
     close_old_connections()
-    from aiops.services import query_zabbix_hosts as _impl
+    from aiops.tools import query_zabbix_hosts as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(
@@ -273,7 +273,7 @@ def query_zabbix_problems_tool(
         limit: 返回数量上限，默认 50，最大 200
     """
     close_old_connections()
-    from aiops.services import query_zabbix_problems as _impl
+    from aiops.tools import query_zabbix_problems as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(
@@ -308,7 +308,7 @@ def query_logs_tool(
         limit: 返回数量上限，默认 10，最大 20
     """
     close_old_connections()
-    from aiops.services import query_logs as _impl
+    from aiops.tools import query_logs as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(
@@ -339,7 +339,7 @@ def query_traces_tool(
         limit: 返回数量上限，默认 10，最大 20
     """
     close_old_connections()
-    from aiops.services import query_traces as _impl
+    from aiops.tools import query_traces as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(
@@ -368,7 +368,7 @@ def query_k8s_cluster_summary_tool(
         limit: 返回数量上限，默认 10，最大 20
     """
     close_old_connections()
-    from aiops.services import query_k8s_cluster_summary as _impl
+    from aiops.tools import query_k8s_cluster_summary as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(
@@ -402,7 +402,7 @@ def query_zabbix_items_tool(
         limit: 返回数量上限，默认 50，最大 200
     """
     close_old_connections()
-    from aiops.services import query_zabbix_items as _impl
+    from aiops.tools import query_zabbix_items as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(
@@ -431,7 +431,7 @@ def query_zabbix_history_tool(
         limit: 返回数量上限，默认 50，最大 200
     """
     close_old_connections()
-    from aiops.services import query_zabbix_history as _impl
+    from aiops.tools import query_zabbix_history as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(
@@ -459,7 +459,7 @@ def query_zabbix_host_metrics_tool(
         datasource_id: Zabbix 数据源 ID（可选，多数据源时指定）
     """
     close_old_connections()
-    from aiops.services import query_zabbix_host_metrics as _impl
+    from aiops.tools import query_zabbix_host_metrics as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(
@@ -492,7 +492,7 @@ def query_alert_root_cause_tool(
         latest: 是否分析最新一条告警，默认 False
     """
     close_old_connections()
-    from aiops.services import query_alert_root_cause as _impl
+    from aiops.tools import query_alert_root_cause as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(
@@ -531,7 +531,7 @@ def query_alert_metrics_tool(
         metric_datasource_id: 指标数据源 ID
     """
     close_old_connections()
-    from aiops.services import query_alert_metrics as _impl
+    from aiops.tools import query_alert_metrics as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(
@@ -557,7 +557,7 @@ def query_recent_changes_tool(
         limit: 返回数量上限，默认 10，最大 20
     """
     close_old_connections()
-    from aiops.services import query_recent_changes as _impl
+    from aiops.tools import query_recent_changes as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(session, None, user, limit=limit)
@@ -578,7 +578,7 @@ def query_device_detail_tool(
         hostname: 主机名或 IP 地址
     """
     close_old_connections()
-    from aiops.services import query_device_detail as _impl
+    from aiops.tools import query_device_detail as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(session, None, user, hostname=hostname)
@@ -603,7 +603,7 @@ def query_cmdb_topology_tool(
         scope: 拓扑范围，exact（精确匹配）或 neighbors（包含邻居），默认 neighbors
     """
     close_old_connections()
-    from aiops.services import query_cmdb_topology as _impl
+    from aiops.tools import query_cmdb_topology as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
     result = _impl(

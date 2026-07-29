@@ -17481,8 +17481,8 @@ def _run_async_chat_worker(session_id, user_message_id, user_id, assistant_messa
         assistant_message = AIOpsChatMessage.objects.get(pk=assistant_message_id)
         user = session.user if session.user_id == user_id else session.user.__class__.objects.get(pk=user_id)
 
-        # Feature flag: DeepAgents 引擎接管
-        if os.environ.get('DEEPAGENTS_ENABLED', '').lower() in ('1', 'true', 'yes'):
+        # DeepAgents 默认引擎接管。DEEPAGENTS_LEGACY_FALLBACK=true 强制走 legacy
+        if not os.environ.get('DEEPAGENTS_LEGACY_FALLBACK', '').lower() in ('1', 'true', 'yes'):
             try:
                 from aiops.deepagents_engine.adapter import dispatch_chat_deepagents
                 result_msg, pending_action = dispatch_chat_deepagents(
@@ -17549,8 +17549,9 @@ def start_async_chat_processing(session, user_message, user, assistant_message, 
 
 
 def dispatch_chat(session, user_message, user, question, analysis_only=False):
-    # Feature flag: 启用 DeepAgents 新引擎
-    if os.environ.get('DEEPAGENTS_ENABLED', '').lower() in ('1', 'true', 'yes'):
+    # DeepAgents 现在为默认引擎。DEEPAGENTS_LEGACY_FALLBACK=true 强制回退
+    use_legacy = os.environ.get('DEEPAGENTS_LEGACY_FALLBACK', '').lower() in ('1', 'true', 'yes')
+    if not use_legacy:
         try:
             from aiops.deepagents_engine.adapter import dispatch_chat_deepagents
             return dispatch_chat_deepagents(
@@ -17558,17 +17559,10 @@ def dispatch_chat(session, user_message, user, question, analysis_only=False):
             )
         except ImportError as exc:
             import logging
-            logging.getLogger(__name__).warning(
-                f'DeepAgents 引擎导入失败，回退到 legacy 引擎: {exc}'
-            )
+            logging.getLogger(__name__).warning('DeepAgents 导入失败，回退 legacy: %s', type(exc).__name__)
         except Exception as exc:
             import logging
-            logging.getLogger(__name__).error(
-                f'DeepAgents 引擎异常，回退到 legacy 引擎: {exc}'
-            )
-            # AB 模式记录异常
-            if os.environ.get('DEEPAGENTS_AB_MODE', '').lower() in ('1', 'true', 'yes'):
-                _log_engine_fallback(session.id, 'deepagents', str(exc)[:500])
+            logging.getLogger(__name__).error('DeepAgents 异常，回退 legacy: %s', type(exc).__name__)
 
     assistant_message = AIOpsChatMessage.objects.create(
         session=session,
