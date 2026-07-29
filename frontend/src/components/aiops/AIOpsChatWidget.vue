@@ -2070,20 +2070,16 @@ async function handleSend() {
   scrollToBottom(true)
 
   try {
-    // SSE 流式优先，失败则回退异步轮询
-    const streamUsed = await tryStreamSend(sessionId, content)
-    if (!streamUsed) {
-      const response = await sendAIOpsMessageAsync(sessionId, {
-        content,
-        analysis_only: effectiveAnalysisOnly.value,
-        knowledge_environment: selectedEnvironment.value || '',
-      })
-      messages.value.push(response.user_message)
-      messages.value.push(response.assistant_message)
-      pendingAssistantMessage.value = null
-      await refreshSessionListOnly()
-      startMessagePolling(sessionId, response.assistant_message?.id)
-    }
+    const response = await sendAIOpsMessageAsync(sessionId, {
+      content,
+      analysis_only: effectiveAnalysisOnly.value,
+      knowledge_environment: selectedEnvironment.value || '',
+    })
+    messages.value.push(response.user_message)
+    messages.value.push(response.assistant_message)
+    pendingAssistantMessage.value = null
+    await refreshSessionListOnly()
+    startMessagePolling(sessionId, response.assistant_message?.id)
     await nextTick()
     scrollToBottom(true)
     focusComposer()
