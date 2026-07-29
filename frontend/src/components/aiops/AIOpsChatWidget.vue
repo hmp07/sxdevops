@@ -1586,7 +1586,7 @@ function parseAssistantContent(content) {
   let codeLines = []
   let inCode = false
   let codeLang = ''        // ``` 后面的语言标签
-  let suggestions = []      // 追问建议
+  let suggestions = null    // 追问建议 (null=未进入追问区)
 
   const pushParagraph = () => {
     if (!paragraphLines.length) return
@@ -1766,6 +1766,19 @@ function resumeMessagePolling(sessionId, list = messages.value) {
     if (pollingSessionId === sessionId) {
       stopMessagePolling()
     }
+    return
+  }
+  // 跳过超过 5 分钟的卡住消息（防止无限轮询）
+  const created = new Date(target.created_at).getTime()
+  const staleMs = Date.now() - created
+  if (staleMs > 5 * 60 * 1000 && getProcessingStatus(target) !== 'completed') {
+    // 本地标记为失败，不再轮询
+    if (target.metadata) {
+      target.metadata.processing_status = 'failed'
+      target.metadata.processing_text = '处理超时，请重新提问'
+    }
+    target.pending = false
+    stopMessagePolling()
     return
   }
   startMessagePolling(sessionId, target.id)
