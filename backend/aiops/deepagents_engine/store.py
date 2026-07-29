@@ -89,10 +89,12 @@ class DjangoStore:
         pattern = f"{self._prefix}:{ns_path}:*"
 
         results = []
+        if not hasattr(django_cache, 'keys'):
+            logger.warning("DjangoStore.search 需要 Redis 后端，当前后端不支持 keys() 操作")
+            return results
+
         try:
-            # 尝试使用 Redis 的 keys 扫描（如果后端支持）
-            if hasattr(django_cache, 'keys'):
-                for full_key in django_cache.keys(pattern):
+            for full_key in django_cache.keys(pattern):
                     key_suffix = full_key.replace(f"{self._prefix}:{ns_path}:", "")
                     value = django_cache.get(full_key)
                     if value is not None:

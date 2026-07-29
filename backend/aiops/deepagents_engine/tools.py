@@ -108,25 +108,19 @@ def _truncate_tool_output(result: dict, max_items: int = 10, max_str_len: int = 
     return truncated
 
 
-def _cached_call(cache_key: str, impl, ttl: int = 300):
-    """带缓存的工具调用包装器。
-
-    常见查询（如 query_alerts(date_filter='today')）结果缓存 ttl 秒，
-    减少 Zabbix API 调用和 LLM token 消耗。
-    """
+def _try_cache(key_parts: list[str], ttl: int = 120):
+    """从 Django Cache 读取缓存值。返回 None 表示未命中。"""
     from django.core.cache import cache
-    cached = cache.get(cache_key)
-    if cached is not None:
-        try:
-            return json.loads(cached) if isinstance(cached, str) else cached
-        except (json.JSONDecodeError, TypeError):
-            pass
-    result = impl()
+    return cache.get(':'.join(key_parts))
+
+
+def _set_cache(key_parts: list[str], value, ttl: int = 120):
+    """写入 Django Cache。失败静默忽略。"""
+    from django.core.cache import cache
     try:
-        cache.set(cache_key, _safe_json(result), timeout=ttl)
+        cache.set(':'.join(key_parts), value, timeout=ttl)
     except Exception:
         pass
-    return result
 
 
 # ── P0 工具：告警 / 知识图谱 / CMDB / Zabbix 主机 — 最常用 ────────────────
@@ -154,6 +148,12 @@ def query_alerts_tool(
         limit: 返回数量上限，默认 6，最大 20
     """
     close_old_connections()
+    # 尝试缓存命中（常见查询如 date_filter='today' 高频重复）
+    cache_key = ['aiops', 'alerts', str(date_filter), str(level), str(status), str(limit)]
+    cached = _try_cache(cache_key, ttl=120)
+    if cached is not None:
+        return cached
+
     from aiops.tools import query_alerts as _impl
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
@@ -163,7 +163,9 @@ def query_alerts_tool(
         date_filter=date_filter, limit=limit,
     )
     result = _truncate_tool_output(result)
-    return _safe_json(result)
+    output = _safe_json(result)
+    _set_cache(cache_key, output, ttl=120)
+    return output
 
 
 @tool
