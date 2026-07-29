@@ -1786,6 +1786,13 @@ function startMessagePolling(sessionId, assistantMessageId) {
   pollingFinalizeAttempts = 0
   loading.value.poll = true
 
+  // 全局超时保护：2 分钟后强制停止轮询
+  const globalTimeout = window.setTimeout(() => {
+    if (pollingSessionId === sessionId && pollingMessageId === assistantMessageId) {
+      stopMessagePolling()
+    }
+  }, 120000)
+
   const finalizePoll = async () => {
     if (!pollingSessionId || pollingSessionId !== sessionId || pollingMessageId !== assistantMessageId) return
     try {
@@ -2061,17 +2068,20 @@ async function handleSend() {
   scrollToBottom(true)
 
   try {
-    // 异步轮询模式（SSE 流式仍在优化中）
-    const response = await sendAIOpsMessageAsync(sessionId, {
-      content,
-      analysis_only: effectiveAnalysisOnly.value,
-      knowledge_environment: selectedEnvironment.value || '',
-    })
-    messages.value.push(response.user_message)
-    messages.value.push(response.assistant_message)
-    pendingAssistantMessage.value = null
-    await refreshSessionListOnly()
-    startMessagePolling(sessionId, response.assistant_message?.id)
+    // SSE 流式优先，失败则回退异步轮询
+    const streamUsed = await tryStreamSend(sessionId, content)
+    if (!streamUsed) {
+      const response = await sendAIOpsMessageAsync(sessionId, {
+        content,
+        analysis_only: effectiveAnalysisOnly.value,
+        knowledge_environment: selectedEnvironment.value || '',
+      })
+      messages.value.push(response.user_message)
+      messages.value.push(response.assistant_message)
+      pendingAssistantMessage.value = null
+      await refreshSessionListOnly()
+      startMessagePolling(sessionId, response.assistant_message?.id)
+    }
     await nextTick()
     scrollToBottom(true)
     focusComposer()
