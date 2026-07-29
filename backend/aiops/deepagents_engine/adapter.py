@@ -379,6 +379,7 @@ async def dispatch_chat_deepagents_stream(session, user_message, user, question)
             'thread_id': f'session-{session.id}',
             'user_id': user.id,
             'session_id': session.id,
+            'assistant_message_id': assistant_message.id,
         }
     }
 

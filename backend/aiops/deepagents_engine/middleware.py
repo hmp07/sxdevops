@@ -54,10 +54,10 @@ class RBACMiddleware(AgentMiddleware):
         """将工具名映射到 Django permission code。"""
         from aiops.tools.registry import TOOL_REGISTRY
 
-        # 映射：tool_name → TOOL_REGISTRY handler
-        handler = tool_name.replace('_tool', '').replace('_', '-')
+        # tool_name 格式: "query_alerts_tool" → handler "query_alerts"
+        handler = tool_name.replace('_tool', '')
         for plat_tool in TOOL_REGISTRY:
-            if plat_tool['handler'] == handler:
+            if plat_tool['handler'] == handler or plat_tool.get('deepagents_name') == tool_name:
                 return plat_tool.get('permission')
         return None
 

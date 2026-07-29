@@ -18,11 +18,10 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph
 from langgraph.store.memory import InMemoryStore
 
-from .checkpointer import DjangoCacheSaver, get_checkpointer
-from .fastpath import fastpath_router
+from .checkpointer import get_checkpointer
 from .middleware import AuditMiddleware, RBACMiddleware
 from .state import AIOpsAgentState
-from .store import DjangoStore, get_store
+from .store import get_store
 from .system_prompt import build_system_prompt
 from .tools import SXDEVOPS_TOOLS, get_tools_for_action
 
@@ -198,18 +197,19 @@ def create_sxdevops_agent(
                 "max_iterations": spec.get("max_iterations", 3),
             })
 
-    # 持久化层
-    # DeepAgents 使用内置 MemorySaver + InMemoryStore 管理 Agent 状态
-    # DjangoStore 作为补充层，用于工具结果缓存和跨会话用户偏好
+    # 持久化层 — 优先使用 Django Cache 支持的持久化
     checkpointer = MemorySaver()
     store = InMemoryStore()
 
     if enable_persistence and session_id:
         try:
-            _ = get_store()  # 预热 DjangoStore 连接
-            logger.debug("DjangoStore 就绪 (session=%s)", session_id)
+            checkpointer = get_checkpointer()
+            store = get_store()
+            logger.debug("Django 持久化就绪 (session=%s)", session_id)
         except Exception as exc:
-            logger.debug("DjangoStore 初始化跳过: %s", exc)
+            logger.warning("Django 持久化初始化失败(%s)，回退内存模式", exc)
+            checkpointer = MemorySaver()
+            store = InMemoryStore()
 
     # 创建 DeepAgent
     agent = create_deep_agent(
