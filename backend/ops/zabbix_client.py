@@ -20,7 +20,10 @@ class ZabbixClient:
         self.username = datasource.username
         self.password = datasource.password
         self.tls_verify = datasource.tls_verify
-        self.timeout = min(max(datasource.timeout or 15, 5), 60)
+        read_timeout = min(max(datasource.timeout or 15, 5), 60)
+        # (连接超时, 读超时)：连接超时固定 5s，防止配置错误的不可达数据源
+        # 阻塞 Daphne 的同步视图线程（thread_sensitive 单线程）导致整站 API 卡死
+        self.timeout = (5, read_timeout)
         self.datasource_id = datasource.id
         self._token_lock = threading.Lock()
         self._cached_token = None
