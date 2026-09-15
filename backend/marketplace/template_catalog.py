@@ -248,11 +248,9 @@ services:
       - grafana_data:/var/lib/grafana
     environment:
       TZ: Asia/Shanghai
-      # 支持平台 iframe 看板嵌入
+      # 支持平台 iframe 看板嵌入（不开启匿名访问，
+      # 嵌入认证按 docs/Grafana嵌入配置指南.md 配置 JWT auth_token 或匿名 Viewer）
       GF_SECURITY_ALLOW_EMBEDDING: "true"
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_NAME: "Main Org."
-      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
 volumes:
   grafana_data:
 ''',

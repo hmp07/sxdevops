@@ -23,12 +23,15 @@ services:
     container_name: sxdevops-grafana
     restart: unless-stopped
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      # 管理员口令：演示栈默认 admin（Grafana 首次 UI 登录强制改密）；
+      # 生产/共享环境务必通过 .env 注入: GRAFANA_ADMIN_PASSWORD=<随机口令>
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
       GF_USERS_DEFAULT_THEME: light
       # iframe 嵌入
       GF_SECURITY_ALLOW_EMBEDDING: "true"
-      # 匿名 Viewer 兜底（平台配置 jwt_secret 后走 JWT auth_token 自动登录）
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      # 匿名 Viewer：仅演示栈默认开启（本文件即演示栈）；
+      # 生产环境请设 GRAFANA_ANONYMOUS_ENABLED=false 并走 JWT auth_token 认证嵌入
+      GF_AUTH_ANONYMOUS_ENABLED: "${GRAFANA_ANONYMOUS_ENABLED:-true}"
       GF_AUTH_ANONYMOUS_ORG_NAME: "Main Org."
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
       # JWT 自动登录（默认关闭，避免无 secret 文件时 Grafana 启动失败）。

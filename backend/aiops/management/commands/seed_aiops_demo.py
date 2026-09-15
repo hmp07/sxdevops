@@ -50,10 +50,20 @@ class Command(BaseCommand):
         User = get_user_model()
         user = User.objects.filter(username='admin').first()
         if not user:
+            # 演示管理员口令：默认使用项目文档化的演示口令（README 体验账号），
+            # 可通过环境变量覆盖。非演示环境建议执行前设置 SXDEVOPS_DEMO_ADMIN_PASSWORD。
+            import os
+            password = os.environ.get('SXDEVOPS_DEMO_ADMIN_PASSWORD') or 'Admin@123456'
             user = User.objects.create_superuser(
-                username='admin', email='admin@example.com', password='Admin@123456'
+                username='admin', email='admin@example.com', password=password
             )
-            stdout.write('已创建演示管理员 admin')
+            if not os.environ.get('SXDEVOPS_DEMO_ADMIN_PASSWORD'):
+                stdout.write(self.style.WARNING(
+                    '已创建演示管理员 admin（默认演示口令，仅限演示环境；'
+                    '生产部署请勿使用演示种子）'
+                ))
+            else:
+                stdout.write('已创建演示管理员 admin（口令来自 SXDEVOPS_DEMO_ADMIN_PASSWORD）')
         return user
 
     # ── 知识环境绑定 ─────────────────────────────────────────────────

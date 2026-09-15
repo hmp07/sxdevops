@@ -1550,8 +1550,17 @@ def _grafana_connection_target(data):
     config = _grafana_config()
     if not url:
         url = config.get('url') or ''
+    # SSRF 防护：只允许 http/https，且存储 Token 只能附加到与已保存配置一致的目标地址。
+    # 用户自定义 URL 时若不显式提供 api_token，绝不附带存储凭据（防止凭据泄露到任意主机）。
+    parsed = urlparse(url) if url else None
+    if parsed and parsed.scheme not in ('http', 'https'):
+        raise ValueError('Grafana URL 仅支持 http/https')
+    configured_url = str(config.get('url') or '').strip().rstrip('/')
     if not api_token:
-        api_token = _grafana_api_token(config)
+        if url.rstrip('/') == configured_url:
+            api_token = _grafana_api_token(config)
+        else:
+            api_token = ''
     return url.rstrip('/') if url else '', api_token, config
 
 
@@ -1565,7 +1574,10 @@ def grafana_test_connection(request):
     if not user_has_permissions(request.user, ['ops.grafana.manage']):
         return Response({'detail': '缺少 ops.grafana.manage 权限'}, status=status.HTTP_403_FORBIDDEN)
 
-    url, api_token, config = _grafana_connection_target(request.data or {})
+    try:
+        url, api_token, config = _grafana_connection_target(request.data or {})
+    except ValueError as exc:
+        return Response({'status': 'error', 'message': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     if not url or _is_example_url(url):
         return Response({'status': 'error', 'message': 'Grafana URL 未配置'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1667,7 +1679,10 @@ def grafana_discover(request):
     if not user_has_permissions(request.user, ['ops.grafana.manage']):
         return Response({'detail': '缺少 ops.grafana.manage 权限'}, status=status.HTTP_403_FORBIDDEN)
 
-    url, api_token, config = _grafana_connection_target(request.data or {})
+    try:
+        url, api_token, config = _grafana_connection_target(request.data or {})
+    except ValueError as exc:
+        return Response({'status': 'error', 'message': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     if not url or _is_example_url(url):
         return Response({'status': 'error', 'message': 'Grafana URL 未配置'}, status=status.HTTP_400_BAD_REQUEST)
 

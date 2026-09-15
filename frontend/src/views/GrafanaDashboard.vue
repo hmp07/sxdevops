@@ -1395,6 +1395,9 @@ async function fetchEmbedToken() {
 }
 
 function appendEmbedAuth(url = '') {
+  // auth_token 是 Grafana [auth.jwt] url_login 的官方免密嵌入机制：
+  // 平台签发 60 秒短时 JWT 放入 ?auth_token= 查询参数，Grafana 校验后建立登录会话。
+  // 令牌短时有效（60s），且仅在打开看板时实时签发；未配置 jwt_secret 时不注入（回退匿名模式）。
   if (!embedToken.value) return url
   return appendGrafanaParams(url, { auth_token: embedToken.value })
 }

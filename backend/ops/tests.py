@@ -1253,6 +1253,45 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(auth_headers['Authorization'], 'Bearer glsa_override')
 
     @patch('ops.observability_views.http_requests.get')
+    def test_grafana_test_connection_does_not_leak_token_to_custom_url(self, mock_get):
+        """SSRF 防护：自定义 URL 未显式提供 token 时，不得附带存储凭据。"""
+        GrafanaSetting.objects.create(
+            name='default',
+            url='http://grafana.saved.internal.local',
+            api_token='glsa_stored_secret',
+        )
+        health_resp = MagicMock()
+        health_resp.status_code = 200
+        health_resp.json.return_value = {'version': '11.0.0'}
+        org_resp = MagicMock()
+        org_resp.status_code = 200
+        org_resp.json.return_value = {'id': 1, 'name': 'Main Org.'}
+        mock_get.side_effect = [health_resp, org_resp]
+
+        response = self.client.post(
+            '/api/observability/grafana/test/',
+            {'url': 'http://attacker.internal.local'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        auth_headers = mock_get.call_args_list[0][1]['headers']
+        self.assertNotIn('Authorization', auth_headers, '存储 Token 不得附加到自定义 URL')
+        first_url = mock_get.call_args_list[0][0][0]
+        self.assertIn('attacker.internal.local', first_url)
+
+    @patch('ops.observability_views.http_requests.get')
+    def test_grafana_test_connection_rejects_non_http_scheme(self, mock_get):
+        GrafanaSetting.objects.create(name='default', url='http://grafana.saved.internal.local')
+        response = self.client.post(
+            '/api/observability/grafana/test/',
+            {'url': 'file:///etc/passwd'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        mock_get.assert_not_called()
+
+    @patch('ops.observability_views.http_requests.get')
     def test_grafana_discover_returns_dashboards(self, mock_get):
         GrafanaSetting.objects.create(name='default', url='http://grafana.disc.internal.local', api_token='glsa_disc')
         folders_resp = MagicMock()

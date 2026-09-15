@@ -37,8 +37,9 @@ services:
       # 离线演示模式：内置模拟模型引擎（AI 问答无需 API Key）
       SXDEVOPS_DEMO_MODE: "1"
       DEEPAGENTS_FALLBACK_ON_ERROR: "0"
-      # 安全与跨域（演示环境）
-      SECRET_KEY: sxdevops-offline-demo
+      # 安全与跨域（演示环境）：全模拟数据的离线演示，固定值即可用；
+      # 如需自定义可通过 .env 注入 SECRET_KEY
+      SECRET_KEY: ${SECRET_KEY:-sxdevops-offline-demo}
       DEBUG: "0"
       ALLOWED_HOSTS: "*"
       CORS_ALLOW_ALL_ORIGINS: "1"
