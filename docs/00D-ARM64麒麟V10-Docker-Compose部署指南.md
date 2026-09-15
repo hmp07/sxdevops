@@ -117,7 +117,7 @@ docker info | grep -A3 "Registry Mirrors"   # 确认镜像源生效
 
 | 镜像 | 说明 |
 | ---- | ---- |
-| `sxdevops:latest-arm64` | 项目多阶段构建产物：前端 dist + Django 后端 + Daphne，ENTRYPOINT 自动迁移与种子 |
+| `sxdevops:latest-arm64` | 项目多阶段构建产物：前端 dist + Django 后端 + Daphne，ENTRYPOINT 自动迁移、模板初始化与管理员账号初始化 |
 
 ### 3.3 架构一致性原则
 
@@ -209,7 +209,9 @@ docker images    # 确认三个镜像均存在且为 arm64
 | `SECRET_KEY` | **.env 注入**（`${SECRET_KEY:?...}`） | Django 密钥，部署时生成随机值（`openssl rand -hex 32`） |
 | `SXDEVOPS_WAIT_FOR_DB` | 1 | 启动前等待 MySQL 就绪 |
 | `SXDEVOPS_MIGRATE` | 1 | 自动执行数据库迁移 |
-| `SXDEVOPS_SEED_DATA` / `SXDEVOPS_SEED_TEMPLATES` | 1 | 首次启动自动加载演示数据与模板（纯净安装设 0） |
+| `SXDEVOPS_SEED_DATA` | 0 | **生产默认关闭演示种子数据**（seed_data 生成的全部为演示数据）；需要演示数据时改 1 |
+| `SXDEVOPS_SEED_TEMPLATES` | 1 | 工具市场内置模板 + 默认知识图谱环境（产品基础数据，建议保留） |
+| `SXDEVOPS_ADMIN_PASSWORD` | **.env 注入**（`${SXDEVOPS_ADMIN_PASSWORD:?...}`） | 管理员账号口令；每次启动由 `ensure_admin` 创建/加固 admin 账号（默认演示口令自动重置为该值） |
 
 ---
 
@@ -223,13 +225,14 @@ cd /opt/sxdevops
 cp .env.arm64.example .env
 sed -i "s/change-me-please-run-openssl-rand-hex-32/$(openssl rand -hex 32)/" .env
 sed -i "s/change-me-please-run-openssl-rand-hex-16/$(openssl rand -hex 16)/g" .env
+sed -i "s/change-me-please-run-openssl-rand-hex-16-admin/$(openssl rand -hex 16)/" .env
 # 确认替换成功（不应再包含 change-me）
 grep -c change-me .env || echo "OK: .env 口令已随机化"
 
 # 3. 启动全部服务（compose 自动读取项目目录 .env）
 docker compose -f docker-compose.arm64.yml up -d
 
-# 4. 查看启动进度（等待迁移 + 种子完成，约 1-2 分钟）
+# 4. 查看启动进度（等待迁移 + 模板初始化完成，约 1-2 分钟）
 docker compose -f docker-compose.arm64.yml logs -f sxdevops
 # 看到 "Listening on TCP address 0.0.0.0:8000" 即启动完成
 
@@ -255,19 +258,21 @@ sudo firewall-cmd --reload
 # 1. HTTP 可达（登录页 200）
 curl -I http://<服务器IP>:8000/login
 
-# 2. API 登录冒烟
+# 2. API 登录冒烟（口令来自 .env 的 SXDEVOPS_ADMIN_PASSWORD）
+ADMIN_PASSWORD=$(grep '^SXDEVOPS_ADMIN_PASSWORD=' .env | cut -d= -f2-)
 curl -s -X POST http://<服务器IP>:8000/api/auth/login/ \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"Admin@123456"}' | head -c 200
+  -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}" | head -c 200
 # 返回 {"token":"..."} 即成功
 
 # 3. 浏览器验证
-#    访问 http://<服务器IP>:8000 → 登录 admin/Admin@123456
-#    核对：仪表盘有数据、告警中心 12+ 条、CMDB 拓扑、Zabbix 演示主机
+#    访问 http://<服务器IP>:8000 → 以 admin / .env 口令登录
+#    核对：平台正常登录；告警/主机/事件墙等页面为空（生产默认不加载演示数据）；
+#          工具市场模板存在；AIOps 无演示会话
 
 # 4. 数据持久化验证
 docker compose -f docker-compose.arm64.yml restart
-# 重启后数据完整（种子不会重复执行）
+# 重启后数据完整（初始化不会重复执行）
 
 # 5. 架构一致性复查
 for img in sxdevops:latest-arm64 mysql:8.0.36 redis:7.2.5-alpine; do
@@ -314,16 +319,39 @@ docker exec sxdevops-mysql sh -c \
   'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" sxdevops' > sxdevops-backup-$(date +%F).sql
 ```
 
+### 9.1 清理演示种子数据（旧环境升级）
+
+若环境是按旧版指南部署的（首次启动自动加载了演示数据），升级新代码后按以下步骤清理：
+
+```bash
+# 1. 更新源码并重建镜像（含新的 clean_demo_data / ensure_admin 命令）
+git pull
+docker compose -f docker-compose.arm64.yml up -d --build
+
+# 2. 预览将要删除的演示数据（dry-run，仅打印不执行）
+docker compose -f docker-compose.arm64.yml exec sxdevops python manage.py clean_demo_data
+
+# 3. 确认无误后执行清理
+docker compose -f docker-compose.arm64.yml exec sxdevops python manage.py clean_demo_data --yes
+
+# 4. 管理员口令加固：.env 设置 SXDEVOPS_ADMIN_PASSWORD 后重建容器
+docker compose -f docker-compose.arm64.yml up -d --force-recreate
+```
+
+清理保留：管理员账号、工具市场内置模板、默认知识图谱环境（其演示绑定重置为空）。
+注意：清理命令按演示数据特征匹配删除，仅应在尚未录入真实业务数据的环境执行；
+已有真实数据时请先核对第 2 步 dry-run 输出，确认无误再执行。
+
 ---
 
 ## 十、部署自检表
 
 - [ ] `uname -m` 输出 `aarch64`
 - [ ] Docker ≥ 20.10 且 `docker compose version` 为 v2
-- [ ] `.env` 已按模板生成，SECRET_KEY/MYSQL 口令均已随机化（无 change-me 残留）
+- [ ] `.env` 已按模板生成，SECRET_KEY / MYSQL / SXDEVOPS_ADMIN_PASSWORD 口令均已随机化（无 change-me 残留）
 - [ ] 三个镜像 `docker inspect ... .Architecture` 均为 `arm64`
 - [ ] `docker compose ps` 三容器 Up（healthy）
 - [ ] 8000 端口防火墙放行
-- [ ] 登录页可访问，admin 登录成功
-- [ ] 演示数据完整（告警/日志/CMDB/看板）
+- [ ] 登录页可访问，admin 以 .env 口令登录成功
+- [ ] 生产环境无演示数据（告警/主机/事件墙为空；工具市场模板存在）
 - [ ] 重启后数据持久

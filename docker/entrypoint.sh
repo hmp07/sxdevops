@@ -44,6 +44,10 @@ fi
 
 if [ "${SXDEVOPS_SEED_DATA:-1}" = "1" ] && [ "$RUN_SEED" = "1" ]; then
   python manage.py seed_data
+elif [ "${SXDEVOPS_SEED_DATA:-1}" != "1" ]; then
+  # 生产模式（不加载演示种子）：仅确保管理员账号按 .env 口令初始化。
+  # 幂等且廉价，每次启动执行，用于把默认演示口令加固为环境变量口令。
+  python manage.py ensure_admin
 fi
 
 if [ "${SXDEVOPS_SEED_TEMPLATES:-1}" = "1" ] && [ "$RUN_SEED" = "1" ]; then
