@@ -1,0 +1,70 @@
+# SxDevOps 监控演示栈 — Grafana + Prometheus（可选，用于看板嵌入演示）
+#
+# 用法:
+#   docker compose -f docker-compose.monitoring.yml up -d
+#
+# Grafana 已预配置:
+#   - allow_embedding（iframe 嵌入开关）
+#   - 匿名 Viewer 访问（JWT auth_token 未配置时的兜底）
+#   - Prometheus 数据源 provisioning（uid: prometheus-infra，与平台 settings 默认一致）
+#   - 演示看板自动加载
+#
+# 访问:
+#   Grafana:     http://localhost:3000  (admin / admin，首次登录后修改)
+#   Prometheus:  http://localhost:9090
+#
+# 平台侧配置（可观测性 → 可视化 → 仪表盘 → 设置）:
+#   Grafana URL: http://localhost:3000
+#   API Token:   创建 Service Account + Token（Bearer glsa_...）
+
+services:
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: sxdevops-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_DEFAULT_THEME: light
+      # iframe 嵌入
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      # 匿名 Viewer 兜底（平台配置 jwt_secret 后走 JWT auth_token 自动登录）
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_NAME: "Main Org."
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      # JWT 自动登录（默认关闭，避免无 secret 文件时 Grafana 启动失败）。
+      # 启用方式：将平台 GrafanaSetting.jwt_secret 内容写入 deploy/grafana/jwt-secret 文件，
+      # 然后: GF_AUTH_JWT_ENABLED=true docker compose -f docker-compose.monitoring.yml up -d
+      GF_AUTH_JWT_ENABLED: "${GF_AUTH_JWT_ENABLED:-false}"
+      GF_AUTH_JWT_URL_LOGIN: "true"
+      GF_AUTH_JWT_HEADER_NAME: "X-JWT-Assertion"
+      GF_AUTH_JWT_USERNAME_CLAIM: "sub"
+      GF_AUTH_JWT_EMAIL_CLAIM: "email"
+      GF_AUTH_JWT_AUTO_SIGN_UP: "true"
+      GF_AUTH_JWT_ROLE_ATTRIBUTE_PATH: "role"
+      GF_AUTH_JWT_KEY_FILE: "/etc/grafana/jwt-secret"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deploy/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./deploy/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./deploy/grafana/dashboards:/etc/grafana/dashboards:ro
+      # JWT secret 文件。⚠ 启用 JWT 前必须先创建该文件（Docker 会把不存在的路径挂成空目录）：
+      #   openssl rand -hex 32 > deploy/grafana/jwt-secret
+      - ./deploy/grafana/jwt-secret:/etc/grafana/jwt-secret:ro
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: sxdevops-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus_data:/prometheus
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+volumes:
+  grafana_data:
+  prometheus_data:

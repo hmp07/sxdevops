@@ -1142,6 +1142,198 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(setting.dashboards[0]['folder'], '基础设施')
         self.assertEqual(setting.updated_by, 'observer-admin')
 
+    def test_grafana_config_put_with_url_persists_url(self):
+        """修复回归：看板配置保存不再清空已存 Grafana URL。"""
+        GrafanaSetting.objects.create(
+            name='default',
+            enabled=True,
+            url='http://grafana.keep.example.com',
+            default_path='/d/keep',
+            api_token='glsa_keep_token',
+        )
+        response = self.client.put(
+            '/api/observability/grafana/config/',
+            {
+                'enabled': True,
+                'url': 'http://grafana.keep.example.com',
+                'default_path': '/d/keep',
+                'folders': [],
+                'dashboards': [
+                    {
+                        'key': 'keep-overview',
+                        'title': '保留配置看板',
+                        'slug': 'keep-overview',
+                        'description': '',
+                        'folder': '基础设施',
+                        'path': '',
+                        'full_url': 'http://grafana.keep.example.com/d/keep-overview',
+                        'panel_count': 3,
+                        'tags': [],
+                        'uid': 'keep-uid',
+                    }
+                ],
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        setting = GrafanaSetting.objects.get(name='default')
+        self.assertEqual(setting.url, 'http://grafana.keep.example.com')
+        self.assertEqual(setting.default_path, '/d/keep')
+        # 未传 api_token（write_only）时保留已存 Token
+        self.assertEqual(setting.api_token, 'glsa_keep_token')
+
+    def test_grafana_config_get_reports_has_token_flags(self):
+        GrafanaSetting.objects.create(
+            name='default',
+            url='http://grafana.token.example.com',
+            api_token='glsa_test_token',
+            jwt_secret='demo-secret',
+        )
+        response = self.client.get('/api/observability/grafana/config/')
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['has_api_token'])
+        self.assertTrue(payload['has_jwt_secret'])
+        # Token/secret 永不回传
+        self.assertNotIn('api_token', payload)
+        self.assertNotIn('jwt_secret', payload)
+
+    @patch('ops.observability_views.http_requests.get')
+    def test_grafana_test_connection_success(self, mock_get):
+        GrafanaSetting.objects.create(
+            name='default',
+            url='http://grafana.health.internal.local',
+            api_token='glsa_test_token',
+        )
+        health_resp = MagicMock()
+        health_resp.status_code = 200
+        health_resp.json.return_value = {'version': '11.3.1', 'commit': 'abc', 'database': 'ok'}
+        org_resp = MagicMock()
+        org_resp.status_code = 200
+        org_resp.json.return_value = {'id': 1, 'name': 'Main Org.'}
+        login_resp = MagicMock()
+        login_resp.status_code = 302
+        login_resp.headers = {'Location': '/'}
+        mock_get.side_effect = [health_resp, org_resp, login_resp]
+
+        response = self.client.post('/api/observability/grafana/test/', {}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['status'], 'success')
+        self.assertEqual(payload['version'], '11.3.1')
+        self.assertEqual(payload['org']['name'], 'Main Org.')
+        # Bearer token 从 DB 读取
+        auth_headers = mock_get.call_args_list[0][1]['headers']
+        self.assertEqual(auth_headers['Authorization'], 'Bearer glsa_test_token')
+
+    @patch('ops.observability_views.http_requests.get')
+    def test_grafana_test_connection_with_unsaved_overrides(self, mock_get):
+        health_resp = MagicMock()
+        health_resp.status_code = 200
+        health_resp.json.return_value = {'version': '10.4.0'}
+        org_resp = MagicMock()
+        org_resp.status_code = 200
+        org_resp.json.return_value = {'id': 1, 'name': 'Demo Org'}
+        mock_get.side_effect = [health_resp, org_resp]
+
+        response = self.client.post(
+            '/api/observability/grafana/test/',
+            {'url': 'http://grafana.override.internal.local', 'api_token': 'glsa_override'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['status'], 'success')
+        self.assertEqual(payload['version'], '10.4.0')
+        first_url = mock_get.call_args_list[0][0][0]
+        self.assertIn('grafana.override.internal.local', first_url)
+        auth_headers = mock_get.call_args_list[0][1]['headers']
+        self.assertEqual(auth_headers['Authorization'], 'Bearer glsa_override')
+
+    @patch('ops.observability_views.http_requests.get')
+    def test_grafana_discover_returns_dashboards(self, mock_get):
+        GrafanaSetting.objects.create(name='default', url='http://grafana.disc.internal.local', api_token='glsa_disc')
+        folders_resp = MagicMock()
+        folders_resp.status_code = 200
+        folders_resp.json.return_value = [{'uid': 'f1', 'title': '基础设施'}]
+        dashboards_resp = MagicMock()
+        dashboards_resp.status_code = 200
+        dashboards_resp.json.return_value = [
+            {
+                'uid': 'infra-overview',
+                'title': '基础设施总览',
+                'slug': 'infra-overview',
+                'url': '/d/infra-overview/ji-chu-she-shi-zong-lan',
+                'folderUid': 'f1',
+                'folderTitle': '基础设施',
+                'tags': ['infra'],
+            }
+        ]
+        mock_get.side_effect = [folders_resp, dashboards_resp]
+
+        response = self.client.post('/api/observability/grafana/discover/', {}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['status'], 'success')
+        self.assertEqual(payload['folder_count'], 1)
+        self.assertEqual(payload['dashboard_count'], 1)
+        self.assertEqual(payload['dashboards'][0]['uid'], 'infra-overview')
+        self.assertEqual(payload['dashboards'][0]['folderTitle'], '基础设施')
+
+    def test_grafana_embed_token_requires_jwt_secret(self):
+        response = self.client.post('/api/observability/grafana/embed-token/', {}, format='json')
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['token'], '')
+        self.assertEqual(payload['mode'], 'anonymous')
+
+    def test_grafana_embed_token_signs_jwt(self):
+        import jwt as pyjwt
+
+        GrafanaSetting.objects.create(name='default', jwt_secret='demo-shared-secret')
+        response = self.client.post('/api/observability/grafana/embed-token/', {}, format='json')
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['mode'], 'jwt')
+        claims = pyjwt.decode(payload['token'], 'demo-shared-secret', algorithms=['HS256'])
+        self.assertEqual(claims['sub'], 'observer-admin')
+        self.assertIn('exp', claims)
+
+    @patch('ops.observability_views.http_requests.get')
+    def test_grafana_dashboard_panels_flattens_rows(self, mock_get):
+        GrafanaSetting.objects.create(name='default', url='http://grafana.panels.internal.local', api_token='glsa_panels')
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            'dashboard': {
+                'uid': 'k8s-workload',
+                'slug': 'kubernetes-compute-resources-workload',
+                'title': 'K8s 工作负载资源',
+                'panels': [
+                    {'id': 1, 'title': 'CPU 使用率', 'type': 'timeseries'},
+                    {'id': 2, 'title': '行容器', 'type': 'row', 'panels': [
+                        {'id': 3, 'title': '内存使用率', 'type': 'timeseries'},
+                    ]},
+                ],
+                'templating': {'list': [{'name': 'cluster', 'current': {'text': 'prod-k8s'}}]},
+            }
+        }
+        mock_get.return_value = resp
+
+        response = self.client.get('/api/observability/grafana/dashboard/panels/?uid=k8s-workload')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        # row 类型被过滤，嵌套面板被拍平
+        titles = [item['title'] for item in payload['panels']]
+        self.assertIn('CPU 使用率', titles)
+        self.assertIn('内存使用率', titles)
+        self.assertNotIn('行容器', titles)
+        self.assertEqual(payload['variables'][0]['name'], 'cluster')
+
     def test_observability_overview_prefers_persisted_grafana_setting(self):
         GrafanaSetting.objects.create(
             name='default',

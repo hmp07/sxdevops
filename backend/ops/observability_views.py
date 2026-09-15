@@ -455,6 +455,11 @@ def _grafana_config():
     config.setdefault('demo_mode', True)
     config.setdefault('folders', [])
     config.setdefault('dashboards', [])
+    config.setdefault('api_token', '')
+    config.setdefault('org_id', 1)
+    config.setdefault('tls_verify', True)
+    config.setdefault('timeout', 10)
+    config.setdefault('jwt_secret', '')
     db_config = _get_grafana_setting()
     if db_config:
         config.update({
@@ -464,6 +469,15 @@ def _grafana_config():
             'folders': db_config.folders or config.get('folders') or [],
             'dashboards': db_config.dashboards or config.get('dashboards') or [],
         })
+        # 凭据与连接参数：DB 非空才覆盖 env，保证 demo/兜底行为不变
+        if db_config.api_token:
+            config['api_token'] = db_config.api_token
+        if db_config.jwt_secret:
+            config['jwt_secret'] = db_config.jwt_secret
+        if db_config.org_id:
+            config['org_id'] = db_config.org_id
+        config['tls_verify'] = db_config.tls_verify
+        config['timeout'] = db_config.timeout
     return config
 
 
@@ -589,6 +603,32 @@ def _prometheus_headers(config):
     if token:
         headers['Authorization'] = f'Bearer {token}'
     return headers
+
+
+def _grafana_api_token(config=None):
+    """Grafana Service Account Token：DB 优先，env PROMETHEUS_GRAFANA_API_TOKEN 兜底。"""
+    cfg = config if isinstance(config, dict) else {}
+    token = str(cfg.get('api_token') or '').strip()
+    if not token:
+        token = str(_prometheus_config().get('grafana_api_token') or '').strip()
+    return token
+
+
+def _grafana_api_headers(config=None):
+    """Grafana HTTP API 通用请求头（Bearer Service Account Token）。"""
+    headers = {'Accept': 'application/json'}
+    token = _grafana_api_token(config)
+    if token:
+        headers['Authorization'] = f'Bearer {token}'
+    return headers
+
+
+def _grafana_http_options(config=None):
+    """Grafana HTTP API 请求选项（超时/TLS 验证来自 GrafanaSetting，env 兜底）。"""
+    cfg = config if isinstance(config, dict) else _grafana_config()
+    timeout = _config_int(cfg.get('timeout'), 10) or 10
+    tls_verify = bool(cfg.get('tls_verify', True))
+    return {'headers': _grafana_api_headers(cfg), 'timeout': min(max(timeout, 3), 60), 'verify': tls_verify}
 
 
 def _metric_config_value(config, *keys, default=''):
@@ -755,12 +795,15 @@ def _resolve_prometheus_client(overrides=None):
 
     datasource_id = str(config.get('grafana_datasource_id') or '').strip()
     datasource_uid = str(config.get('grafana_datasource_uid') or 'prometheus-infra').strip()
+    # Grafana API 调用统一使用 DB 存储的 Service Account Token（env 兜底）
+    grafana_options = _grafana_http_options(_grafana_config())
     if not datasource_id:
         try:
             response = http_requests.get(
                 f'{grafana_url}/api/datasources/uid/{quote(datasource_uid, safe="")}',
-                headers=headers,
-                timeout=timeout,
+                headers=grafana_options['headers'],
+                timeout=grafana_options['timeout'],
+                verify=grafana_options['verify'],
             )
             if response.status_code >= 400:
                 return {'ready': False, 'warning': f'Grafana 数据源查询失败: HTTP {response.status_code}'}
@@ -774,8 +817,9 @@ def _resolve_prometheus_client(overrides=None):
     return {
         'ready': True,
         'base_url': f'{grafana_url}/api/datasources/proxy/{datasource_id}',
-        'headers': headers,
-        'timeout': timeout,
+        'headers': grafana_options['headers'],
+        'timeout': grafana_options['timeout'],
+        'verify': grafana_options['verify'],
         'source': 'grafana',
         'description': f'Grafana 数据源代理 {datasource_uid}',
     }
@@ -1038,12 +1082,12 @@ def execute_dashboard_panel_queries(dashboard_key, *, panel_id='', panel_title='
     grafana_url = _grafana_api_base()
     if not grafana_url:
         raise RuntimeError('未配置可用 Grafana 地址')
-    headers = _prometheus_headers(_prometheus_config())
-    timeout = _config_int(_prometheus_config().get('timeout'), 6)
+    grafana_options = _grafana_http_options(_grafana_config())
     response = http_requests.get(
         f'{grafana_url}/api/dashboards/uid/{quote(uid, safe="")}',
-        headers=headers,
-        timeout=timeout,
+        headers=grafana_options['headers'],
+        timeout=grafana_options['timeout'],
+        verify=grafana_options['verify'],
     )
     if response.status_code >= 400:
         raise RuntimeError(f'Grafana Dashboard HTTP {response.status_code}')
@@ -1461,6 +1505,11 @@ def grafana_setting_view(request):
             'default_path': config.get('default_path') or '',
             'folders': config.get('folders') or [],
             'dashboards': config.get('dashboards') or DEMO_GRAFANA_DASHBOARDS,
+            'org_id': int(config.get('org_id') or 1),
+            'tls_verify': bool(config.get('tls_verify', True)),
+            'timeout': int(config.get('timeout') or 10),
+            'has_api_token': bool(instance and instance.api_token),
+            'has_jwt_secret': bool(instance and instance.jwt_secret),
             'updated_by': instance.updated_by if instance else '',
             'created_at': instance.created_at if instance else None,
             'updated_at': instance.updated_at if instance else None,
@@ -1492,6 +1541,244 @@ def grafana_setting_view(request):
     response_data = GrafanaSettingSerializer(saved).data
     response_data['persisted'] = True
     return Response(response_data)
+
+
+def _grafana_connection_target(data):
+    """从请求体解析测试目标：显式传入的 url/token 优先，否则使用已保存配置。"""
+    url = str(data.get('url') or '').strip()
+    api_token = str(data.get('api_token') or '').strip()
+    config = _grafana_config()
+    if not url:
+        url = config.get('url') or ''
+    if not api_token:
+        api_token = _grafana_api_token(config)
+    return url.rstrip('/') if url else '', api_token, config
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.grafana.view')])
+def grafana_test_connection(request):
+    """Grafana 连接测试：版本/组织信息 + 嵌入就绪探测。
+
+    body 可带 {url, api_token} 用于测试尚未保存的配置；省略则用已保存配置。
+    """
+    if not user_has_permissions(request.user, ['ops.grafana.manage']):
+        return Response({'detail': '缺少 ops.grafana.manage 权限'}, status=status.HTTP_403_FORBIDDEN)
+
+    url, api_token, config = _grafana_connection_target(request.data or {})
+    if not url or _is_example_url(url):
+        return Response({'status': 'error', 'message': 'Grafana URL 未配置'}, status=status.HTTP_400_BAD_REQUEST)
+
+    headers = _grafana_api_headers({'api_token': api_token}) if api_token else {'Accept': 'application/json'}
+    timeout = min(max(_config_int(config.get('timeout'), 10), 3), 60)
+    verify = bool(config.get('tls_verify', True))
+
+    version = ''
+    org = {}
+    try:
+        health = http_requests.get(f'{url}/api/health', headers=headers, timeout=timeout, verify=verify)
+        if health.status_code < 400:
+            body = health.json()
+            version = body.get('version') or ''
+        else:
+            # 部分版本 /api/health 需管理员权限，回退 /api/org
+            org_resp = http_requests.get(f'{url}/api/org', headers=headers, timeout=timeout, verify=verify)
+            if org_resp.status_code >= 400:
+                return Response(
+                    {'status': 'error', 'message': f'Grafana API 访问失败: HTTP {org_resp.status_code}'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            org = org_resp.json()
+    except Exception as exc:
+        return Response({'status': 'error', 'message': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 嵌入就绪探测：带匿名身份的请求访问 /login，若被 302 跳离登录页说明匿名访问已启用
+    embed_warning = ''
+    try:
+        probe = http_requests.get(
+            f'{url}/login',
+            headers={'Accept': 'text/html'},
+            timeout=timeout,
+            verify=verify,
+            allow_redirects=False,
+        )
+        if probe.status_code in (302, 301):
+            location = str(probe.headers.get('Location') or '')
+            if '/login' in location:
+                embed_warning = '匿名访问可能未开启，iframe 嵌入将跳转登录页'
+        elif probe.status_code == 200:
+            embed_warning = '匿名访问可能未开启，iframe 嵌入将停留在登录页（请确认 allow_embedding 与匿名/JWT 配置）'
+    except Exception:
+        pass
+
+    payload = {
+        'status': 'success',
+        'version': version,
+        'org': org or None,
+        'embed_warning': embed_warning,
+    }
+    if not org:
+        try:
+            org_resp = http_requests.get(f'{url}/api/org', headers=headers, timeout=timeout, verify=verify)
+            if org_resp.status_code < 400:
+                payload['org'] = org_resp.json()
+        except Exception:
+            pass
+    return Response(payload)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.grafana.view')])
+def grafana_embed_token(request):
+    """签发 iframe 嵌入用的短时 JWT（auth_token）。
+
+    与 Grafana [auth.jwt] url_login 配合：iframe URL 追加 ?auth_token=<jwt>。
+    未配置 jwt_secret 时返回空 token（前端回退匿名访问模式）。
+    """
+    config = _grafana_config()
+    secret = str(config.get('jwt_secret') or '').strip()
+    if not secret:
+        return Response({'token': '', 'mode': 'anonymous'})
+    try:
+        import jwt as pyjwt
+    except ImportError:
+        return Response({'detail': 'PyJWT 未安装，无法签发嵌入 Token'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    user = request.user
+    now = int(timezone.now().timestamp())
+    claims = {
+        'sub': user.username,
+        'email': getattr(user, 'email', '') or f'{user.username}@sxdevops.local',
+        'name': user.get_full_name() or user.username,
+        'iat': now,
+        'exp': now + 60,
+    }
+    token = pyjwt.encode(claims, secret, algorithm='HS256')
+    return Response({'token': token, 'mode': 'jwt', 'expires_in': 60})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.grafana.view')])
+def grafana_discover(request):
+    """从 Grafana 自动发现目录与看板（GET /api/search）。
+
+    body 可带 {url, api_token} 用于测试尚未保存的配置；省略则用已保存配置。
+    """
+    if not user_has_permissions(request.user, ['ops.grafana.manage']):
+        return Response({'detail': '缺少 ops.grafana.manage 权限'}, status=status.HTTP_403_FORBIDDEN)
+
+    url, api_token, config = _grafana_connection_target(request.data or {})
+    if not url or _is_example_url(url):
+        return Response({'status': 'error', 'message': 'Grafana URL 未配置'}, status=status.HTTP_400_BAD_REQUEST)
+
+    headers = _grafana_api_headers({'api_token': api_token}) if api_token else {'Accept': 'application/json'}
+    timeout = min(max(_config_int(config.get('timeout'), 10), 3), 60)
+    verify = bool(config.get('tls_verify', True))
+
+    def _fetch_search(search_type):
+        results = []
+        for page in range(1, 4):
+            resp = http_requests.get(
+                f'{url}/api/search',
+                params={'type': search_type, 'limit': 5000, 'page': page},
+                headers=headers,
+                timeout=timeout,
+                verify=verify,
+            )
+            if resp.status_code >= 400:
+                raise RuntimeError(f'Grafana api/search 失败: HTTP {resp.status_code}')
+            items = resp.json()
+            results.extend(items)
+            if len(items) < 5000:
+                break
+        return results
+
+    try:
+        folders_raw = _fetch_search('dash-folder')
+        dashboards_raw = _fetch_search('dash-db')
+    except Exception as exc:
+        return Response({'status': 'error', 'message': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    folders = [
+        {'uid': item.get('uid') or '', 'title': item.get('title') or ''}
+        for item in folders_raw
+    ]
+    dashboards = [
+        {
+            'uid': item.get('uid') or '',
+            'title': item.get('title') or '',
+            'slug': item.get('slug') or item.get('uri') or '',
+            'url': item.get('url') or '',
+            'folderUid': item.get('folderUid') or '',
+            'folderTitle': item.get('folderTitle') or '',
+            'tags': item.get('tags') or [],
+        }
+        for item in dashboards_raw
+    ]
+    return Response({
+        'status': 'success',
+        'url': url,
+        'folders': folders,
+        'dashboards': dashboards,
+        'dashboard_count': len(dashboards),
+        'folder_count': len(folders),
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.grafana.view')])
+def grafana_dashboard_panels(request):
+    """获取 Grafana 看板的面板列表与模板变量（用于面板级嵌入 /d-solo）。"""
+    uid = str(request.query_params.get('uid') or '').strip()
+    if not uid:
+        return Response({'detail': 'uid 参数不能为空'}, status=status.HTTP_400_BAD_REQUEST)
+    grafana_url = _grafana_api_base()
+    if not grafana_url:
+        return Response({'detail': '未配置可用 Grafana 地址'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        grafana_options = _grafana_http_options(_grafana_config())
+        response = http_requests.get(
+            f'{grafana_url}/api/dashboards/uid/{quote(uid, safe="")}',
+            headers=grafana_options['headers'],
+            timeout=grafana_options['timeout'],
+            verify=grafana_options['verify'],
+        )
+        if response.status_code >= 400:
+            return Response(
+                {'detail': f'Grafana Dashboard HTTP {response.status_code}'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        dashboard_payload = response.json()
+    except Exception as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+    dashboard = dashboard_payload.get('dashboard') or {}
+    flattened = _flatten_dashboard_panels(dashboard.get('panels') or [])
+    panels = [
+        {
+            'id': panel.get('id'),
+            'title': panel.get('title') or '',
+            'type': panel.get('type') or '',
+        }
+        for panel in flattened
+        if isinstance(panel, dict) and panel.get('type') not in ('row',)
+    ]
+    variables = []
+    for item in dashboard.get('templating', {}).get('list') or []:
+        if not isinstance(item, dict):
+            continue
+        variables.append({
+            'name': item.get('name') or '',
+            'label': item.get('label') or item.get('name') or '',
+            'current': (item.get('current') or {}).get('text') if isinstance(item.get('current'), dict) else '',
+        })
+    return Response({
+        'uid': dashboard.get('uid') or uid,
+        'slug': dashboard.get('slug') or '',
+        'title': dashboard.get('title') or '',
+        'panels': panels,
+        'variables': variables,
+    })
 
 
 @api_view(['POST'])

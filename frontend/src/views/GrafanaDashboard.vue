@@ -13,6 +13,14 @@
         </div>
         <span class="immersive-toolbar__hint">注意：看板首次加载会比较慢</span>
         <div class="immersive-toolbar__actions">
+          <el-select v-model="refreshInterval" size="small" class="immersive-refresh-select" placeholder="自动刷新">
+            <el-option label="关闭刷新" value="" />
+            <el-option label="15 秒" value="15s" />
+            <el-option label="30 秒" value="30s" />
+            <el-option label="1 分钟" value="1m" />
+            <el-option label="5 分钟" value="5m" />
+          </el-select>
+          <el-button size="small" plain @click="reloadImmersiveFrame">重载</el-button>
           <el-button size="small" v-if="canViewTracing" type="success" plain @click="openTraceFromDashboard(selectedDashboard)">查链路</el-button>
           <el-button size="small" v-if="canQueryLogs" type="warning" plain @click="openLogsFromDashboard(selectedDashboard)">查日志</el-button>
           <el-button size="small" @click="openExternal(selectedDashboardUrl)">全屏打开</el-button>
@@ -23,7 +31,7 @@
         <iframe
           ref="immersiveFrameRef"
           class="immersive-frame"
-          :src="selectedDashboardUrl"
+          :src="appendEmbedAuth(selectedDashboardUrl)"
           :style="{ height: `${immersiveFrameHeight}px` }"
           :title="`${selectedDashboard.title}-immersive`"
           @load="handleGrafanaFrameLoad"
@@ -61,7 +69,15 @@
           </div>
           <div class="list-head-actions">
             <el-button size="small" plain @click="collapseAllFolders">全部折叠</el-button>
+            <el-button v-if="canManageGrafana" size="small" plain @click="openSyncDialog">
+              <el-icon><Download /></el-icon>
+              从 Grafana 同步
+            </el-button>
             <el-button v-if="canManageGrafana" size="small" type="primary" plain @click="openFolderDialog()">新增目录</el-button>
+            <el-button v-if="canManageGrafana" size="small" plain @click="openSettingsDialog">
+              <el-icon><Setting /></el-icon>
+              设置
+            </el-button>
             <el-button size="small" plain @click="embedHelpVisible = true">
               <el-icon><QuestionFilled /></el-icon>
               Grafana 嵌入帮助
@@ -368,6 +384,28 @@ org_role = Viewer</pre>
             <span class="config-url-hint">用于嵌入展示时隐藏 Grafana 菜单并使用浅色主题。</span>
           </div>
         </div>
+        <div class="drawer-field">
+          <label>嵌入面板（可选）</label>
+          <div class="drawer-inline-control">
+            <el-select
+              v-model="dashboardDraft.panel_id"
+              clearable
+              filterable
+              :loading="panelLoading"
+              placeholder="选择单个面板（/d-solo 嵌入），留空嵌入整个看板"
+              style="width: 100%"
+              @visible-change="(visible) => visible && loadDashboardPanels()"
+            >
+              <el-option
+                v-for="panel in panelOptions"
+                :key="panel.id"
+                :label="`${panel.title || '未命名面板'} (${panel.type})`"
+                :value="panel.id"
+              />
+            </el-select>
+            <span class="config-url-hint">面板级嵌入需在看板 URL 可访问并已保存 Token 后生效。</span>
+          </div>
+        </div>
         <div class="drawer-field__hint">
           新建看板会直接写入当前目录；保存后会立刻同步到看板列表。
         </div>
@@ -379,15 +417,126 @@ org_role = Viewer</pre>
         </div>
       </template>
     </el-drawer>
+
+    <el-dialog v-model="settingsDialog.visible" title="Grafana 连接设置" width="560px" destroy-on-close>
+      <div class="drawer-form">
+        <div class="drawer-field">
+          <label>Grafana URL</label>
+          <el-input v-model.trim="settingsDialog.url" placeholder="例如：https://grafana.example.com" />
+        </div>
+        <div class="drawer-field">
+          <label>API Token（Service Account Token）</label>
+          <el-input v-model.trim="settingsDialog.api_token" type="password" show-password :placeholder="grafanaConfig.has_api_token ? '已配置，留空保持不变' : '例如：glsa_xxx'" />
+          <span class="config-url-hint">用于平台服务端调用 Grafana API（连接测试 / 同步 / PromQL 代理）。</span>
+        </div>
+        <div class="drawer-field">
+          <label>默认看板路径（可选）</label>
+          <el-input v-model.trim="settingsDialog.default_path" placeholder="例如：/d/apm-overview" />
+        </div>
+        <div class="drawer-field drawer-field--inline">
+          <label>Org ID</label>
+          <el-input-number v-model="settingsDialog.org_id" :min="1" :max="999" size="small" />
+        </div>
+        <div class="drawer-field drawer-field--inline">
+          <label>TLS 验证</label>
+          <el-switch v-model="settingsDialog.tls_verify" active-text="开启（推荐）" inactive-text="关闭（仅自签名证书内网）" />
+        </div>
+        <div class="drawer-field drawer-field--inline">
+          <label>请求超时(秒)</label>
+          <el-input-number v-model="settingsDialog.timeout" :min="3" :max="60" size="small" />
+        </div>
+        <el-alert
+          v-if="settingsDialog.testResult"
+          :type="settingsDialog.testResult.ok ? 'success' : 'error'"
+          :closable="false"
+          class="settings-test-result"
+        >
+          <template #title>
+            <span v-if="settingsDialog.testResult.ok">
+              连接正常
+              <template v-if="settingsDialog.testResult.data.version">，版本 {{ settingsDialog.testResult.data.version }}</template>
+              <template v-if="settingsDialog.testResult.data.org?.name">，组织：{{ settingsDialog.testResult.data.org.name }}</template>
+            </span>
+            <span v-else>{{ settingsDialog.testResult.data?.message || '连接测试失败' }}</span>
+          </template>
+          <p v-if="settingsDialog.testResult.ok && settingsDialog.testResult.data.embed_warning" class="settings-test-warning">
+            {{ settingsDialog.testResult.data.embed_warning }}
+          </p>
+        </el-alert>
+      </div>
+      <template #footer>
+        <div class="drawer-footer">
+          <el-button @click="settingsDialog.visible = false">取消</el-button>
+          <el-button :loading="settingsDialog.testing" @click="runGrafanaTest">测试连接</el-button>
+          <el-button type="primary" :loading="configSaving" @click="submitSettingsDialog">保存</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="syncDialog.visible" title="从 Grafana 同步看板" width="640px" destroy-on-close>
+      <div class="drawer-form">
+        <div class="drawer-field">
+          <label>Grafana URL</label>
+          <el-input v-model.trim="syncDialog.url" placeholder="默认使用已保存的 Grafana URL" />
+        </div>
+        <div class="drawer-field">
+          <label>API Token（可选，未填写使用已保存 Token）</label>
+          <el-input v-model.trim="syncDialog.api_token" type="password" show-password placeholder="glsa_xxx" />
+        </div>
+        <div class="drawer-field drawer-field--inline">
+          <div class="drawer-inline-control">
+            <el-button :loading="syncDialog.loading" @click="fetchGrafanaDiscovery">获取看板列表</el-button>
+            <el-switch v-model="syncDialog.skipExisting" active-text="跳过已导入" inactive-text="显示全部" />
+          </div>
+        </div>
+        <div v-if="syncDialog.dashboards.length" class="drawer-field">
+          <label>导入目标目录（可选，留空使用 Grafana 目录名）</label>
+          <el-autocomplete
+            v-model.trim="syncDialog.targetFolder"
+            :fetch-suggestions="queryFolderSuggestions"
+            placeholder="例如：基础设施/节点"
+            clearable
+          />
+        </div>
+        <div v-if="syncDialog.dashboards.length" class="sync-panel-list">
+          <el-checkbox-group v-model="syncDialog.checked">
+            <el-checkbox v-for="item in syncDialog.dashboards" :key="item.uid" :value="item.uid" class="sync-panel-item">
+              <span class="sync-panel-item__title">{{ item.title }}</span>
+              <span class="sync-panel-item__meta">{{ item.folderTitle || '未分类' }} · {{ (item.tags || []).join(', ') || '无标签' }}</span>
+            </el-checkbox>
+          </el-checkbox-group>
+        </div>
+        <div v-else-if="syncDialog.loading" class="sync-empty">正在获取看板列表...</div>
+        <div v-else class="sync-empty">点击「获取看板列表」从 Grafana 拉取目录与看板（需 Service Account Token 具备 Viewer 权限）。</div>
+      </div>
+      <template #footer>
+        <div class="drawer-footer">
+          <el-button @click="syncDialog.visible = false">取消</el-button>
+          <el-button type="primary" :loading="syncDialog.importing" :disabled="!syncDialog.checked.length" @click="importGrafanaDiscovery">
+            导入已选（{{ syncDialog.checked.length }}）
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown, ArrowRight, Delete, EditPen, Folder, FolderAdd, FolderOpened, Histogram, Link, MoreFilled, Plus, QuestionFilled, RefreshRight } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, Delete, Download, EditPen, Folder, FolderAdd, FolderOpened, Histogram, Link, MoreFilled, Plus, QuestionFilled, RefreshRight, Setting } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getGrafanaConfig, getObservabilityOverview, resolveGrafanaToLogs, resolveGrafanaToTrace, updateGrafanaConfig } from '@/api/modules/ops'
+import {
+  discoverGrafanaDashboards,
+  getGrafanaConfig,
+  getGrafanaDashboardPanels,
+  getGrafanaEmbedToken,
+  getObservabilityOverview,
+  resolveGrafanaToLogs,
+  resolveGrafanaToTrace,
+  testGrafanaConnection,
+  updateGrafanaConfig,
+} from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
 import { openRouteInNewTab } from '@/utils/router'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
@@ -412,9 +561,45 @@ const filters = reactive({
   tag: '',
 })
 const grafanaConfig = reactive({
+  enabled: true,
+  url: '',
+  default_path: '',
+  org_id: 1,
+  tls_verify: true,
+  timeout: 10,
+  has_api_token: false,
+  has_jwt_secret: false,
   folders: [],
   dashboards: [],
 })
+const settingsDialog = reactive({
+  visible: false,
+  testing: false,
+  testResult: null,
+  url: '',
+  api_token: '',
+  default_path: '',
+  org_id: 1,
+  tls_verify: true,
+  timeout: 10,
+})
+const syncDialog = reactive({
+  visible: false,
+  loading: false,
+  importing: false,
+  url: '',
+  api_token: '',
+  folders: [],
+  dashboards: [],
+  checked: [],
+  targetFolder: '',
+  skipExisting: true,
+})
+const panelOptions = ref([])
+const panelLoading = ref(false)
+const dashboardPanels = reactive({})
+const refreshInterval = ref('')
+const embedToken = ref('')
 const folderDialog = reactive({
   visible: false,
   mode: 'create',
@@ -524,6 +709,8 @@ function createEmptyDashboard(folder = '') {
     full_url: '',
     tags: [],
     panel_count: 0,
+    uid: '',
+    panel_id: null,
   }
 }
 
@@ -539,6 +726,8 @@ function resetDashboardDraft(item = {}) {
   dashboardDraft.full_url = normalized.full_url
   dashboardDraft.tags = [...normalized.tags]
   dashboardDraft.panel_count = normalized.panel_count
+  dashboardDraft.uid = normalized.uid
+  dashboardDraft.panel_id = normalized.panel_id
 }
 
 function normalizeFolder(item = {}, index = 0) {
@@ -721,7 +910,15 @@ const knownFolderOptions = computed(() => {
 })
 
 const selectedDashboard = computed(() => findDashboardByIdentity(selectedKey.value) || filteredDashboards.value[0] || null)
-const selectedDashboardUrl = computed(() => appendGrafanaContext(selectedDashboard.value?.url || ''))
+const selectedDashboardUrl = computed(() => {
+  const base = selectedDashboard.value?.url || selectedDashboard.value?.full_url || ''
+  let url = appendGrafanaContext(base)
+  // 实时刷新：Grafana 原生 refresh 参数（面板级自动刷新，无需 reload iframe）
+  if (refreshInterval.value && url) {
+    url = appendGrafanaParams(url, { refresh: refreshInterval.value })
+  }
+  return url
+})
 const immersiveFolderLabel = computed(() => {
   const folderPath = normalizeFolderPath(selectedDashboard.value?.folder || '')
   return folderPath ? `目录：${folderPath}` : '目录：未分类'
@@ -743,7 +940,6 @@ const folderDialogTitle = computed(() => {
 
 const canViewTracing = computed(() => authStore.hasPermission('ops.trace.view'))
 const canQueryLogs = computed(() => authStore.hasPermission('ops.log.query'))
-const canViewAlerts = computed(() => authStore.hasPermission('ops.alert.view'))
 const canManageGrafana = computed(() => authStore.hasPermission('ops.grafana.manage'))
 
 function normalizeDashboard(item = {}, index = null) {
@@ -759,6 +955,8 @@ function normalizeDashboard(item = {}, index = null) {
     full_url: String(item.full_url || item.url || '').trim(),
     tags: Array.isArray(item.tags) ? [...item.tags] : [],
     panel_count: Number(item.panel_count || 0),
+    uid: String(item.uid || '').trim(),
+    panel_id: item.panel_id !== undefined && item.panel_id !== null && item.panel_id !== '' ? Number(item.panel_id) : null,
   }
 }
 
@@ -853,6 +1051,14 @@ function queryFolderSuggestions(queryString, callback) {
 }
 
 function applyGrafanaConfig(data = {}) {
+  grafanaConfig.enabled = Boolean(data.enabled)
+  grafanaConfig.url = String(data.url || '').trim()
+  grafanaConfig.default_path = String(data.default_path || '').trim()
+  grafanaConfig.org_id = Number(data.org_id || 1)
+  grafanaConfig.tls_verify = data.tls_verify !== false
+  grafanaConfig.timeout = Number(data.timeout || 10)
+  grafanaConfig.has_api_token = Boolean(data.has_api_token)
+  grafanaConfig.has_jwt_secret = Boolean(data.has_jwt_secret)
   grafanaConfig.folders = Array.isArray(data.folders)
     ? data.folders.map((item, index) => normalizeFolder(item, index)).filter((item) => item.path)
     : []
@@ -941,13 +1147,15 @@ function buildGrafanaPayload({ dashboardsSource = grafanaConfig.dashboards, fold
       key: normalized.key || `dashboard-${index + 1}`,
       slug: normalized.slug || normalized.key || `dashboard-${index + 1}`,
       title: normalized.title,
-      description: '',
+      description: normalized.description,
       folder: normalizeFolderPath(normalized.folder),
-      folder_collapsed: false,
-      path: '',
+      folder_collapsed: normalized.folder_collapsed,
+      path: normalized.path,
       full_url: String(normalized.full_url || '').trim(),
       panel_count: Number(normalized.panel_count || 0),
       tags: Array.isArray(normalized.tags) ? normalized.tags.map((tag) => String(tag).trim()).filter(Boolean) : [],
+      uid: normalized.uid,
+      panel_id: normalized.panel_id,
     }
   })
 
@@ -973,9 +1181,10 @@ function buildGrafanaPayload({ dashboardsSource = grafanaConfig.dashboards, fold
   const mergedFolders = mergeFolderConfigs(foldersSource, normalizedDashboards)
 
   return {
-    enabled: true,
-    url: '',
-    default_path: '',
+    // 保留当前连接配置，避免目录/看板保存时清空已存 Grafana URL
+    enabled: grafanaConfig.enabled,
+    url: String(grafanaConfig.url || '').trim(),
+    default_path: String(grafanaConfig.default_path || '').trim(),
     folders: mergedFolders.map((item) => ({
       path: item.path,
       description: String(item.description || '').trim(),
@@ -983,6 +1192,22 @@ function buildGrafanaPayload({ dashboardsSource = grafanaConfig.dashboards, fold
     })),
     dashboards: normalizedDashboards.filter((item) => item.title && item.full_url),
   }
+}
+
+function buildGrafanaConnectionPayload() {
+  const payload = {
+    enabled: settingsDialog.visible ? true : grafanaConfig.enabled,
+    url: String(settingsDialog.url || '').trim(),
+    default_path: String(settingsDialog.default_path || '').trim(),
+    org_id: Number(settingsDialog.org_id || 1),
+    tls_verify: Boolean(settingsDialog.tls_verify),
+    timeout: Number(settingsDialog.timeout || 10),
+  }
+  // 留空表示不修改已保存凭据（write_only 字段语义）
+  if (settingsDialog.api_token) {
+    payload.api_token = String(settingsDialog.api_token).trim()
+  }
+  return payload
 }
 
 async function persistGrafanaConfig(nextState, successMessage) {
@@ -998,6 +1223,190 @@ async function persistGrafanaConfig(nextState, successMessage) {
   } finally {
     configSaving.value = false
   }
+}
+
+// ── Grafana 连接设置 ─────────────────────────────────────────────────
+
+function openSettingsDialog() {
+  settingsDialog.url = grafanaConfig.url || ''
+  settingsDialog.default_path = grafanaConfig.default_path || ''
+  settingsDialog.org_id = grafanaConfig.org_id || 1
+  settingsDialog.tls_verify = grafanaConfig.tls_verify !== false
+  settingsDialog.timeout = grafanaConfig.timeout || 10
+  settingsDialog.api_token = ''
+  settingsDialog.testResult = null
+  settingsDialog.visible = true
+}
+
+async function submitSettingsDialog() {
+  configSaving.value = true
+  try {
+    await updateGrafanaConfig(buildGrafanaConnectionPayload())
+    ElMessage.success('Grafana 连接配置已保存')
+    settingsDialog.visible = false
+    await loadOverview()
+  } catch (error) {
+    ElMessage.error(error?.message || 'Grafana 连接配置保存失败')
+  } finally {
+    configSaving.value = false
+  }
+}
+
+async function runGrafanaTest() {
+  settingsDialog.testing = true
+  settingsDialog.testResult = null
+  try {
+    const payload = { url: settingsDialog.url }
+    if (settingsDialog.api_token) {
+      payload.api_token = settingsDialog.api_token
+    }
+    const result = await testGrafanaConnection(payload)
+    settingsDialog.testResult = { ok: true, data: result }
+  } catch (error) {
+    settingsDialog.testResult = {
+      ok: false,
+      data: { status: 'error', message: error?.response?.data?.message || error?.message || '连接测试失败' },
+    }
+  } finally {
+    settingsDialog.testing = false
+  }
+}
+
+// ── 从 Grafana 同步 ──────────────────────────────────────────────────
+
+function openSyncDialog() {
+  syncDialog.url = grafanaConfig.url || ''
+  syncDialog.api_token = ''
+  syncDialog.folders = []
+  syncDialog.dashboards = []
+  syncDialog.checked = []
+  syncDialog.targetFolder = ''
+  syncDialog.visible = true
+}
+
+async function fetchGrafanaDiscovery() {
+  syncDialog.loading = true
+  try {
+    const payload = { url: syncDialog.url }
+    if (syncDialog.api_token) {
+      payload.api_token = syncDialog.api_token
+    }
+    const result = await discoverGrafanaDashboards(payload)
+    syncDialog.folders = result.folders || []
+    syncDialog.dashboards = result.dashboards || []
+    syncDialog.checked = (result.dashboards || [])
+      .filter((item) => !(syncDialog.skipExisting && isDashboardImported(item)))
+      .map((item) => item.uid)
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.message || error?.message || 'Grafana 发现失败')
+  } finally {
+    syncDialog.loading = false
+  }
+}
+
+function isDashboardImported(item) {
+  return grafanaConfig.dashboards.some((existing) => String(existing.uid || '') === String(item.uid || ''))
+}
+
+async function importGrafanaDiscovery() {
+  const selected = syncDialog.dashboards.filter((item) => syncDialog.checked.includes(item.uid))
+  if (!selected.length) {
+    ElMessage.warning('请先选择要导入的看板')
+    return
+  }
+  syncDialog.importing = true
+  try {
+    const nextDashboards = [...grafanaConfig.dashboards]
+    selected.forEach((item) => {
+      const uid = String(item.uid || '')
+      const exists = nextDashboards.some((existing) => String(existing.uid || '') === uid)
+      if (exists) return
+      const folder = syncDialog.targetFolder || item.folderTitle || ''
+      const embedPath = `/d/${item.uid}/${item.slug || ''}`
+      nextDashboards.push({
+        uid: item.uid,
+        key: uid,
+        slug: item.slug || uid,
+        title: item.title,
+        description: '',
+        folder: normalizeFolderPath(folder),
+        folder_collapsed: false,
+        path: embedPath,
+        full_url: `${String(syncDialog.url || grafanaConfig.url || '').replace(/\/+$/, '')}${embedPath}`,
+        panel_count: 0,
+        panel_id: null,
+        tags: Array.isArray(item.tags) ? item.tags : [],
+      })
+    })
+    await persistGrafanaConfig({ dashboardsSource: nextDashboards }, `已导入 ${selected.length} 个看板`)
+    syncDialog.visible = false
+  } catch (error) {
+    // validation message already shown
+  } finally {
+    syncDialog.importing = false
+  }
+}
+
+// ── 面板级嵌入 ──────────────────────────────────────────────────────
+
+function dashboardUidFromUrl(url = '') {
+  const value = String(url || '').trim()
+  try {
+    const parsed = new URL(value, window.location.origin)
+    const parts = (parsed.pathname || '').split('/').filter(Boolean)
+    if (parts.length >= 2 && parts[0] === 'd') {
+      return parts[1]
+    }
+  } catch {
+    // fall through
+  }
+  return String(dashboardDraft.uid || '').trim()
+}
+
+async function loadDashboardPanels() {
+  const uid = dashboardUidFromUrl(dashboardDraft.full_url)
+  if (!uid) {
+    panelOptions.value = []
+    return
+  }
+  panelLoading.value = true
+  try {
+    const result = await getGrafanaDashboardPanels(uid)
+    dashboardPanels[uid] = result.panels || []
+    dashboardDraft.uid = result.uid || uid
+    panelOptions.value = result.panels || []
+  } catch {
+    panelOptions.value = []
+    ElMessage.warning('面板列表获取失败，请确认看板 URL 与 Grafana Token 权限')
+  } finally {
+    panelLoading.value = false
+  }
+}
+
+// ── JWT 嵌入 Token（auth_token 自动登录）─────────────────────────────
+
+async function fetchEmbedToken() {
+  try {
+    const result = await getGrafanaEmbedToken()
+    embedToken.value = String(result?.token || '')
+  } catch {
+    embedToken.value = ''
+  }
+}
+
+function appendEmbedAuth(url = '') {
+  if (!embedToken.value) return url
+  return appendGrafanaParams(url, { auth_token: embedToken.value })
+}
+
+// ── 实时刷新 ────────────────────────────────────────────────────────
+
+function reloadImmersiveFrame() {
+  const frame = immersiveFrameRef.value
+  if (!frame || !selectedDashboardUrl.value) return
+  const base = selectedDashboardUrl.value.replace(/_ts=[^&]*&?/g, '')
+  const separator = base.includes('?') ? '&' : '?'
+  frame.src = appendEmbedAuth(`${base}${separator}_ts=${Date.now()}`)
 }
 
 function openFolderDialog(parentNode = null) {
@@ -1132,6 +1541,7 @@ function openDashboardDrawer(source = null) {
   dashboardDrawer.mode = source?.type === 'dashboard' || source?.full_url ? 'edit' : 'create'
   dashboardDrawer.editingKey = dashboardDrawer.mode === 'edit' ? String(source.key || '').trim() : ''
 
+  panelOptions.value = []
   if (dashboardDrawer.mode === 'edit') {
     resetDashboardDraft(source)
   } else {
@@ -1652,13 +2062,15 @@ function handleGrafanaFrameLoad() {
   scheduleGrafanaFrameMeasure()
 }
 
-function openFullscreen(item) {
+async function openFullscreen(item) {
   if (item?.key) {
     selectedKey.value = item.key
   }
-  if (!item?.url) {
+  if (!item?.url && !item?.full_url) {
     return
   }
+  // JWT auth_token 自动登录：打开看板前获取短时嵌入 Token
+  await fetchEmbedToken()
   fullscreenVisible.value = true
   nextTick(scheduleGrafanaFrameMeasure)
 }
@@ -2597,5 +3009,52 @@ onBeforeUnmount(() => {
 
 .hero.panel {
   border-radius: 20px;
+}
+
+.immersive-refresh-select {
+  width: 120px;
+}
+
+.settings-test-result {
+  margin-top: 8px;
+}
+
+.settings-test-warning {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--el-color-warning);
+  white-space: normal;
+}
+
+.sync-panel-list {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.sync-panel-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  margin: 4px 0;
+}
+
+.sync-panel-item__title {
+  font-weight: 500;
+}
+
+.sync-panel-item__meta {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.sync-empty {
+  padding: 24px 0;
+  text-align: center;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
 }
 </style>

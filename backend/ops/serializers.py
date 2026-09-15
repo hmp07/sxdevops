@@ -220,6 +220,10 @@ class GrafanaSettingSerializer(serializers.ModelSerializer):
     class Meta:
         model = GrafanaSetting
         fields = '__all__'
+        extra_kwargs = {
+            'api_token': {'write_only': True, 'required': False, 'allow_blank': True},
+            'jwt_secret': {'write_only': True, 'required': False, 'allow_blank': True},
+        }
 
 
 class DockerHostSerializer(serializers.ModelSerializer):

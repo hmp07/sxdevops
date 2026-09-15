@@ -1,0 +1,22 @@
+# Prometheus 演示配置 — 监控演示栈
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # 自监控：Prometheus 自身指标，保证演示看板有真实数据
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # 平台演示主机指标（由 seed_data 的演示主机名承载，
+  # 可通过 node_exporter 或平台 mock exporter 提供，此处预留）
+  - job_name: sxdevops-demo-hosts
+    static_configs:
+      - targets:
+          - 'order-api-ecs-01:9100'
+          - 'order-api-ecs-02:9100'
+          - 'k8s-node-01:9100'
+          - 'member-api:9100'
+          - 'payment-worker:9100'
+          - 'gateway:9100'

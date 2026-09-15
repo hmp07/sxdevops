@@ -120,6 +120,7 @@ BUILTIN_ROLES = [
             'ops.log.entry.view', 'ops.log.datasource.view', 'ops.log.datasource.manage', 'ops.log.query',
             'ops.trace.view', 'ops.trace.datasource.view', 'ops.trace.datasource.manage',
             'ops.metric.query', 'ops.metric.datasource.view', 'ops.metric.datasource.manage',
+            'ops.grafana.view', 'ops.grafana.manage',
             'ops.k8s.view', 'ops.k8s.manage', 'ops.k8s.exec', 'ops.docker.view', 'ops.docker.manage',
             'eventwall.view', 'eventwall.source.view', 'eventwall.source.manage',
             'rbac.audit.view',
