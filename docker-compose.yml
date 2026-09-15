@@ -37,7 +37,7 @@ services:
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
-      - --default-authentication-plugin=mysql_native_password
+      # 认证插件使用 MySQL 8.0 默认的 caching_sha2_password（mysql_native_password 已弃用）
     environment:
       MYSQL_DATABASE: sxdevops
       MYSQL_USER: sxdevops

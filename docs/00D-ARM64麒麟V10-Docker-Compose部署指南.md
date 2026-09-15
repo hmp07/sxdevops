@@ -194,7 +194,7 @@ docker images    # 确认三个镜像均存在且为 arm64
 | 服务 | 端口 | 数据卷 | 说明 |
 | ---- | ---- | ---- | ---- |
 | `sxdevops` | 8000 | — | 自建应用（Daphne ASGI，前端静态文件内嵌） |
-| `mysql` | 内部 3306 | `mysql_data` | MySQL 8，utf8mb4，健康检查 `mysqladmin ping` |
+| `mysql` | 内部 3306 | `mysql_data` | MySQL 8，utf8mb4，默认认证插件 caching_sha2_password，健康检查 `mysqladmin ping` |
 | `redis` | 内部 6379 | `redis_data` | Redis 7，AOF 持久化，健康检查 `redis-cli ping` |
 
 应用环境变量（`environment` 段）：
@@ -289,6 +289,7 @@ done
 | `exec format error` | 镜像架构与主机不匹配（x86 镜像跑在 arm64）。按 3.3 节逐镜像确认 Architecture=arm64，重新拉取/构建 |
 | `docker compose: command not found` | Compose 插件未安装。安装 `docker-compose-plugin`（见 2.1/2.2）；老式独立二进制可改用 `docker-compose` 命令 |
 | MySQL 容器反复重启 | ① 数据卷残留旧版本数据：`docker compose down -v` 清卷重建（会清数据）② 查看日志 `docker logs sxdevops-mysql` |
+| MySQL 日志 MY-013360 告警（mysql_native_password 弃用） | 旧版 compose 指定了已弃用的认证插件。升级新代码重建镜像后，按 9.2 节迁移存量账号即可消除 |
 | 应用容器在"等待 MySQL"后超时退出 | MySQL 未在 120s 内通过健康检查；确认资源充足（arm64 低配机首次初始化较慢，可提高内存） |
 | `docker pull` 超时 | Docker Hub 不可达。配置 2.3 节 registry-mirrors，或使用离线导入（4.2 节） |
 | 构建时 `npm ci` 失败 | npm 源不可达。在 Dockerfile `npm ci` 前加 `RUN npm config set registry https://registry.npmmirror.com` |
@@ -341,6 +342,34 @@ docker compose -f docker-compose.arm64.yml up -d --force-recreate
 清理保留：管理员账号、工具市场内置模板、默认知识图谱环境（其演示绑定重置为空）。
 注意：清理命令按演示数据特征匹配删除，仅应在尚未录入真实业务数据的环境执行；
 已有真实数据时请先核对第 2 步 dry-run 输出，确认无误再执行。
+
+### 9.2 MySQL 认证插件迁移（消除 mysql_native_password 弃用告警）
+
+新版 compose 已移除 `--default-authentication-plugin=mysql_native_password`（MySQL 8.0 默认
+caching_sha2_password，应用侧 PyMySQL + cryptography 已兼容）。已部署环境按以下步骤迁移存量账号：
+
+```bash
+# 1. 更新代码并重建镜像（应用镜像内含 cryptography，支持 caching_sha2_password）
+git pull
+docker compose -f docker-compose.arm64.yml up -d --build
+
+# 2. 确认应用侧依赖就绪
+docker exec sxdevops python -c "import pymysql, cryptography; print(pymysql.__version__, cryptography.__version__)"
+
+# 3. 迁移存量账号（口令来自容器内环境变量，不落盘不暴露）
+docker exec sxdevops-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e \
+  "ALTER USER '\''sxdevops'\''@'\''%'\'' IDENTIFIED WITH caching_sha2_password BY '\''$MYSQL_PASSWORD'\''; \
+   ALTER USER '\''root'\''@'\''%'\'' IDENTIFIED WITH caching_sha2_password BY '\''$MYSQL_ROOT_PASSWORD'\'';"'
+
+# 4. 重启应用容器并验证
+docker compose -f docker-compose.arm64.yml restart sxdevops
+docker compose -f docker-compose.arm64.yml logs --tail 20 sxdevops-mysql
+# MY-013360 告警消失；按第七节登录冒烟确认平台正常
+```
+
+> 说明：`docker exec sh -c '...'` 单引号内变量由容器内 shell 展开，口令不会出现在宿主机命令历史中。
+> 若迁移后应用无法连接，先核对第 2 步依赖是否就绪；可随时回退：
+> `ALTER USER 'sxdevops'@'%' IDENTIFIED WITH mysql_native_password BY '<MYSQL_PASSWORD>';`
 
 ---
 
