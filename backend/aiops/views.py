@@ -635,7 +635,15 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
     }
 
     def get_queryset(self):
-        return AIOpsKnowledgeEnvironment.objects.all().order_by('-is_default', 'name', 'id')
+        # 列表查询无需快照大字段：association_snapshot / child_node_snapshot 仅供
+        # 知识图谱后台直读（HTTP 序列化器不暴露）。生产环境快照可达数 MB，
+        # SELECT * + ORDER BY 触发 MySQL filesort 整行入缓冲，易超出默认
+        # sort_buffer_size 报 1038 Out of sort memory。defer 后排序行极小。
+        return (
+            AIOpsKnowledgeEnvironment.objects
+            .defer('association_snapshot', 'child_node_snapshot')
+            .order_by('-is_default', 'name', 'id')
+        )
 
     def _ensure_single_default(self, instance):
         if instance.is_default:

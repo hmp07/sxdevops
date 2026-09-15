@@ -37,6 +37,8 @@ services:
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
+      # 排序缓冲 4MB：filesort 整行入缓冲时防止大 JSON 行撑爆默认 256KB（1038 Out of sort memory）
+      - --sort_buffer_size=4194304
       # 认证插件使用 MySQL 8.0 默认的 caching_sha2_password（mysql_native_password 已弃用）
     environment:
       MYSQL_DATABASE: sxdevops

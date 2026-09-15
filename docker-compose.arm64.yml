@@ -58,6 +58,8 @@ services:
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
+      # 排序缓冲 4MB：filesort 整行入缓冲时防止大 JSON 行撑爆默认 256KB（1038 Out of sort memory）
+      - --sort_buffer_size=4194304
       # 认证插件使用 MySQL 8.0 默认的 caching_sha2_password（mysql_native_password 已弃用，
       # 会触发 MY-013360 告警）。应用侧 PyMySQL + cryptography 完全兼容，无需额外配置。
     environment:

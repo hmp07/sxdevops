@@ -9034,3 +9034,51 @@ class AIOpsApiTests(TestCase):
         self.assertIn('[REDACTED]', broken['message'])
         self.assertNotIn('secret-value', broken['message'])
         self.assertIn('query_alerts', response.data['assistant_message']['tool_calls'])
+
+
+class KnowledgeEnvironmentListDeferTest(TestCase):
+    """列表查询必须 defer 快照大字段，防止 MySQL filesort 整行入缓冲报 1038。"""
+
+    def setUp(self):
+        ensure_builtin_rbac()
+        self.user = User.objects.create_user(username='env_defer_user', password='Passw0rd!123')
+        platform_admin = Role.objects.get(code='platform-admin')
+        self.user.rbac_roles.add(platform_admin)
+        token = Token.objects.create(user=self.user)
+        self.client = APIClient()
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+        self.env = AIOpsKnowledgeEnvironment.objects.create(
+            name='defer-test-env',
+            is_default=True,
+            association_snapshot={'edges': [{'source': 'a', 'target': 'b'} for _ in range(2000)]},
+            child_node_snapshot={'children': [{'id': f'node-{i}'} for i in range(2000)]},
+        )
+
+    def test_list_queryset_defers_snapshot_fields(self):
+        from .views import AIOpsKnowledgeEnvironmentViewSet
+        view = AIOpsKnowledgeEnvironmentViewSet()
+        view.request = None
+        qs = view.get_queryset()
+        deferred = qs.query.deferred_loading
+        self.assertTrue(deferred[0])
+        self.assertIn('association_snapshot', deferred[0])
+        self.assertIn('child_node_snapshot', deferred[0])
+        sql = str(qs.query).lower()
+        self.assertNotIn('association_snapshot', sql)
+        self.assertNotIn('child_node_snapshot', sql)
+
+    def test_list_endpoint_works(self):
+        response = self.client.get('/api/aiops/knowledge-environments/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['name'], 'defer-test-env')
+
+    def test_update_via_viewset_preserves_snapshot(self):
+        response = self.client.patch(
+            f'/api/aiops/knowledge-environments/{self.env.id}/',
+            {'aliases': ['别名'], 'event_environments': ['prod']},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.env.refresh_from_db()
+        self.assertEqual(len(self.env.association_snapshot['edges']), 2000)
