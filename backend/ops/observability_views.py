@@ -1561,10 +1561,12 @@ def _grafana_url_ssrf_guard(url):
         return
     import ipaddress
 
+    # 归一化：去尾点 + 小写，封堵 "169.254.169.254." 尾点形式的字面量绕过
+    host = host.rstrip('.').lower()
     try:
         addr = ipaddress.ip_address(host)
     except ValueError:
-        return  # 主机名：跳过（不做 DNS 解析）
+        return  # 主机名：跳过（不做 DNS 解析，理由见下）
     if addr.is_link_local:
         raise ValueError('Grafana URL 不允许指向链路本地地址（含云元数据 169.254.169.254）')
 

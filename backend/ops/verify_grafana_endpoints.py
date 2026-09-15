@@ -63,6 +63,15 @@ def t2_non_http_rejected():
         return resp.status_code == 400 and not mock_get.called
 
 
+def t2b_link_local_trailing_dot_rejected():
+    """尾点形式 169.254.169.254. 不得绕过字面量检查"""
+    _cleanup()
+    GrafanaSetting.objects.create(name='default', url='http://grafana.internal.local')
+    with patch('ops.observability_views.http_requests.get') as mock_get:
+        resp = _client().post('/api/observability/grafana/test/', {'url': 'http://169.254.169.254./'}, format='json')
+        return resp.status_code == 400 and not mock_get.called
+
+
 def t3_stored_token_not_leaked_to_custom_url():
     """自定义 URL 未显式提供 token：不得附加存储凭据"""
     _cleanup()
@@ -131,6 +140,7 @@ def t6_discover_uses_no_redirects():
 
 results.append(run('link-local 云元数据拒绝', t1_link_local_rejected, True))
 results.append(run('非 http 协议拒绝', t2_non_http_rejected, True))
+results.append(run('尾点形式链路本地拒绝', t2b_link_local_trailing_dot_rejected, True))
 results.append(run('自定义 URL 不泄露存储 Token', t3_stored_token_not_leaked_to_custom_url, True))
 results.append(run('已保存 URL 正常附加 Token', t4_stored_token_attached_to_configured_url, True))
 results.append(run('自动发现返回看板', t5_discover_returns_dashboards, True))
