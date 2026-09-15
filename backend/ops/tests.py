@@ -1292,6 +1292,19 @@ class ObservabilityViewsTests(TestCase):
         mock_get.assert_not_called()
 
     @patch('ops.observability_views.http_requests.get')
+    def test_grafana_test_connection_rejects_link_local_metadata(self, mock_get):
+        """SSRF 防护：拒绝云元数据地址（169.254.169.254）与链路本地网段。"""
+        GrafanaSetting.objects.create(name='default', url='http://grafana.saved.internal.local')
+        for bad_url in ('http://169.254.169.254/latest/meta-data/', 'http://169.254.10.10/api/health'):
+            response = self.client.post(
+                '/api/observability/grafana/test/',
+                {'url': bad_url},
+                format='json',
+            )
+            self.assertEqual(response.status_code, 400, f'{bad_url} 应被拒绝')
+        mock_get.assert_not_called()
+
+    @patch('ops.observability_views.http_requests.get')
     def test_grafana_discover_returns_dashboards(self, mock_get):
         GrafanaSetting.objects.create(name='default', url='http://grafana.disc.internal.local', api_token='glsa_disc')
         folders_resp = MagicMock()

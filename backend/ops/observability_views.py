@@ -1543,6 +1543,32 @@ def grafana_setting_view(request):
     return Response(response_data)
 
 
+def _grafana_url_ssrf_guard(url):
+    """SSRF 防护：拒绝指向链路本地（云元数据 169.254.0.0/16、fe80::/10）的 IP 字面量目标。
+
+    仅检查 IP 字面量、不做 DNS 解析：
+    - 云元数据攻击地址（169.254.169.254）本质是 IP 字面量，字面量检查即可拦截
+    - 主机名解析可能长时间阻塞（getaddrinfo 无超时），且 DNS 属平台信任边界
+    - 不拒绝私有网段（10/8、172.16/12、192.168/16）与环回——内网 Grafana
+      是本功能的正当主用场景；两端点均需 ops.grafana.manage 权限，
+      且存储 Token 只附加到已保存配置地址
+    """
+    if not url:
+        return
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        return
+    import ipaddress
+
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return  # 主机名：跳过（不做 DNS 解析）
+    if addr.is_link_local:
+        raise ValueError('Grafana URL 不允许指向链路本地地址（含云元数据 169.254.169.254）')
+
+
 def _grafana_connection_target(data):
     """从请求体解析测试目标：显式传入的 url/token 优先，否则使用已保存配置。"""
     url = str(data.get('url') or '').strip()
@@ -1555,6 +1581,7 @@ def _grafana_connection_target(data):
     parsed = urlparse(url) if url else None
     if parsed and parsed.scheme not in ('http', 'https'):
         raise ValueError('Grafana URL 仅支持 http/https')
+    _grafana_url_ssrf_guard(url)
     configured_url = str(config.get('url') or '').strip().rstrip('/')
     if not api_token:
         if url.rstrip('/') == configured_url:
@@ -1588,13 +1615,14 @@ def grafana_test_connection(request):
     version = ''
     org = {}
     try:
-        health = http_requests.get(f'{url}/api/health', headers=headers, timeout=timeout, verify=verify)
+        # allow_redirects=False：防止目标地址 30x 重定向到内部地址（SSRF 跳转防护）
+        health = http_requests.get(f'{url}/api/health', headers=headers, timeout=timeout, verify=verify, allow_redirects=False)
         if health.status_code < 400:
             body = health.json()
             version = body.get('version') or ''
         else:
             # 部分版本 /api/health 需管理员权限，回退 /api/org
-            org_resp = http_requests.get(f'{url}/api/org', headers=headers, timeout=timeout, verify=verify)
+            org_resp = http_requests.get(f'{url}/api/org', headers=headers, timeout=timeout, verify=verify, allow_redirects=False)
             if org_resp.status_code >= 400:
                 return Response(
                     {'status': 'error', 'message': f'Grafana API 访问失败: HTTP {org_resp.status_code}'},
@@ -1631,7 +1659,7 @@ def grafana_test_connection(request):
     }
     if not org:
         try:
-            org_resp = http_requests.get(f'{url}/api/org', headers=headers, timeout=timeout, verify=verify)
+            org_resp = http_requests.get(f'{url}/api/org', headers=headers, timeout=timeout, verify=verify, allow_redirects=False)
             if org_resp.status_code < 400:
                 payload['org'] = org_resp.json()
         except Exception:
@@ -1699,6 +1727,7 @@ def grafana_discover(request):
                 headers=headers,
                 timeout=timeout,
                 verify=verify,
+                allow_redirects=False,  # SSRF 跳转防护
             )
             if resp.status_code >= 400:
                 raise RuntimeError(f'Grafana api/search 失败: HTTP {resp.status_code}')
