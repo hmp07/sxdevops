@@ -8,7 +8,8 @@ from eventwall.services import build_resource, record_event
 
 
 DEMO_WINDOW_MINUTES = 7 * 24 * 60 - 1
-EXCLUDED_DEMO_ENVIRONMENTS = {'prod', 'staging'}
+# 演示模式下全量展示事件（prod/staging 事件是演示故事线的核心部分）
+EXCLUDED_DEMO_ENVIRONMENTS = set()
 APPLICATION_RELEASE_ACTIONS = {
     'deploy_start',
     'deploy_finish',

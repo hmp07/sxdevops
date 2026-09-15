@@ -151,6 +151,13 @@ def create_sxdevops_agent(
     if model is None:
         model = resolve_model_from_provider(user=user)
 
+    # 离线演示模式：使用确定性模拟模型驱动真实工具循环（生产路径不受影响）
+    if os.environ.get('SXDEVOPS_DEMO_MODE') == '1':
+        from .demo_mock_model import DemoMockChatModel
+
+        model = DemoMockChatModel()
+        enable_subagents = False
+
     # 构建 system prompt
     user_permissions = (
         list(user.get_all_permissions())

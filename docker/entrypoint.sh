@@ -29,16 +29,30 @@ if [ "${SXDEVOPS_WAIT_FOR_DB:-1}" = "1" ]; then
   wait_for_tcp "${MYSQL_HOST:-mysql}" "${MYSQL_PORT:-3306}" "MySQL"
 fi
 
+# 演示模式：首次启动种子一次，重启保留演示数据与聊天历史。
+# SXDEVOPS_RESEED=1 强制重新种子；SXDEVOPS_SEED_MARKER 可自定义标记路径。
+SEED_MARKER="${SXDEVOPS_SEED_MARKER:-/data/.seeded}"
+RUN_SEED=1
+if [ "${SXDEVOPS_SKIP_SEED_IF_MARKED:-1}" = "1" ] && [ -f "$SEED_MARKER" ] && [ "${SXDEVOPS_RESEED:-0}" != "1" ]; then
+  RUN_SEED=0
+  echo "Seed marker found ($SEED_MARKER), skipping seed. Set SXDEVOPS_RESEED=1 to force."
+fi
+
 if [ "${SXDEVOPS_MIGRATE:-1}" = "1" ]; then
   python manage.py migrate --noinput
 fi
 
-if [ "${SXDEVOPS_SEED_DATA:-1}" = "1" ]; then
+if [ "${SXDEVOPS_SEED_DATA:-1}" = "1" ] && [ "$RUN_SEED" = "1" ]; then
   python manage.py seed_data
 fi
 
-if [ "${SXDEVOPS_SEED_TEMPLATES:-1}" = "1" ]; then
+if [ "${SXDEVOPS_SEED_TEMPLATES:-1}" = "1" ] && [ "$RUN_SEED" = "1" ]; then
   python manage.py seed_templates
+fi
+
+if [ "$RUN_SEED" = "1" ]; then
+  mkdir -p "$(dirname "$SEED_MARKER")" 2>/dev/null || true
+  touch "$SEED_MARKER" 2>/dev/null || true
 fi
 
 exec "$@"

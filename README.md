@@ -196,7 +196,23 @@ python manage.py seed_templates
 
 如需关闭初始化数据，可在 `docker-compose.yml` 中把 `SXDEVOPS_SEED_DATA` 或 `SXDEVOPS_SEED_TEMPLATES` 设置为 `0`。
 
-### 方式二：本地开发
+### 方式二：离线演示部署（客户现场）
+
+单容器最小化部署，**全部模拟数据 + 内置离线模拟模型引擎**（AI 问答零 API Key、零网络依赖）：
+
+```bash
+# 构建并导出镜像包（约 460MB）
+docker compose -f docker-compose.demo.yml build
+docker save sxdevops-demo:latest -o sxdevops-demo.tar
+
+# 客户现场（无需网络）：导入镜像 + 一键启动
+docker load -i sxdevops-demo.tar
+.\tools\demo\start-demo.ps1   # Windows + Docker Desktop
+```
+
+详见 [离线演示部署说明](docs/demo/离线演示部署说明.md) 与 [DEMO 讲解脚本](docs/demo/DEMO讲解脚本.md)。
+
+### 方式三：本地开发
 
 后端：
 

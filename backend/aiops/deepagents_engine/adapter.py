@@ -68,12 +68,13 @@ def dispatch_chat_deepagents(
     provider = get_active_provider(config)
 
     # -- 模型可用性检查 --
+    demo_mode = os.environ.get('SXDEVOPS_DEMO_MODE') == '1'
     try:
         from aiops.services import _provider_is_ready
         provider_ready = _provider_is_ready(provider)
     except Exception:
         provider_ready = bool(provider)
-    if not provider_ready:
+    if not demo_mode and not provider_ready:
         logger.warning("无可用 AIOpsModelProvider")
         return _build_no_model_response(session)
 
@@ -167,9 +168,11 @@ def dispatch_chat_deepagents(
     }
 
     # 4. 执行快速路径检查
+    # 演示模式下跳过 fastpath：让工具调用发生在 agent 循环内，
+    # 前端可见工具调用事件与审计记录，演示效果更完整。
     from .fastpath import fastpath_router
 
-    fastpath_tool, fastpath_params = fastpath_router(question)
+    fastpath_tool, fastpath_params = (None, None) if demo_mode else fastpath_router(question)
     fastpath_result = None
 
     if fastpath_tool:
@@ -258,6 +261,10 @@ def dispatch_chat_deepagents(
             {'messages': effective_messages},
             config=config,
         )
+        if demo_mode:
+            # 演示模式：将巡检任务类问题的待确认动作附着到结果
+            from .demo_mock_model import attach_demo_pending_action
+            attach_demo_pending_action(result, question)
         tool_calls_data = _extract_tool_calls(result)
     except Exception as exc:
         logger.exception("DeepAgents agent.invoke() 异常")
@@ -421,7 +428,6 @@ def _process_pending_actions(
         return AIOpsPendingAction.objects.create(
             session=session,
             message=assistant_message,
-            user=user,
             action_type=pa.get('type', 'unknown'),
             title=pa.get('title', ''),
             risk_level=pa.get('risk_level', AIOpsPendingAction.RISK_LOW),

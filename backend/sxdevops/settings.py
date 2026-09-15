@@ -166,10 +166,16 @@ def _sqlite_database_config(section):
         if not db_path.is_absolute():
             db_path = BASE_DIR / db_path
         db_name = db_path
-    return {
+    config = {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': db_name,
     }
+    # 演示/本地并发场景：SSE 线程与聊天 worker 线程同时写 SQLite
+    # 默认 5s 锁等待，可通过 SQLITE_TIMEOUT 环境变量调大（仅 sqlite 生效）
+    timeout = int(os.environ.get('SQLITE_TIMEOUT', '0') or 0)
+    if timeout > 0:
+        config['OPTIONS'] = {'timeout': timeout}
+    return config
 
 
 def _mysql_database_config(section):

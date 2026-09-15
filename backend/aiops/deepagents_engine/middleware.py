@@ -195,7 +195,7 @@ class AuditMiddleware(AgentMiddleware):
             if model_name or input_tokens or output_tokens:
                 close_old_connections()
                 from aiops.models import AIOpsModelInvocation
-                AIOpsModelInvocation.objects.create(
+                invocation = AIOpsModelInvocation.objects.create(
                     session_id=self.session_id,
                     message_id=self.message_id,
                     username=getattr(self.user, 'username', '') if self.user else '',
@@ -207,6 +207,18 @@ class AuditMiddleware(AgentMiddleware):
                     completion_tokens=output_tokens or 0,
                     total_tokens=(input_tokens or 0) + (output_tokens or 0),
                 )
+                # 离线演示模型的调用记录关联到演示 provider 行（审计页展示"离线演示模型"）
+                if model_name == 'sxdevops-demo-mock':
+                    try:
+                        from aiops.models import AIOpsModelProvider
+                        provider = AIOpsModelProvider.objects.filter(
+                            default_model='sxdevops-demo-mock'
+                        ).first()
+                        if provider:
+                            invocation.provider = provider
+                            invocation.save(update_fields=['provider'])
+                    except Exception:
+                        pass
                 logger.debug("模型审计已记录: model=%s tokens=%d", model_name, (input_tokens or 0) + (output_tokens or 0))
         except Exception as exc:
             logger.warning("模型审计写入失败: %s", exc)
@@ -284,9 +296,10 @@ class PendingActionMiddleware(AgentMiddleware):
             pending = AIOpsPendingAction.objects.create(
                 session_id=self.session_id,
                 message_id=self.message_id,
-                user=self.user,
                 action_type=tool_name,
-                payload=draft,
+                title=draft.get('title') or draft.get('name') or '待确认动作',
+                risk_level=draft.get('risk_level') or AIOpsPendingAction.RISK_LOW,
+                action_payload=draft,
                 status=AIOpsPendingAction.STATUS_PENDING,
             )
             return pending.id

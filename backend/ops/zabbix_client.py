@@ -11,7 +11,10 @@ class ZabbixClient:
     """Zabbix JSON-RPC API 客户端（兼容 5.x/6.x/7.x）"""
 
     def __init__(self, datasource):
-        self.api_url = datasource.api_url.rstrip('/')
+        raw_url = (datasource.api_url or '').strip()
+        # 演示数据源：api_url='demo://' 时走确定性模拟数据（对齐 K8s kubeconfig='demo'）
+        self.is_demo = raw_url.startswith('demo://')
+        self.api_url = raw_url.rstrip('/') if not self.is_demo else raw_url
         self.auth_type = datasource.auth_type
         self.auth_token = datasource.auth_token
         self.username = datasource.username
@@ -95,6 +98,9 @@ class ZabbixClient:
 
     def _call(self, method, params=None):
         """调用 Zabbix JSON-RPC API"""
+        if self.is_demo:
+            from ops.zabbix_demo_data import dispatch_demo_call
+            return dispatch_demo_call(method, params or {})
         payload = {
             'jsonrpc': '2.0', 'method': method,
             'params': params or {}, 'id': self._next_id(),
@@ -126,6 +132,9 @@ class ZabbixClient:
         return result.get('result', {})
 
     def _call_raw(self, payload, extra_headers=None):
+        if self.is_demo:
+            from ops.zabbix_demo_data import dispatch_demo_call
+            return dispatch_demo_call(payload.get('method'), payload.get('params') or {})
         headers = {'Content-Type': 'application/json-rpc'}
         if extra_headers:
             headers.update(extra_headers)

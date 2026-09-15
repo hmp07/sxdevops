@@ -1,0 +1,51 @@
+# SxDevOps 离线演示部署 — 单容器最小化
+#
+# 用法：
+#   构建:    docker compose -f docker-compose.demo.yml build
+#   导出:    docker save sxdevops-demo:latest -o sxdevops-demo.tar
+#   现场:    docker load -i sxdevops-demo.tar
+#   启动:    docker compose -f docker-compose.demo.yml up -d
+#            （或使用 tools/demo/start-demo.ps1 一键脚本）
+#
+# 特点：
+#   - SQLite 数据库（卷持久化），无 MySQL/Redis 依赖
+#   - 内存缓存 + 内存通道层（单进程 Daphne 完全够用）
+#   - SXDEVOPS_DEMO_MODE=1 启用内置离线模拟模型（AI 问答零 API Key、零网络）
+#   - 全部演示数据自动种子（首次启动约 30-60 秒）
+#
+# 访问：http://localhost:8000  账号：admin / Admin@123456
+
+services:
+  sxdevops-demo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sxdevops-demo:latest
+    container_name: sxdevops-demo
+    restart: unless-stopped
+    environment:
+      # 数据库：SQLite（单文件，卷持久化）
+      DATABASE_ENGINE: sqlite
+      SQLITE_NAME: /data/db.sqlite3
+      SQLITE_TIMEOUT: "20"
+      # 无 REDIS_URL / CHANNEL_REDIS_URL → LocMemCache + InMemoryChannelLayer
+      # 启动流程：跳过 MySQL 等待；自动迁移 + 种子演示数据
+      SXDEVOPS_WAIT_FOR_DB: "0"
+      SXDEVOPS_MIGRATE: "1"
+      SXDEVOPS_SEED_DATA: "1"
+      SXDEVOPS_SEED_TEMPLATES: "1"
+      # 离线演示模式：内置模拟模型引擎（AI 问答无需 API Key）
+      SXDEVOPS_DEMO_MODE: "1"
+      DEEPAGENTS_FALLBACK_ON_ERROR: "0"
+      # 安全与跨域（演示环境）
+      SECRET_KEY: sxdevops-offline-demo
+      DEBUG: "0"
+      ALLOWED_HOSTS: "*"
+      CORS_ALLOW_ALL_ORIGINS: "1"
+    volumes:
+      - sxdevops_demo_data:/data
+    ports:
+      - "8000:8000"
+
+volumes:
+  sxdevops_demo_data:

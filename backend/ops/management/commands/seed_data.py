@@ -26,6 +26,7 @@ from ops.models import (
     HostTaskTemplate,
     K8sCluster,
     LogEntry,
+    ZabbixDataSource,
 )
 
 
@@ -1115,6 +1116,28 @@ def seed_host_schedule_demo(stdout, hosts):
 class Command(BaseCommand):
     help = '生成 Mock 演示数据'
 
+    def _seed_zabbix_demo_datasource(self):
+        """创建 Zabbix 演示数据源（api_url='demo://' 走确定性模拟数据）。"""
+        ds, created = ZabbixDataSource.objects.update_or_create(
+            name='Zabbix 演示数据源',
+            defaults={
+                'api_url': 'demo://',
+                'auth_type': 'token',
+                'auth_token': 'demo-token',
+                'tls_verify': False,
+                'timeout': 10,
+                'is_enabled': True,
+                'is_default': True,
+            },
+        )
+        # 演示数据源作为唯一默认源，其它数据源降级为普通源
+        ZabbixDataSource.objects.exclude(id=ds.id).update(is_default=False)
+        self.stdout.write(
+            f'Zabbix 演示数据源: {"created" if created else "updated"} '
+            f'(api_url=demo://, 离线模拟数据)'
+        )
+        return ds
+
     def handle(self, *args, **options):
 
         self.stdout.write('\u6b63\u5728\u6e05\u7406\u65e7\u6570\u636e...')
@@ -1417,5 +1440,7 @@ class Command(BaseCommand):
         call_command('seed_transaction_ticket_demo')
         call_command('seed_multicloud_demo')
         sync_current_deployments_to_cmdb()
+        self._seed_zabbix_demo_datasource()
         call_command('seed_eventwall_demo')
+        call_command('seed_aiops_demo')
 
