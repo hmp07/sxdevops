@@ -1727,13 +1727,36 @@ class TransactionTicket(models.Model):
 
 # ---- Signals ----
 
+import logging
+import threading
+
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+
+logger = logging.getLogger(__name__)
+
+# 正在同步的数据源 id 集合（并发去重：重复保存/轮询不叠加同步线程）
+_SYNC_IN_FLIGHT = set()
+_SYNC_IN_FLIGHT_LOCK = threading.Lock()
+
+# 实质影响连接/主机的字段；仅这些字段变化时才触发主机同步
+_SYNC_RELEVANT_FIELDS = {'api_url', 'auth_type', 'auth_token', 'username', 'password', 'is_enabled'}
 
 
 @receiver(post_save, sender=ZabbixDataSource)
 def _sync_zabbix_hosts(sender, instance, **kwargs):
-    """Zabbix 数据源保存时，将其主机同步到平台 Host 表。"""
+    """Zabbix 数据源保存时，后台线程将其主机同步到平台 Host 表。
+
+    同步体包含多次 Zabbix API 调用与逐台入库，真实环境耗时可能远超请求超时，
+    因此 fire-and-forget：daemon 线程执行，保存/删除请求立即返回，不阻塞
+    Daphne 的 thread_sensitive 同步视图线程。
+    """
+    # 仅记账字段（如 last_sync_at）保存不触发全量同步：
+    # poll_zabbix_alerts 每 5 分钟保存一次 last_sync_at，重复同步会周期性拖垮 API；
+    # 守卫置于最前，热路径直接短路
+    update_fields = kwargs.get('update_fields')
+    if update_fields is not None and not (_SYNC_RELEVANT_FIELDS & set(update_fields)):
+        return
     if not instance.is_enabled:
         return
     url = (instance.api_url or '').strip()
@@ -1744,8 +1767,28 @@ def _sync_zabbix_hosts(sender, instance, **kwargs):
     hostname = (parsed.hostname or '').lower()
     if not hostname:
         return
-    # 管理员已配置的数据源 URL 无需 SSRF 检查，直接开始主机导入
+    datasource_id = instance.id
+    with _SYNC_IN_FLIGHT_LOCK:
+        if datasource_id in _SYNC_IN_FLIGHT:
+            return
+        _SYNC_IN_FLIGHT.add(datasource_id)
     try:
+        thread = threading.Thread(target=_zabbix_host_sync_worker, args=(datasource_id,), daemon=True)
+        thread.start()
+    except Exception:
+        # start() 失败时回滚标记，否则该数据源永久失去后续同步
+        with _SYNC_IN_FLIGHT_LOCK:
+            _SYNC_IN_FLIGHT.discard(datasource_id)
+        logger.exception('Failed to start Zabbix host sync thread for datasource %s', datasource_id)
+
+
+def _zabbix_host_sync_worker(datasource_id):
+    """后台线程：按 id 重新取数据源，执行主机/资源/设备映射/告警同步。失败仅记日志。"""
+    try:
+        instance = ZabbixDataSource.objects.filter(id=datasource_id, is_enabled=True).first()
+        if instance is None:
+            return
+        # 管理员已配置的数据源 URL 无需 SSRF 检查，直接开始主机导入
         from .zabbix_client import ZabbixClient
         client = ZabbixClient(instance)
         result = client.get_hosts()
@@ -1802,11 +1845,9 @@ def _sync_zabbix_hosts(sender, instance, **kwargs):
                     },
                 )
             except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning('TaskResource creation failed for Zabbix host %s: %s', hostid, e)
+                logger.warning('TaskResource creation failed for Zabbix host %s: %s', hostid, e)
         if created:
-            import logging
-            logging.getLogger(__name__).info(
+            logger.info(
                 'Zabbix host sync: %s created for datasource %s', created, instance.name
             )
         # 创建设备映射 + 对账
@@ -1815,8 +1856,7 @@ def _sync_zabbix_hosts(sender, instance, **kwargs):
             match_all_zabbix_hosts(hosts)
             reconcile_device_mappings()
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning('Device matching failed in Zabbix host sync: %s', e)
+            logger.warning('Device matching failed in Zabbix host sync: %s', e)
 
         # 创建 MetricDataSource 路由标记（知识图谱指标选择器可见）
         try:
@@ -1850,11 +1890,17 @@ def _sync_zabbix_hosts(sender, instance, **kwargs):
                 except Exception:
                     pass
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning('Alert polling failed in Zabbix host sync: %s', e)
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning('Zabbix host sync failed for datasource %s: %s', instance.name, e)
+            logger.warning('Alert polling failed in Zabbix host sync: %s', e)
+    except Exception:
+        logger.exception('Zabbix host sync failed for datasource %s', datasource_id)
+    finally:
+        with _SYNC_IN_FLIGHT_LOCK:
+            _SYNC_IN_FLIGHT.discard(datasource_id)
+        from django.db import connection
+        # 长驻 Daphne 进程中每个 daemon 线程各建一个连接，用毕即关；
+        # in_atomic_block 守卫避免测试直接调用 worker 时关掉 TestCase 的事务连接
+        if not connection.in_atomic_block:
+            connection.close()
 
 
 def _fetch_zabbix_problems(ds_name, client):

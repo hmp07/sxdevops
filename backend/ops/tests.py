@@ -28,6 +28,7 @@ from ops.models import (
     MetricDataSource,
     ObservabilityDataSourceLink,
     TracingDataSource,
+    ZabbixDataSource,
 )
 from ops.k8s_views import _K8sApiProxy, _prepare_kubeconfig, _resource_stale_cache_key, _summary_stale_cache_key
 from ops.tracing_providers import _build_topology_from_trace_details, _tempo_flatten_trace, _trace_detail_from_spans
@@ -3472,3 +3473,127 @@ class AlertActionApiTests(TestCase):
         rule = AlertNotificationRule.objects.get(name='critical notify')
         self.assertEqual(rule.channels.count(), 1)
         self.assertEqual(rule.recipient_groups.count(), 1)
+
+
+class ZabbixDataSourceSaveTests(TestCase):
+    """Zabbix 数据源保存链路：主机同步已异步化，CRUD 必须即时响应。"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = get_user_model().objects.create_superuser(
+            'zabbix-admin', 'zabbix@example.com', 'Admin@123456'
+        )
+        self.client.force_authenticate(user=self.user)
+        # 清空跨测试的 in-flight 状态，避免真实线程残留
+        from ops.models import _SYNC_IN_FLIGHT, _SYNC_IN_FLIGHT_LOCK
+        with _SYNC_IN_FLIGHT_LOCK:
+            _SYNC_IN_FLIGHT.clear()
+
+    def _payload(self, **overrides):
+        payload = {
+            'name': 'Prod Zabbix',
+            'api_url': 'http://zabbix.internal/api_jsonrpc.php',
+            'auth_type': 'token',
+            'auth_token': 'secret-token',
+            'timeout': 10,
+            'is_enabled': True,
+        }
+        payload.update(overrides)
+        return payload
+
+    def _assert_thread_spawned(self, mock_thread, ds_id):
+        mock_thread.Thread.assert_called_once()
+        kwargs = mock_thread.Thread.call_args.kwargs
+        self.assertTrue(kwargs['daemon'])
+        self.assertEqual(kwargs['target'].__name__, '_zabbix_host_sync_worker')
+        self.assertEqual(kwargs['args'], (ds_id,))
+        mock_thread.Thread.return_value.start.assert_called_once()
+
+    @patch('ops.models.threading')
+    @patch('ops.zabbix_client.ZabbixClient')
+    def test_create_returns_201_and_sync_runs_in_background_thread(self, mock_zabbix, mock_thread):
+        response = self.client.post(
+            '/api/observability/zabbix/datasources/', self._payload(), format='json'
+        )
+        self.assertEqual(response.status_code, 201)
+        ds_id = response.json()['id']
+        self._assert_thread_spawned(mock_thread, ds_id)
+        # 同步体绝不在请求线程内执行（含 Zabbix API 调用）
+        mock_zabbix.assert_not_called()
+
+    @patch('ops.models.threading')
+    def test_update_returns_200_and_sync_runs_in_background_thread(self, mock_thread):
+        ds = ZabbixDataSource.objects.create(**self._payload())
+        # 清掉 create 遗留的 in-flight 标记与线程调用记录，只观察 PUT 本身
+        from ops.models import _SYNC_IN_FLIGHT, _SYNC_IN_FLIGHT_LOCK
+        with _SYNC_IN_FLIGHT_LOCK:
+            _SYNC_IN_FLIGHT.clear()
+        mock_thread.reset_mock()
+        response = self.client.put(
+            f'/api/observability/zabbix/datasources/{ds.id}/',
+            self._payload(name='Prod Zabbix 2'),
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self._assert_thread_spawned(mock_thread, ds.id)
+
+    @patch('ops.models.threading')
+    def test_bookkeeping_save_does_not_trigger_sync(self, mock_thread):
+        ds = ZabbixDataSource.objects.create(**self._payload())
+        from ops.models import _SYNC_IN_FLIGHT, _SYNC_IN_FLIGHT_LOCK
+        with _SYNC_IN_FLIGHT_LOCK:
+            _SYNC_IN_FLIGHT.clear()
+        mock_thread.reset_mock()
+        ds.last_sync_at = timezone.now()
+        ds.save(update_fields=['last_sync_at'])
+        mock_thread.Thread.assert_not_called()
+
+    @patch('ops.models.threading')
+    def test_update_fields_guard_still_syncs_on_relevant_fields(self, mock_thread):
+        ds = ZabbixDataSource.objects.create(**self._payload())
+        from ops.models import _SYNC_IN_FLIGHT, _SYNC_IN_FLIGHT_LOCK
+        with _SYNC_IN_FLIGHT_LOCK:
+            _SYNC_IN_FLIGHT.clear()
+        mock_thread.reset_mock()
+        ds.api_url = 'http://zabbix2.internal/api_jsonrpc.php'
+        ds.save(update_fields=['api_url'])
+        mock_thread.Thread.assert_called_once()
+
+    @patch('ops.models.threading')
+    def test_dedupe_skips_overlapping_sync(self, mock_thread):
+        ds = ZabbixDataSource.objects.create(**self._payload())
+        # mock 线程不执行 worker，in-flight 标记残留 → 第二次保存被去重跳过
+        ds.save()
+        mock_thread.Thread.assert_called_once()
+
+    @patch('ops.models.threading')
+    def test_demo_datasource_never_syncs(self, mock_thread):
+        ZabbixDataSource.objects.create(
+            name='Demo DS', api_url='demo://', auth_type='token',
+            auth_token='demo-token', is_enabled=True,
+        )
+        mock_thread.Thread.assert_not_called()
+
+    @patch('ops.models.threading')
+    def test_disabled_or_empty_url_never_syncs(self, mock_thread):
+        ZabbixDataSource.objects.create(**self._payload(name='Disabled', is_enabled=False))
+        ZabbixDataSource.objects.create(**self._payload(name='EmptyUrl', api_url=''))
+        mock_thread.Thread.assert_not_called()
+
+    @patch('ops.models.threading')
+    @patch('ops.zabbix_client.ZabbixClient')
+    def test_delete_returns_204_without_zabbix_interaction(self, mock_zabbix, mock_thread):
+        ds = ZabbixDataSource.objects.create(**self._payload())
+        response = self.client.delete(f'/api/observability/zabbix/datasources/{ds.id}/')
+        self.assertEqual(response.status_code, 204)
+        mock_zabbix.assert_not_called()
+
+    @patch('ops.models.threading')
+    @patch('ops.zabbix_client.ZabbixClient.get_hosts', side_effect=Exception('boom'))
+    def test_worker_exception_is_isolated(self, mock_get_hosts, mock_thread):
+        from ops.models import _SYNC_IN_FLIGHT, _zabbix_host_sync_worker
+        ds = ZabbixDataSource.objects.create(**self._payload())
+        with self.assertLogs('ops.models', level='WARNING'):
+            _zabbix_host_sync_worker(ds.id)
+        self.assertNotIn(ds.id, _SYNC_IN_FLIGHT)
+        self.assertEqual(Host.objects.count(), 0)

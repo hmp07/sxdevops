@@ -284,15 +284,21 @@ async function handleSave() {
     }
     dialogVisible.value = false
     await fetchItems()
+  } catch {
+    // 错误提示由 request.js 拦截器统一弹出；失败时保留弹窗与表单，便于修正后重试
   } finally {
     saving.value = false
   }
 }
 
 async function handleDelete(id) {
-  await deleteZabbixDataSource(id)
-  ElMessage.success('Zabbix 数据源已删除')
-  await fetchItems()
+  try {
+    await deleteZabbixDataSource(id)
+    ElMessage.success('Zabbix 数据源已删除')
+    await fetchItems()
+  } catch {
+    // 删除失败时保留列表现状，错误提示由 request.js 拦截器统一弹出
+  }
 }
 
 async function handleTest(row) {
