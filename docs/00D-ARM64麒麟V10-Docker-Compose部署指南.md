@@ -357,14 +357,20 @@ docker compose -f docker-compose.arm64.yml up -d --build
 docker exec sxdevops python -c "import pymysql, cryptography; print(pymysql.__version__, cryptography.__version__)"
 
 # 3. 迁移存量账号（口令来自容器内环境变量，不落盘不暴露）
-docker exec sxdevops-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e \
-  "ALTER USER '\''sxdevops'\''@'\''%'\'' IDENTIFIED WITH caching_sha2_password BY '\''$MYSQL_PASSWORD'\''; \
-   ALTER USER '\''root'\''@'\''%'\'' IDENTIFIED WITH caching_sha2_password BY '\''$MYSQL_ROOT_PASSWORD'\'';"'
+#    注意：compose 参数只影响新建账号，已部署环境的存量账号必须显式 ALTER USER
+docker exec sxdevops-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" <<SQL
+ALTER USER IF EXISTS "sxdevops"@"%" IDENTIFIED WITH caching_sha2_password BY "$MYSQL_PASSWORD";
+ALTER USER IF EXISTS "root"@"%" IDENTIFIED WITH caching_sha2_password BY "$MYSQL_ROOT_PASSWORD";
+ALTER USER IF EXISTS "root"@"localhost" IDENTIFIED WITH caching_sha2_password BY "$MYSQL_ROOT_PASSWORD";
+SQL'
 
 # 4. 重启应用容器并验证
 docker compose -f docker-compose.arm64.yml restart sxdevops
 docker compose -f docker-compose.arm64.yml logs --tail 20 sxdevops-mysql
 # MY-013360 告警消失；按第七节登录冒烟确认平台正常
+
+# 5. 可随时复核账号插件状态（预期均为 caching_sha2_password）
+docker exec sxdevops-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SELECT user, host, plugin FROM mysql.user;"'
 ```
 
 > 说明：`docker exec sh -c '...'` 单引号内变量由容器内 shell 展开，口令不会出现在宿主机命令历史中。
