@@ -1,0 +1,90 @@
+# SxDevOps ARM64 部署编排（aarch64 / Kylin Linux Advanced Server V10）
+#
+# 与 docker-compose.yml 的区别：
+#   - 基础镜像固定到已验证 linux/arm64 的多架构官方版本，保证离线导入可复现
+#   - 敏感配置（SECRET_KEY / 数据库口令）必须通过 .env 注入，不留默认值
+#
+# 使用前准备（参考 .env.arm64.example）：
+#   cp .env.arm64.example .env
+#   sed -i "s/change-me/$(openssl rand -hex 32)/" .env
+#
+# 使用：
+#   docker compose -f docker-compose.arm64.yml up -d --build      # 在线构建
+#   docker compose -f docker-compose.arm64.yml up -d              # 离线（镜像已 load）
+
+services:
+  sxdevops:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sxdevops:latest-arm64
+    container_name: sxdevops-app
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_ENGINE: mysql
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: sxdevops
+      MYSQL_USER: sxdevops
+      # 与 mysql 服务共用 .env 注入的口令（compose 变量插值，容器内不落盘）
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required, see .env.arm64.example}
+      REDIS_URL: redis://redis:6379/0
+      CHANNEL_REDIS_URL: redis://redis:6379/1
+      # Django 密钥：部署时生成随机值注入（openssl rand -hex 32）
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required, see .env.arm64.example}
+      DEBUG: "0"
+      CORS_ALLOW_ALL_ORIGINS: "1"
+      # 容器启动流程: 等待 DB → 迁移 → 演示数据/模板种子（首次启动自动执行）
+      SXDEVOPS_WAIT_FOR_DB: "1"
+      SXDEVOPS_MIGRATE: "1"
+      SXDEVOPS_SEED_DATA: "1"
+      SXDEVOPS_SEED_TEMPLATES: "1"
+    ports:
+      - "8000:8000"
+
+  mysql:
+    # 官方多架构镜像（linux/amd64 + linux/arm64），8.0.36 为验证过的稳定版本
+    image: mysql:8.0.36
+    container_name: sxdevops-mysql
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_DATABASE: sxdevops
+      MYSQL_USER: sxdevops
+      # 业务库口令与 root 口令均从 .env 注入，勿提交默认值
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required, see .env.arm64.example}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required, see .env.arm64.example}
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    # 官方多架构 alpine 镜像，7.2.5 为验证过的稳定版本
+    image: redis:7.2.5-alpine
+    container_name: sxdevops-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  mysql_data:
+  redis_data:
