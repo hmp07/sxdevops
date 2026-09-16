@@ -3,6 +3,7 @@ import copy
 from datetime import datetime, timedelta
 from decimal import Decimal
 import ssl
+import sys
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -3618,6 +3619,10 @@ class HttpMethodOverrideTests(TestCase):
             'mo-admin', 'mo@example.com', 'Admin@123456'
         )
         self.client.force_authenticate(user=self.user)
+        # SQLite 事务回滚会复用自增 id：清场 in-flight 防止跨测试去重误判
+        from ops.models import _SYNC_IN_FLIGHT, _SYNC_IN_FLIGHT_LOCK
+        with _SYNC_IN_FLIGHT_LOCK:
+            _SYNC_IN_FLIGHT.clear()
 
     def _ds_payload(self, name):
         return {
@@ -3691,3 +3696,134 @@ class HttpMethodOverrideTests(TestCase):
             HTTP_X_HTTP_METHOD_OVERRIDE='TRACE',
         )
         self.assertEqual(response.status_code, 201)
+
+class ZabbixAlertAssociationTests(TestCase):
+    """Zabbix 告警→主机关联键：hostid 优先于文本匹配，标签三键齐全。"""
+
+    @patch('ops.models.threading')
+    def test_host_for_prefers_zabbix_hostid(self, mock_thread):
+        host_text = Host.objects.create(hostname='za-text-host', ip_address='10.0.0.1')
+        host_ext = Host.objects.create(hostname='za-ext-host', ip_address='10.0.0.2', external_id='zabbix:10001')
+        from ops.alerting import _host_for
+        got = _host_for('za-text-host', {'zabbix_hostid': '10001', 'host': 'za-text-host'})
+        self.assertEqual(got, host_ext)
+        got2 = _host_for('za-text-host', {'host': 'za-text-host'})
+        self.assertEqual(got2, host_text)
+
+    @patch('ops.models.threading')
+    def test_upsert_links_alert_to_host_by_hostid(self, mock_thread):
+        Host.objects.create(hostname='za-visible-01', ip_address='10.0.0.3', external_id='zabbix:10002')
+        from ops.zabbix_alert_bridge import upsert_alert_from_zabbix_problem
+        problem = {'eventid': 'za-evt-1', 'name': '磁盘空间不足', 'severity': '4', 'objectid': 'za-trig-1', 'clock': 1700000000}
+        alert, created = upsert_alert_from_zabbix_problem(
+            problem, host_name='za-tech-01', host_id='10002', visible_name='za-visible-01', env_name='prod')
+        self.assertTrue(created)
+        alert.refresh_from_db()
+        self.assertIsNotNone(alert.host_id)
+        self.assertEqual(alert.host.external_id, 'zabbix:10002')
+        self.assertEqual(alert.labels['zabbix_hostid'], '10002')
+        self.assertEqual(alert.labels['host'], 'za-tech-01')
+        self.assertEqual(alert.labels['hostname'], 'za-visible-01')
+
+
+class ZabbixPollingServiceTests(TestCase):
+    """内置轮询服务：环境语义、统计、last_sync_at、错误收集。"""
+
+    @patch('ops.models.threading')
+    def test_poll_once_demo_source(self, mock_thread):
+        ds = ZabbixDataSource.objects.create(
+            name='轮询测试源', api_url='demo://', auth_type='token',
+            auth_token='d', is_enabled=True, environment='poll-prod')
+        from ops.zabbix_polling import poll_zabbix_alerts_once
+        stats = poll_zabbix_alerts_once()
+        self.assertEqual(stats['datasource_count'], 1)
+        self.assertGreaterEqual(stats['problem_count'], 1)
+        self.assertEqual(stats['errors'], [])
+        ds.refresh_from_db()
+        self.assertIsNotNone(ds.last_sync_at)
+        self.assertTrue(Alert.objects.filter(source_type='zabbix', environment='poll-prod').exists())
+
+    @patch('ops.models.threading')
+    def test_poll_once_dry_run_does_not_write(self, mock_thread):
+        ZabbixDataSource.objects.create(
+            name='轮询dry源', api_url='demo://', auth_type='token',
+            auth_token='d', is_enabled=True)
+        from ops.zabbix_polling import poll_zabbix_alerts_once
+        stats = poll_zabbix_alerts_once(dry_run=True)
+        self.assertEqual(stats['created'], 0)
+        self.assertEqual(stats['updated'], 0)
+        self.assertFalse(Alert.objects.filter(source_type='zabbix').exists())
+
+
+class ZabbixSchedulerTests(TestCase):
+    """内置调度器守卫：autostart 条件、单次迭代可调。"""
+
+    def test_autostart_guards(self):
+        from ops import observability_scheduler as sch
+        orig = sys.argv[:]
+        try:
+            sys.argv = ['manage.py', 'shell']
+            self.assertFalse(sch.scheduler_should_autostart())
+            sys.argv = ['manage.py', 'migrate']
+            self.assertFalse(sch.scheduler_should_autostart())
+            sys.argv = ['manage.py', 'runserver']
+            self.assertTrue(sch.scheduler_should_autostart())
+        finally:
+            sys.argv = orig
+
+    @override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
+    def test_run_once_iteration(self):
+        from ops import observability_scheduler as sch
+        sch.run_zabbix_poll_once()  # 不抛异常即通过
+
+
+class BackfillZabbixAlertHostsTests(TestCase):
+    """存量告警主机关联回填：hostid 优先、dry-run、幂等。"""
+
+    @patch('ops.models.threading')
+    def test_backfill_by_hostid(self, mock_thread):
+        host = Host.objects.create(hostname='bf-host', ip_address='10.0.0.4', external_id='zabbix:10003')
+        alert = Alert.objects.create(
+            title='bf告警', level='warning', source='zabbix_api', source_type='zabbix',
+            message='m', status='active', environment='prod', is_acknowledged=False,
+            labels={'zabbix_hostid': '10003', 'host': 'bf-host', 'hostname': 'bf-host'})
+        self.assertIsNone(alert.host_id)
+        from django.core.management import call_command
+        from io import StringIO
+        out = StringIO()
+        call_command('backfill_zabbix_alert_hosts', stdout=out)
+        alert.refresh_from_db()
+        self.assertIsNone(alert.host_id)  # dry-run 不写
+        call_command('backfill_zabbix_alert_hosts', '--yes', stdout=StringIO())
+        alert.refresh_from_db()
+        self.assertEqual(alert.host, host)
+        call_command('backfill_zabbix_alert_hosts', '--yes', stdout=StringIO())  # 幂等
+
+
+class ExecutePromqlQueryZabbixTests(TestCase):
+    """指标通路 zabbix 分支：返回形状与 Prometheus 路径不回归。"""
+
+    @patch('ops.models.threading')
+    def test_zabbix_marker_returns_matrix_shape(self, mock_thread):
+        ds = ZabbixDataSource.objects.create(
+            name='指标源', api_url='demo://', auth_type='token', auth_token='d', is_enabled=True)
+        marker = MetricDataSource.objects.create(
+            name='Zabbix - 指标源', tsdb_type='zabbix', provider='prometheus',
+            is_enabled=True, config={'zabbix_datasource_id': ds.id})
+        from ops.observability_views import execute_promql_query
+        now = timezone.now()
+        result = execute_promql_query(
+            'system.cpu.util', range_query=True,
+            start_time=now - timedelta(hours=1), end_time=now, step=60,
+            metric_datasource_id=marker.id, prefer_metric_datasource=True)
+        self.assertEqual(result['source'], 'zabbix')
+        self.assertEqual(result['resultType'], 'matrix')
+        self.assertGreater(result['series_count'], 0)
+        self.assertIsInstance(result['result'][0]['values'][0][0], float)
+
+    def test_prometheus_missing_url_still_raises(self):
+        pm = MetricDataSource.objects.create(
+            name='普通Prom源', tsdb_type='prometheus', provider='prometheus', is_enabled=True)
+        from ops.observability_views import execute_promql_query
+        with self.assertRaises(RuntimeError):
+            execute_promql_query('up', metric_datasource_id=pm.id, prefer_metric_datasource=True)

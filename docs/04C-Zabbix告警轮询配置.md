@@ -41,7 +41,20 @@ python manage.py poll_zabbix_alerts --dry-run
 
 ## 三、定时执行
 
-### 3.1 Linux Cron
+### 3.1 内置调度（推荐）
+
+平台内置调度器已随后端进程自动运行，**默认每 5 分钟**轮询一次所有启用的 Zabbix 数据源，无需再配置外部 cron / Task Scheduler。
+
+| 环境变量 | 默认值 | 说明 |
+| ---- | ---- | ---- |
+| `SXDEVOPS_ZABBIX_POLL_INTERVAL` | 300 | 轮询间隔（秒） |
+| `SXDEVOPS_DISABLE_ZABBIX_POLL` | 未设置 | 设为 `1` 关闭内置调度 |
+
+调度器为 daemon 线程：单轮失败仅记日志、下一轮自动重试；随后端进程退出。管理命令 `python manage.py poll_zabbix_alerts` 仍可用于手动触发。
+
+### 3.2 外部调度（可选，内置调度关闭时使用）
+
+#### Linux Cron
 
 ```bash
 # 编辑 crontab
@@ -51,7 +64,7 @@ crontab -e
 */5 * * * * cd /app/backend && python manage.py poll_zabbix_alerts >> /var/log/zabbix_poll.log 2>&1
 ```
 
-### 3.2 Docker 环境
+#### Docker 环境
 
 容器内已包含所有依赖，可直接执行：
 
@@ -65,7 +78,7 @@ docker exec sxdevops-app python manage.py poll_zabbix_alerts
 */5 * * * * docker exec sxdevops-app python manage.py poll_zabbix_alerts >> /var/log/zabbix_poll.log 2>&1
 ```
 
-### 3.3 Windows Task Scheduler
+#### Windows Task Scheduler
 
 1. 创建基本任务 → 触发器：每天，重复间隔 5 分钟
 2. 操作：启动程序 → `python` → 参数 `manage.py poll_zabbix_alerts` → 起始于 `C:\path\to\backend`

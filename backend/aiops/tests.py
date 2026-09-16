@@ -9082,3 +9082,77 @@ class KnowledgeEnvironmentListDeferTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.env.refresh_from_db()
         self.assertEqual(len(self.env.association_snapshot['edges']), 2000)
+
+class ZabbixIntegrationTests(TestCase):
+    """Zabbix 数据源与知识环境/AI 工具链集成回归。"""
+
+    def setUp(self):
+        ensure_builtin_rbac()
+        self.user = User.objects.create_user(username='zbx_it_user', password='Passw0rd!123')
+        platform_admin = Role.objects.get(code='platform-admin')
+        self.user.rbac_roles.add(platform_admin)
+        token = Token.objects.create(user=self.user)
+        self.client = APIClient()
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+
+    @mock.patch('ops.models.threading')
+    def test_effective_alert_environments_forms(self, mock_thread):
+        from aiops.knowledge_graph._impl import effective_alert_environments, resolve_knowledge_environment
+        from ops.models import ZabbixDataSource
+        ds = ZabbixDataSource.objects.create(
+            name='集成Zabbix', api_url='demo://', auth_type='token',
+            auth_token='d', is_enabled=True, environment='it-prod')
+        ke = AIOpsKnowledgeEnvironment.objects.create(
+            name='集成环境', alert_environments=['prod'], zabbix_datasource_ids=[ds.id])
+        self.assertEqual(effective_alert_environments(ke), ['prod', 'it-prod', '集成Zabbix'])
+        resolved = resolve_knowledge_environment('集成环境')
+        self.assertEqual(resolved['zabbix_datasource_ids'], [ds.id])
+        self.assertEqual(effective_alert_environments(resolved), ['prod', 'it-prod', '集成Zabbix'])
+        ds.environment = ''
+        ds.save(update_fields=['environment'])
+        self.assertEqual(effective_alert_environments(ke), ['prod', '集成Zabbix'])
+
+    @mock.patch('ops.models.threading')
+    def test_resolve_zabbix_datasource_order(self, mock_thread):
+        from aiops import services as svc
+        from ops.models import ZabbixDataSource
+        ds_bound = ZabbixDataSource.objects.create(
+            name='绑定源', api_url='demo://', auth_type='token', auth_token='d', is_enabled=True)
+        ds_default = ZabbixDataSource.objects.create(
+            name='默认源', api_url='demo://', auth_type='token', auth_token='d',
+            is_enabled=True, is_default=True)
+        ke = {'name': '集成环境', 'zabbix_datasource_ids': [ds_bound.id]}
+        self.assertEqual(svc._resolve_zabbix_datasource(None, ke).id, ds_bound.id)
+        self.assertEqual(svc._resolve_zabbix_datasource(None, None).id, ds_default.id)
+        self.assertEqual(svc._resolve_zabbix_datasource(ds_default.id, ke).id, ds_default.id)
+
+    def test_fastpath_alert_list_matches_query_alert_info(self):
+        from aiops.deepagents_engine.fastpath import FASTPATH_PATTERNS
+        def match(q):
+            for p in FASTPATH_PATTERNS:
+                if p['matcher'](q):
+                    return p['name']
+            return None
+        self.assertEqual(match('查询告警信息'), 'alert_list')
+        self.assertEqual(match('查看zabbix告警'), 'zabbix_problems')
+
+    @mock.patch('ops.models.threading')
+    def test_query_alerts_sees_zabbix_env(self, mock_thread):
+        from aiops import services as svc
+        from ops.models import ZabbixDataSource, Alert
+        ds = ZabbixDataSource.objects.create(
+            name='可见Zabbix', api_url='demo://', auth_type='token',
+            auth_token='d', is_enabled=True, environment='')
+        Alert.objects.create(
+            title='zbx可见告警', level='warning', source='zabbix_api', source_type='zabbix',
+            message='m', status='active', environment='可见Zabbix', is_acknowledged=False)
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='可见环境', alert_environments=[], zabbix_datasource_ids=[ds.id])
+        # 环境过滤经 effective_alert_environments 兜底包含数据源名
+        from aiops.knowledge_graph._impl import effective_alert_environments
+        ke = {'name': '可见环境', 'alert_environments': [], 'zabbix_datasource_ids': [ds.id]}
+        envs = effective_alert_environments(ke)
+        self.assertIn('可见Zabbix', envs)
+        from django.db.models import Q
+        qs = Alert.objects.filter(Q(environment__in=envs) | Q(host__environment__in=envs))
+        self.assertTrue(qs.filter(title='zbx可见告警').exists())

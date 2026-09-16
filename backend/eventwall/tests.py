@@ -13,9 +13,10 @@ class EventSourceTests(TestCase):
     def test_default_event_sources_include_builtin_and_external_sources(self):
         _ensure_default_event_sources()
 
-        self.assertEqual(EventSource.objects.exclude(code='builtin-k8s').count(), 7)
+        self.assertEqual(EventSource.objects.exclude(code='builtin-k8s').count(), 8)
         self.assertTrue(EventSource.objects.filter(code='builtin-workorder', source_kind=EventSource.KIND_BUILTIN).exists())
         self.assertTrue(EventSource.objects.filter(code='builtin-task-center', source_kind=EventSource.KIND_BUILTIN).exists())
+        self.assertTrue(EventSource.objects.filter(code='builtin-zabbix-alert', source_kind=EventSource.KIND_BUILTIN).exists())
         self.assertFalse(EventSource.objects.filter(code='builtin-k8s', enabled=True).exists())
         self.assertTrue(EventSource.objects.filter(code='jira', source_kind=EventSource.KIND_EXTERNAL).exists())
         self.assertTrue(EventSource.objects.filter(code='jenkins', source_kind=EventSource.KIND_EXTERNAL).exists())
@@ -494,3 +495,22 @@ class EventSourceTests(TestCase):
         self.assertEqual(filter_response.status_code, 200)
         self.assertIn('system_names', filter_response.data)
         self.assertIn('trade', filter_response.data['system_names'])
+
+class ZabbixEventWallTests(TestCase):
+    """Zabbix 告警事件进入事件墙：过滤放行与来源解析。"""
+
+    def test_zabbix_event_passes_wall_filter(self):
+        from eventwall.services import record_event
+        from .views import _event_wall_record_q
+        record_event(
+            module='ops', category='alert', action='zabbix_problem_import',
+            title='Zabbix 告警: 磁盘不足', summary='s', result='failed',
+            resource_type='zabbix_event', resource_id='evt-1',
+            resource_name='磁盘不足', environment='prod',
+        )
+        record = EventRecord.objects.filter(resource_type='zabbix_event').first()
+        self.assertIsNotNone(record)
+        self.assertEqual(record.environment, 'prod')
+        self.assertTrue(
+            EventRecord.objects.filter(_event_wall_record_q()).filter(id=record.id).exists())
+        self.assertIn('zabbix_event', __import__('eventwall.views', fromlist=['WALL_BUILTIN_RESOURCE_TYPES']).WALL_BUILTIN_RESOURCE_TYPES)
