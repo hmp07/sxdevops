@@ -3857,3 +3857,82 @@ class ZabbixClientTestConnectionTests(TestCase):
         client = self._client('token')
         result = client.test_connection()
         self.assertEqual(result, {'error': 'Session terminated'})
+
+class ZabbixHostAnnotationTests(TestCase):
+    """主机业务线/环境默认标注：权威覆盖 + 环境仅空值写入 + 回填命令。"""
+
+    def setUp(self):
+        from ops.models import _SYNC_IN_FLIGHT, _SYNC_IN_FLIGHT_LOCK
+        with _SYNC_IN_FLIGHT_LOCK:
+            _SYNC_IN_FLIGHT.clear()
+
+    @patch('ops.models.threading')
+    def test_worker_writes_defaults_and_preserves_manual_environment(self, mock_thread):
+        ds = ZabbixDataSource.objects.create(
+            name='标注源', api_url='demo://', auth_type='token', auth_token='d',
+            is_enabled=True, business_line='测试业务', host_environment='prod')
+        from ops.models import _zabbix_host_sync_worker
+        _zabbix_host_sync_worker(ds.id)
+        hosts = Host.objects.filter(source='zabbix')
+        self.assertGreater(hosts.count(), 0)
+        self.assertTrue(all(h.business_line == '测试业务' for h in hosts))
+        self.assertTrue(all(h.environment == 'prod' for h in hosts))
+        # 人工标注环境不被覆盖
+        h = hosts.first()
+        h.environment = 'test'
+        h.save(update_fields=['environment'])
+        _zabbix_host_sync_worker(ds.id)
+        h.refresh_from_db()
+        self.assertEqual(h.environment, 'test')
+
+    @patch('ops.models.threading')
+    def test_backfill_command_dry_run_and_idempotent(self, mock_thread):
+        ds = ZabbixDataSource.objects.create(
+            name='回填源', api_url='demo://', auth_type='token', auth_token='d',
+            is_enabled=True, business_line='回填业务', host_environment='dev')
+        Host.objects.create(hostname='bf-host-1', ip_address='10.0.0.1', source='zabbix',
+                            external_id='zabbix:1', business_line='')
+        from django.core.management import call_command
+        from io import StringIO
+        out = StringIO()
+        call_command('backfill_zabbix_host_annotations', stdout=out)
+        h = Host.objects.get(hostname='bf-host-1')
+        self.assertEqual(h.business_line, '')  # dry-run 不写
+        call_command('backfill_zabbix_host_annotations', '--yes', stdout=StringIO())
+        h.refresh_from_db()
+        self.assertEqual(h.business_line, '回填业务')
+        self.assertEqual(h.environment, 'dev')
+        call_command('backfill_zabbix_host_annotations', '--yes', stdout=StringIO())  # 幂等
+
+
+class ZabbixEventGovernanceTests(TestCase):
+    """事件与审计治理：轮询重复 update 不记事件/审计，状态变化才记录。"""
+
+    @patch('ops.models.threading')
+    def test_repeat_poll_does_not_add_events_or_audit_rows(self, mock_thread):
+        ds = ZabbixDataSource.objects.create(
+            name='治理源', api_url='demo://', auth_type='token', auth_token='d', is_enabled=True)
+        from ops.zabbix_polling import poll_zabbix_alerts_once
+        from eventwall.models import EventRecord
+        from ops.models import AlertAction
+        poll_zabbix_alerts_once(datasource_id=ds.id)
+        e1 = EventRecord.objects.filter(resource_type='zabbix_event').count()
+        a1 = AlertAction.objects.count()
+        poll_zabbix_alerts_once(datasource_id=ds.id)
+        self.assertEqual(EventRecord.objects.filter(resource_type='zabbix_event').count(), e1)
+        self.assertEqual(AlertAction.objects.count(), a1)
+        self.assertGreater(e1, 0)  # 首轮创建有记录
+
+    def test_webhook_audit_update_default_keeps_action_rows(self):
+        # 默认 audit_update=True：其他来源重复 update 仍记审计（现状保持）
+        from ops import alerting
+        from ops.models import AlertAction
+        from ops.alerting import _host_for
+        payload = {
+            'title': 'webhook-test', 'level': 'warning', 'status': 'active',
+            'source': 'webhook', 'source_type': 'generic', 'external_id': 'wh-1',
+            'fingerprint': 'wh-fp-1', 'message': 'm', 'environment': 'prod',
+        }
+        alerting.upsert_alert(dict(payload), actor='webhook')
+        alerting.upsert_alert(dict(payload), actor='webhook')
+        self.assertGreaterEqual(AlertAction.objects.count(), 2)

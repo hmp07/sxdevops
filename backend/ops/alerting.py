@@ -502,7 +502,12 @@ def _save_action(alert, action, actor='', note='', metadata=None):
     )
 
 
-def upsert_alert(normalized, integration=None, actor='webhook'):
+def upsert_alert(normalized, integration=None, actor='webhook', audit_update=True):
+    """统一告警接入。
+
+    audit_update=False 时（如轮询路径），重复更新不记审计行（AlertAction），
+    仅在创建或状态变化时记录；其他来源默认 True 保持原行为。
+    """
     now = timezone.now()
     status_value = normalized.get('status') or Alert.STATUS_ACTIVE
     fingerprint = normalized.get('fingerprint') or _fingerprint(normalized.get('source_type'), normalized)
@@ -541,8 +546,10 @@ def upsert_alert(normalized, integration=None, actor='webhook'):
     created = existing is None
     if created:
         alert = Alert.objects.create(**defaults)
+        alert._status_changed = False
     else:
         alert = existing
+        old_status = alert.status
         was_resolved = alert.status == Alert.STATUS_RESOLVED
         for field, value in defaults.items():
             if field == 'starts_at' and alert.starts_at:
@@ -555,18 +562,20 @@ def upsert_alert(normalized, integration=None, actor='webhook'):
             alert.acknowledged_at = None
             alert.ends_at = None
         alert.save()
+        alert._status_changed = old_status != status_value
 
     if not alert.group_key:
         alert.group_key = compute_group_key(alert)
         alert.save(update_fields=['group_key'])
 
-    _save_action(
-        alert,
-        AlertAction.ACTION_WEBHOOK,
-        actor=actor,
-        note='Webhook 告警接入' if created else 'Webhook 告警更新',
-        metadata={'created': created, 'source_type': alert.source_type},
-    )
+    if created or audit_update or getattr(alert, '_status_changed', False):
+        _save_action(
+            alert,
+            AlertAction.ACTION_WEBHOOK,
+            actor=actor,
+            note='Webhook 告警接入' if created else 'Webhook 告警更新',
+            metadata={'created': created, 'source_type': alert.source_type},
+        )
     return alert, created
 
 

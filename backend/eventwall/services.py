@@ -300,3 +300,45 @@ def build_json_preview(payload):
     except TypeError:
         text = str(payload)
     return text[:200]
+
+def prune_event_records_before(cutoff, queryset=None, **audit):
+    """滚动清理 cutoff 之前的非外部接入事件。
+
+    外部接入事件（source_type=SOURCE_EXTERNAL 或 category='external_event'）受保护不删。
+    queryset：调用方可传入已施加行级作用域（RBAC/视图过滤）的查询集；
+    不传则基于 EventRecord.objects 全量（供系统级调度清理使用）。
+    audit 关键字参数用于自审计事件（调用方按需携带请求上下文或系统上下文；
+    不传则只删除不记录）。返回删除条数。
+    """
+    if cutoff and timezone.is_naive(cutoff):
+        cutoff = timezone.make_aware(cutoff, timezone.get_current_timezone())
+    base = queryset if queryset is not None else EventRecord.objects
+    queryset = (
+        base
+        .exclude(source_type=EventRecord.SOURCE_EXTERNAL)
+        .exclude(category='external_event')
+        .filter(occurred_at__lt=cutoff)
+    )
+    deleted_count = queryset.count()
+    queryset.delete()
+    if audit:
+        record_event(
+            module=audit.pop('module', 'rbac'),
+            category=audit.pop('category', 'resource_change'),
+            action=audit.pop('action', 'prune_operation_audit'),
+            title=audit.pop('title', '批量删除操作审计'),
+            summary=audit.pop('summary', f'删除 {cutoff.isoformat()} 之前的操作审计记录 {deleted_count} 条'),
+            result=audit.pop('result', EventRecord.RESULT_SUCCESS),
+            severity=audit.pop('severity', EventRecord.SEVERITY_WARNING),
+            actor_username=audit.pop('actor_username', ''),
+            actor_display=audit.pop('actor_display', ''),
+            actor_type=audit.pop('actor_type', EventRecord.ACTOR_SYSTEM),
+            source_type=audit.pop('source_type', EventRecord.SOURCE_SYSTEM),
+            resource_module=audit.pop('resource_module', 'rbac'),
+            resource_type=audit.pop('resource_type', 'operation_audit'),
+            resource_id=audit.pop('resource_id', cutoff.isoformat()),
+            resource_name=audit.pop('resource_name', '操作审计'),
+            metadata=audit.pop('metadata', {'before_at': cutoff.isoformat(), 'deleted': deleted_count}),
+            **audit,
+        )
+    return deleted_count

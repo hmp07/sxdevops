@@ -1306,6 +1306,15 @@ class ZabbixDataSource(models.Model):
         '所属环境', max_length=64, blank=True, default='',
         help_text='告警入库的 environment 取值；留空则使用数据源名',
     )
+    business_line = models.CharField(
+        '默认业务线', max_length=64, blank=True, default='',
+        help_text='同步主机时写入 Host.business_line 的默认值（权威覆盖）',
+    )
+    host_environment = models.CharField(
+        '默认主机环境', max_length=20, blank=True, default='',
+        choices=[('prod', '生产'), ('test', '测试'), ('dev', '开发')],
+        help_text='同步主机时写入 Host.environment 的默认值（仅主机环境为空时写入）',
+    )
     config = models.JSONField('扩展配置', default=dict, blank=True)
     last_sync_at = models.DateTimeField('上次同步', null=True, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
@@ -1744,7 +1753,7 @@ _SYNC_IN_FLIGHT = set()
 _SYNC_IN_FLIGHT_LOCK = threading.Lock()
 
 # 实质影响连接/主机的字段；仅这些字段变化时才触发主机同步
-_SYNC_RELEVANT_FIELDS = {'api_url', 'auth_type', 'auth_token', 'username', 'password', 'is_enabled'}
+_SYNC_RELEVANT_FIELDS = {'api_url', 'auth_type', 'auth_token', 'username', 'password', 'is_enabled', 'business_line', 'host_environment'}
 
 
 @receiver(post_save, sender=ZabbixDataSource)
@@ -1812,20 +1821,45 @@ def _zabbix_host_sync_worker(datasource_id):
                 ip = interfaces[0].get('ip', '') or '0.0.0.0'
             avail = str(zh.get('available', '0'))
             status = 'online' if avail != '2' else 'offline'
-            host_obj, is_new = Host.objects.update_or_create(
-                external_id=f'zabbix:{hostid}',
-                defaults={
-                    'hostname': (zh.get('name') or zh.get('host', ''))[:64],
-                    'ip_address': ip or '',
-                    'status': status,
-                    'source': 'zabbix',
-                    'admin_user': '',
-                    'business_line': '',
-                    'description': f'Zabbix: {zh.get("name", zh.get("host", ""))}'[:255],
-                },
-            )
-            if is_new:
-                created += 1
+            external_id = f'zabbix:{hostid}'
+            hostname = (zh.get('name') or zh.get('host', ''))[:64]
+            try:
+                host_obj = Host.objects.filter(external_id=external_id).first()
+                if host_obj is None:
+                    host_obj = Host.objects.create(
+                        external_id=external_id,
+                        hostname=hostname,
+                        ip_address=ip or '',
+                        status=status,
+                        source='zabbix',
+                        admin_user='',
+                        business_line=instance.business_line or '',
+                        environment=instance.host_environment or '',
+                        description=f'Zabbix: {zh.get("name", zh.get("host", ""))}'[:255],
+                    )
+                    created += 1
+                else:
+                    update_fields = {
+                        'hostname': hostname,
+                        'ip_address': ip or '',
+                        'status': status,
+                        # 数据源默认业务线为权威值，每次同步覆盖
+                        'business_line': instance.business_line or '',
+                        'description': f'Zabbix: {zh.get("name", zh.get("host", ""))}'[:255],
+                    }
+                    fields_to_save = list(update_fields.keys())
+                    # 环境仅空值写入，不覆盖人工标注
+                    if not host_obj.environment and instance.host_environment:
+                        host_obj.environment = instance.host_environment
+                        fields_to_save.append('environment')
+                    for field, value in update_fields.items():
+                        setattr(host_obj, field, value)
+                    host_obj.save(update_fields=fields_to_save)
+            except Exception as exc:
+                logger.warning('Host upsert failed for Zabbix host %s: %s', hostid, exc)
+                host_obj = None
+            if host_obj is None:
+                continue
             # 同步为 TaskResource
             try:
                 zabbix_env, _ = TaskResourceGroup.objects.get_or_create(

@@ -514,3 +514,33 @@ class ZabbixEventWallTests(TestCase):
         self.assertTrue(
             EventRecord.objects.filter(_event_wall_record_q()).filter(id=record.id).exists())
         self.assertIn('zabbix_event', __import__('eventwall.views', fromlist=['WALL_BUILTIN_RESOURCE_TYPES']).WALL_BUILTIN_RESOURCE_TYPES)
+
+class EventRetentionTests(TestCase):
+    """事件滚动清理共享函数：cutoff 前删、外部事件保护、自审计记录。"""
+
+    def test_prune_shared_function(self):
+        from django.utils import timezone
+        from datetime import timedelta
+        from .services import prune_event_records_before
+        old = timezone.now() - timedelta(days=10)
+        for i in range(3):
+            EventRecord.objects.create(
+                module='ops', category='alert', action='t', title=f'old-{i}',
+                result='success', occurred_at=old, source_type=EventRecord.SOURCE_SYSTEM)
+        EventRecord.objects.create(
+            module='ext', category='external_event', action='t', title='old-ext',
+            result='success', occurred_at=old, source_type=EventRecord.SOURCE_EXTERNAL)
+        EventRecord.objects.create(
+            module='ops', category='alert', action='t', title='fresh',
+            result='success', source_type=EventRecord.SOURCE_SYSTEM)
+
+        deleted = prune_event_records_before(
+            timezone.now() - timedelta(days=5),
+            actor_username='scheduler', actor_display='内置调度器',
+            actor_type=EventRecord.ACTOR_SYSTEM, source_type=EventRecord.SOURCE_SYSTEM)
+
+        self.assertEqual(deleted, 3)
+        self.assertFalse(EventRecord.objects.filter(title__in=['old-0', 'old-1', 'old-2']).exists())
+        self.assertTrue(EventRecord.objects.filter(title='old-ext').exists())
+        self.assertTrue(EventRecord.objects.filter(title='fresh').exists())
+        self.assertTrue(EventRecord.objects.filter(action='prune_operation_audit').exists())

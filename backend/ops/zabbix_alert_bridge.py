@@ -9,8 +9,8 @@ SEVERITY_MAP = {0: 'info', 1: 'info', 2: 'warning', 3: 'warning', 4: 'critical',
 SEVERITY_RESULT_MAP = {0: 'info', 1: 'info', 2: 'warning', 3: 'partial', 4: 'failed', 5: 'failed'}
 
 
-def _record_event(alert, created):
-    """将告警导入操作记录到 EventWall"""
+def _record_event(alert, created, status_changed=False):
+    """将告警导入操作记录到 EventWall（仅创建或状态变化时调用）"""
     try:
         from eventwall.services import record_event
         record_event(
@@ -26,6 +26,7 @@ def _record_event(alert, created):
             resource_id=alert.external_id,
             resource_name=alert.title[:200],
             environment=alert.environment or '',
+            metadata={'status_changed': bool(status_changed)},
         )
     except ImportError:
         pass
@@ -101,13 +102,21 @@ def upsert_alert_from_zabbix_problem(problem, host_name='', host_id='', visible_
         return None, False
 
     normalized = _build_normalized(problem, host_name, host_id, visible_name, env_name)
-    alert, created = alerting.upsert_alert(normalized, integration=None, actor='zabbix_poll')
+    # 轮询路径：重复更新不记审计行（仅创建与状态变化时记录）
+    alert, created = alerting.upsert_alert(normalized, integration=None, actor='zabbix_poll', audit_update=False)
 
     if alert:
+        # 主机业务线富化：使按业务线的抑制/静默规则对 Zabbix 告警生效
+        if not alert.business_line and alert.host_id and alert.host.business_line:
+            alert.business_line = alert.host.business_line
+            alert.save(update_fields=['business_line'])
         alerting.apply_alert_suppression(alert)
         action = 'resolved' if alert.status == 'resolved' else 'fire'
         alerting.dispatch_alert_notifications(alert, action=action)
-        _record_event(alert, created)
+        # 事件仅在创建或状态变化时记录（轮询重复 update 不再刷事件墙）
+        status_changed = bool(getattr(alert, '_status_changed', False))
+        if created or status_changed:
+            _record_event(alert, created, status_changed=status_changed)
 
     return alert, created
 

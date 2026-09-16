@@ -49,8 +49,11 @@ python manage.py poll_zabbix_alerts --dry-run
 | ---- | ---- | ---- |
 | `SXDEVOPS_ZABBIX_POLL_INTERVAL` | 300 | 轮询间隔（秒） |
 | `SXDEVOPS_DISABLE_ZABBIX_POLL` | 未设置 | 设为 `1` 关闭内置调度 |
+| `SXDEVOPS_EVENT_RETENTION_DAYS` | 7 | 事件墙非外部接入事件保留天数（0 = 不清理） |
 
 调度器为 daemon 线程：单轮失败仅记日志、下一轮自动重试；随后端进程退出。管理命令 `python manage.py poll_zabbix_alerts` 仍可用于手动触发。
+
+**事件治理说明**：轮询对同一告警的重复更新（状态未变化）不再重复记录事件墙事件与审计行，仅创建与状态变化（恢复/再触发）时记录；事件墙由调度器每日执行滚动清理（见 `SXDEVOPS_EVENT_RETENTION_DAYS`）。
 
 ### 3.2 外部调度（可选，内置调度关闭时使用）
 

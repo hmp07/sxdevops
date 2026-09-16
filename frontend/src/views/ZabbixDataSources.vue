@@ -140,6 +140,16 @@
         <el-form-item label="超时 (秒)">
           <el-input-number v-model="form.timeout" :min="5" :max="60" style="width: 180px" />
         </el-form-item>
+        <el-form-item label="默认业务线">
+          <el-input v-model="form.business_line" placeholder="同步主机时写入的业务线（可留空）" />
+        </el-form-item>
+        <el-form-item label="默认主机环境">
+          <el-select v-model="form.host_environment" style="width: 180px" clearable placeholder="同步主机时写入的环境（仅空值写入）">
+            <el-option label="生产" value="prod" />
+            <el-option label="测试" value="test" />
+            <el-option label="开发" value="dev" />
+          </el-select>
+        </el-form-item>
       </el-form>
 
       <template #footer>
@@ -186,6 +196,8 @@ function createEmptyForm() {
     timeout: 15,
     is_enabled: true,
     is_default: false,
+    business_line: '',
+    host_environment: '',
   }
 }
 
@@ -238,6 +250,8 @@ function openDialog(row) {
       timeout: row.timeout || 15,
       is_enabled: row.is_enabled,
       is_default: row.is_default,
+      business_line: row.business_line || '',
+      host_environment: row.host_environment || '',
     }
   } else {
     editingId.value = null
@@ -263,6 +277,8 @@ async function handleSave() {
       timeout: form.value.timeout,
       is_enabled: form.value.is_enabled,
       is_default: form.value.is_default,
+      business_line: form.value.business_line,
+      host_environment: form.value.host_environment,
     }
     if (form.value.auth_token) payload.auth_token = form.value.auth_token
     if (form.value.username) payload.username = form.value.username

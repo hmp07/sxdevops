@@ -14,7 +14,7 @@ from rbac.permissions import RBACPermissionMixin
 
 from .models import EventRecord, EventSource
 from .serializers import EventRecordSerializer, EventSourceIngestSerializer, EventSourceSerializer
-from .services import build_resource, record_event
+from .services import build_resource, prune_event_records_before, record_event
 
 
 DEMO_WINDOW_MINUTES = 7 * 24 * 60 - 1
@@ -964,22 +964,9 @@ class EventRecordViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
         if timezone.is_naive(cutoff):
             cutoff = timezone.make_aware(cutoff, timezone.get_current_timezone())
 
-        queryset = (
-            self.get_queryset()
-            .exclude(source_type=EventRecord.SOURCE_EXTERNAL)
-            .exclude(category='external_event')
-            .filter(occurred_at__lt=cutoff)
-        )
-        deleted_count = queryset.count()
-        queryset.delete()
-        record_event(
-            module='rbac',
-            category='resource_change',
-            action='prune_operation_audit',
-            title='批量删除操作审计',
-            summary=f'删除 {cutoff.isoformat()} 之前的操作审计记录 {deleted_count} 条',
-            result=EventRecord.RESULT_SUCCESS,
-            severity=EventRecord.SEVERITY_WARNING,
+        deleted_count = prune_event_records_before(
+            cutoff,
+            queryset=self.get_queryset(),
             actor_username=getattr(request.user, 'username', '') or '',
             actor_display=getattr(request.user, 'get_full_name', lambda: '')() or getattr(request.user, 'username', '') or '',
             actor_type=EventRecord.ACTOR_USER,
@@ -987,11 +974,6 @@ class EventRecordViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
             request_method=request.method,
             source_path=request.path,
             ip_address=request.META.get('HTTP_X_FORWARDED_FOR', '').split(',')[0].strip() or request.META.get('REMOTE_ADDR', ''),
-            resource_module='rbac',
-            resource_type='operation_audit',
-            resource_id=cutoff.isoformat(),
-            resource_name='操作审计',
-            metadata={'before_at': cutoff.isoformat(), 'deleted': deleted_count},
         )
         return Response({'deleted': deleted_count, 'before_at': cutoff})
 
