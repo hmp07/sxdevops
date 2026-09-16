@@ -130,15 +130,30 @@ async function saveDs() {
 
 async function testConnection(row) {
   try {
-    await testITopConnection(row.id)
-    ElMessage.success('连接测试成功')
+    const resp = await testITopConnection(row.id)
+    if (resp?.status === 'success') {
+      ElMessage.success('连接测试成功')
+    } else {
+      ElMessage.error(resp?.message || '连接测试失败，请检查地址与凭据')
+    }
   } catch { /* */ }
 }
 
 async function triggerSync(row) {
   try {
-    await triggerITopSync(row.id)
-    ElMessage.success('同步已触发')
+    const resp = await triggerITopSync(row.id)
+    const r = resp?.result || {}
+    const cis = r.cis || {}
+    const lines = [
+      `CI 新建 ${cis.created || 0} / 更新 ${cis.updated || 0} / 跳过 ${cis.skipped || 0}`,
+      `关系新建 ${(r.relations || {}).created || 0}`,
+      `工单新建 ${(r.tickets || {}).created || 0} / 更新 ${(r.tickets || {}).updated || 0}`,
+    ]
+    ElMessage.success(`同步完成：${lines.join('，')}`)
+    const errors = cis.errors || []
+    if (errors.length) {
+      ElMessage.warning(`部分 CI 类同步失败：${errors.join('；').slice(0, 200)}`)
+    }
     await loadDataSources()
   } catch { /* */ }
 }

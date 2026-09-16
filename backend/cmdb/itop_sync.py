@@ -80,7 +80,7 @@ def sync_cis(ds):
     """全量同步 CI → ConfigItem"""
     class_map = ds.config.get('ci_class_map', DEFAULT_CI_CLASS_MAP) if ds.config else DEFAULT_CI_CLASS_MAP
     ci_classes = ds.config.get('ci_classes', list(class_map.keys())) if ds.config else list(class_map.keys())
-    stats = {'created': 0, 'updated': 0, 'skipped': 0}
+    stats = {'created': 0, 'updated': 0, 'skipped': 0, 'errors': []}
 
     for itop_class in ci_classes:
         if itop_class not in class_map:
@@ -90,6 +90,7 @@ def sync_cis(ds):
         ))
         if result.get('code') != 0:
             stats['skipped'] += 1
+            stats['errors'].append(f'{itop_class}: {result.get("message", "未知错误")}')
             continue
 
         ci_type, _ = CIType.objects.get_or_create(name=class_map[itop_class])
@@ -270,6 +271,9 @@ def run_full_sync(ds):
         ticket_result = sync_tickets(ds)
         ds.last_sync_at = now()
         ds.sync_status = 'ok'
+        if ci_result.get('errors') and not ci_result.get('created') and not ci_result.get('updated'):
+            # 所有 CI 类请求全部失败（地址/凭据/网络问题），状态如实呈现，避免"已触发但无数据"误导
+            ds.sync_status = 'error: 所有 CI 类同步失败（请检查数据源地址与凭据）'
 
         # 触发设备映射对账
         try:
