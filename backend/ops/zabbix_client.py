@@ -157,8 +157,18 @@ class ZabbixClient:
     # ---- Zabbix API Methods ----
 
     def test_connection(self):
-        """测试连接"""
-        return self._call('apiinfo.version')
+        """测试连接：版本探测（Zabbix 7 要求 apiinfo.version 无认证头）+ 认证有效性校验"""
+        version = self._call_raw({
+            'jsonrpc': '2.0', 'method': 'apiinfo.version',
+            'params': [], 'id': self._next_id(),
+        })
+        if isinstance(version, dict) and 'error' in version:
+            return version
+        # 认证有效性：带认证头执行一次轻量业务调用，失败返回真实错误
+        auth_check = self._call('host.get', {'output': ['hostid'], 'limit': 1})
+        if isinstance(auth_check, dict) and 'error' in auth_check:
+            return auth_check
+        return version
 
     def get_hosts(self, group_ids=None, host_ids=None, search=None):
         """获取主机列表（无限 limit）"""

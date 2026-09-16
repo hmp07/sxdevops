@@ -3827,3 +3827,33 @@ class ExecutePromqlQueryZabbixTests(TestCase):
         from ops.observability_views import execute_promql_query
         with self.assertRaises(RuntimeError):
             execute_promql_query('up', metric_datasource_id=pm.id, prefer_metric_datasource=True)
+
+class ZabbixClientTestConnectionTests(TestCase):
+    """测试连接：apiinfo.version 必须无认证头（Zabbix 7 要求），认证校验走真实调用。"""
+
+    def _client(self, auth_type='token'):
+        from types import SimpleNamespace
+        from ops.zabbix_client import ZabbixClient
+        ds = SimpleNamespace(
+            api_url='http://zabbix.local/api_jsonrpc.php', auth_type=auth_type,
+            auth_token='secret-token' if auth_type == 'token' else '',
+            username='admin' if auth_type == 'userpass' else '',
+            password='pw' if auth_type == 'userpass' else '',
+            tls_verify=False, timeout=10, id=1)
+        return ZabbixClient(ds)
+
+    @patch('ops.zabbix_client.ZabbixClient._call_raw', return_value='7.4.0')
+    @patch('ops.zabbix_client.ZabbixClient._call', return_value=[{'hostid': '1'}])
+    def test_version_probe_without_auth_and_auth_check(self, mock_call, mock_raw):
+        client = self._client('token')
+        result = client.test_connection()
+        self.assertEqual(result, '7.4.0')
+        self.assertEqual(mock_raw.call_args[0][0]['method'], 'apiinfo.version')
+        self.assertEqual(mock_call.call_args[0][0], 'host.get')
+
+    @patch('ops.zabbix_client.ZabbixClient._call_raw', return_value='7.4.0')
+    @patch('ops.zabbix_client.ZabbixClient._call', return_value={'error': 'Session terminated'})
+    def test_auth_failure_surfaces_real_error(self, mock_call, mock_raw):
+        client = self._client('token')
+        result = client.test_connection()
+        self.assertEqual(result, {'error': 'Session terminated'})
