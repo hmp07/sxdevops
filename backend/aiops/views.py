@@ -551,14 +551,21 @@ def _clean_catalog_value(value):
 
 
 def _safe_api_url(url):
-    """脱敏 API URL，仅保留主机名（scheme-only 标记如 demo:// 无主机名，原样返回）"""
+    """脱敏 API URL，仅保留主机名。
+
+    无主机名时：仅放行纯 scheme 标记（netloc/path 均为空，如 demo://）；
+    其余（如 postgresql://user:pass@/db 携带凭据）脱敏为纯 scheme，防凭据泄漏。
+    """
     if not url:
         return None
     from urllib.parse import urlparse, urlunparse
     parsed = urlparse(url)
     hostname = parsed.hostname or ''
     if not hostname:
-        return url
+        if (not parsed.netloc and not parsed.path
+                and not parsed.query and not parsed.params and not parsed.fragment):
+            return url
+        return f'{parsed.scheme}://' if parsed.scheme else None
     safe = parsed._replace(netloc=hostname + (f':{parsed.port}' if parsed.port else ''))
     return urlunparse(safe)
 
