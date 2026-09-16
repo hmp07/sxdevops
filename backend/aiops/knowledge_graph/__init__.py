@@ -6,12 +6,14 @@
 """
 from ._impl import (
     build_knowledge_graph,
+    effective_alert_environments,
     resolve_knowledge_environment,
     resolve_knowledge_environments_from_text,
 )
 
 __all__ = [
     'build_knowledge_graph',
+    'effective_alert_environments',
     'resolve_knowledge_environment',
     'resolve_knowledge_environments_from_text',
 ]

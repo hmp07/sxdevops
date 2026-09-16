@@ -1,7 +1,7 @@
 """Zabbix 告警轮询命令.
 
 从所有启用的 Zabbix 数据源拉取活跃问题，通过统一告警流水线导入 Alert 模型。
-建议通过 cron 或 Windows Task Scheduler 每 5 分钟执行一次。
+内置调度器（observability_scheduler）默认每 5 分钟自动轮询，本命令用于手动触发。
 
 用法:
     python manage.py poll_zabbix_alerts
@@ -9,11 +9,6 @@
     python manage.py poll_zabbix_alerts --dry-run
 """
 from django.core.management.base import BaseCommand
-from django.utils.timezone import now
-
-from ops.models import ZabbixDataSource
-from ops.zabbix_client import ZabbixClient
-from ops.zabbix_alert_bridge import resolve_problem_host, upsert_alert_from_zabbix_problem
 
 
 class Command(BaseCommand):
@@ -33,77 +28,16 @@ class Command(BaseCommand):
         datasource_id = options.get('datasource_id')
         dry_run = options.get('dry_run', False)
 
-        if datasource_id:
-            sources = ZabbixDataSource.objects.filter(id=datasource_id, is_enabled=True)
-            if not sources.exists():
+        from ops.zabbix_polling import poll_zabbix_alerts_once
+
+        stats = poll_zabbix_alerts_once(
+            datasource_id=datasource_id, dry_run=dry_run, out=self.stdout)
+
+        for err in stats['errors']:
+            self.stderr.write(self.style.ERROR(f'  {err}'))
+
+        if stats['datasource_count'] == 0:
+            if datasource_id:
                 self.stderr.write(self.style.ERROR(f'未找到 ID={datasource_id} 的启用数据源'))
-                return
-        else:
-            sources = ZabbixDataSource.objects.filter(is_enabled=True)
-            if not sources.exists():
+            else:
                 self.stdout.write(self.style.WARNING('没有启用的 Zabbix 数据源，跳过轮询'))
-                return
-
-        total_created = 0
-        total_updated = 0
-        total_problems = 0
-
-        for ds in sources:
-            self.stdout.write(f'正在从 "{ds.name}" ({ds.api_url}) 拉取告警...')
-            client = ZabbixClient(ds)
-
-            result = client.get_problems()
-            if 'error' in result:
-                self.stderr.write(self.style.ERROR(f'  连接失败: {result["error"]}'))
-                continue
-
-            problems = result if isinstance(result, list) else []
-            self.stdout.write(f'  获取到 {len(problems)} 个活跃问题')
-
-            if dry_run:
-                for p in problems[:5]:
-                    self.stdout.write(f'    [DRY-RUN] {p.get("name", "-")[:80]} '
-                                      f'severity={p.get("severity")} eventid={p.get("eventid")}')
-                total_problems += len(problems)
-                continue
-
-            created = 0
-            updated = 0
-            for problem in problems:
-                event_id = problem.get('eventid', '')
-                host_name, host_id, visible_name = '', '', ''
-                try:
-                    # objectid 是触发器 ID，需通过 trigger.get 获取关联主机
-                    host_name, host_id, visible_name = resolve_problem_host(client, problem)
-                    if not host_name and host_id:
-                        # 兜底：通过 DeviceMapping 按 hostid 查找 iTop CI 名
-                        from ops.models import DeviceMapping
-                        dm = DeviceMapping.objects.filter(zabbix_hostid=host_id).select_related('config_item').first()
-                        if dm and dm.config_item:
-                            host_name = dm.config_item.name
-                except (ValueError, KeyError, TypeError) as e:
-                    self.stderr.write(f'    主机查找失败 (problem={event_id}): {e}')
-                except Exception as e:
-                    self.stderr.write(f'    网络/API 错误 (problem={event_id}): {e}')
-
-                alert, is_new = upsert_alert_from_zabbix_problem(
-                    problem, host_name=host_name, host_id=host_id,
-                    visible_name=visible_name, env_name=(ds.environment or ds.name))
-                if alert:
-                    if is_new:
-                        created += 1
-                    else:
-                        updated += 1
-
-            # 更新数据源的最后同步时间
-            ds.last_sync_at = now()
-            ds.save(update_fields=['last_sync_at'])
-
-            total_created += created
-            total_updated += updated
-            self.stdout.write(f'    新建 {created} 条，更新 {updated} 条')
-
-        summary = f'轮询完成: 共 {total_created + total_updated} 条告警 (新建 {total_created}，更新 {total_updated})'
-        if dry_run:
-            summary = f'[DRY-RUN] {summary} — 共 {total_problems} 个问题，未实际写入'
-        self.stdout.write(self.style.SUCCESS(summary))

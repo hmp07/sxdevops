@@ -667,11 +667,12 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
             .distinct()
             .order_by('environment')[:100]
         )
-        # 将已配置的 Zabbix 数据源名称加入告警环境候选
+        # 将已配置的 Zabbix 数据源的所属环境/名称加入告警环境候选
         from ops.models import ZabbixDataSource as ZbxDS
         for zds in ZbxDS.objects.filter(is_enabled=True):
-            if zds.name and zds.name not in alert_environments:
-                alert_environments.append(zds.name)
+            for env_candidate in (zds.environment, zds.name):
+                if env_candidate and env_candidate not in alert_environments:
+                    alert_environments.append(env_candidate)
         log_datasources = [
             {
                 'id': item.id,

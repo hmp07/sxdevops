@@ -452,6 +452,7 @@ def resolve_knowledge_environment(name):
         'tracing_datasource_ids': _int_list(config.tracing_datasource_ids),
         'observability_link_ids': _int_list(getattr(config, 'observability_link_ids', []) or []),
         'alert_environments': _clean_list(config.alert_environments),
+        'zabbix_datasource_ids': _int_list(getattr(config, 'zabbix_datasource_ids', []) or []),
         'k8s_cluster_ids': _int_list(config.k8s_cluster_ids),
         'k8s_namespaces': config.k8s_namespaces if isinstance(config.k8s_namespaces, dict) else {},
         'docker_host_ids': _int_list(config.docker_host_ids),
@@ -459,6 +460,28 @@ def resolve_knowledge_environment(name):
         'association_snapshot': config.association_snapshot if isinstance(config.association_snapshot, dict) else {},
         'child_node_snapshot': config.child_node_snapshot if isinstance(config.child_node_snapshot, dict) else {},
     }
+
+
+def effective_alert_environments(config):
+    """有效告警环境集合：alert_environments + 已绑定 Zabbix 数据源的 environment/名称。
+
+    Zabbix 告警的 environment 为数据源所属环境（未配置时用数据源名），将二者并入
+    使平台告警查询（query_alerts 等）不再把 Zabbix 告警过滤掉。
+    config 可为 resolve_knowledge_environment 的 dict 或 AIOpsKnowledgeEnvironment 实例。
+    """
+    if isinstance(config, dict):
+        envs = _clean_list(config.get('alert_environments') or [])
+        ids = _int_list(config.get('zabbix_datasource_ids') or [])
+    else:
+        envs = _clean_list(getattr(config, 'alert_environments', []) or [])
+        ids = _int_list(getattr(config, 'zabbix_datasource_ids', []) or [])
+    if ids:
+        from ops.models import ZabbixDataSource
+        for ds in ZabbixDataSource.objects.filter(id__in=ids, is_enabled=True):
+            for name in (ds.environment, ds.name):
+                if name and name not in envs:
+                    envs.append(name)
+    return envs
 
 
 def resolve_knowledge_environments_from_text(text):
@@ -1546,7 +1569,7 @@ def build_knowledge_graph(params=None):
                 selected_event_environments.add(environment)
                 event_env_to_graph[environment] = config.name
                 source_env_to_graph.setdefault(environment, config.name)
-            for environment in _clean_list(config.alert_environments):
+            for environment in effective_alert_environments(config):
                 selected_alert_environments.add(environment)
                 alert_env_to_graph[environment] = config.name
                 source_env_to_graph.setdefault(environment, config.name)

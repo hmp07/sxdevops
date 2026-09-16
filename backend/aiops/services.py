@@ -61,7 +61,7 @@ from ops.log_views import _run_query as run_log_provider_query
 from ops.observability_views import execute_dashboard_panel_queries, execute_promql_query
 from rbac.services import is_demo_account, user_has_permissions
 
-from .knowledge_graph import build_knowledge_graph, resolve_knowledge_environment, resolve_knowledge_environments_from_text
+from .knowledge_graph import build_knowledge_graph, effective_alert_environments, resolve_knowledge_environment, resolve_knowledge_environments_from_text
 from .action_handlers import (
     build_context_form_block,
     build_page_context_summary_block,
@@ -4958,7 +4958,7 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
     queryset = Alert.objects.select_related('host').all()
     # DEBUG-REMOVED: open('d:/projects/sxdevops/backend/alert_debug.log','a').write(f'[ALERT-DEBUG] Initial total: {queryset.count()}\n')
     if knowledge_environment:
-        alert_environments = knowledge_environment.get('alert_environments') or []
+        alert_environments = effective_alert_environments(knowledge_environment)
         queryset = queryset.filter(Q(environment__in=alert_environments) | Q(host__environment__in=alert_environments)) if alert_environments else Alert.objects.none()
         # DEBUG-REMOVED: open('d:/projects/sxdevops/backend/alert_debug.log','a').write(f'[ALERT-DEBUG] After KE filter: {queryset.count()}\n')
     elif environment:
@@ -5037,7 +5037,7 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
 def _alert_scope_queryset(knowledge_environment=None):
     queryset = Alert.objects.select_related('host').all()
     if knowledge_environment:
-        alert_environments = knowledge_environment.get('alert_environments') or []
+        alert_environments = effective_alert_environments(knowledge_environment)
         return queryset.filter(Q(environment__in=alert_environments) | Q(host__environment__in=alert_environments)) if alert_environments else Alert.objects.none()
     return queryset
 
@@ -5480,7 +5480,7 @@ def _select_alert_metric_datasource_id(knowledge_environment, alert, metric_data
         env_names.append(alert.environment)
     if knowledge_environment:
         env_names.append(knowledge_environment.get('name'))
-        env_names.extend(knowledge_environment.get('alert_environments') or [])
+        env_names.extend(effective_alert_environments(knowledge_environment))
     for env_name in [item for item in dict.fromkeys(env_names) if item]:
         datasource = MetricDataSource.objects.filter(is_enabled=True, environment=env_name).order_by('-is_default', 'name').first()
         if datasource:
@@ -6347,7 +6347,7 @@ def query_logs(session, user_message, user, query='', service='', level='', leve
         }
     queryset = LogEntry.objects.select_related('host').all()
     if knowledge_environment:
-        source_environments = set(knowledge_environment.get('event_environments') or []) | set(knowledge_environment.get('alert_environments') or [])
+        source_environments = set(knowledge_environment.get('event_environments') or []) | set(effective_alert_environments(knowledge_environment))
         if source_environments:
             queryset = queryset.filter(Q(host__environment__in=source_environments) | Q(host__isnull=True))
     if resolved_service:
