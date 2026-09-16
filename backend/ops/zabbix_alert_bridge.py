@@ -25,6 +25,7 @@ def _record_event(alert, created):
             resource_type='zabbix_event',
             resource_id=alert.external_id,
             resource_name=alert.title[:200],
+            environment=alert.environment or '',
         )
     except ImportError:
         pass

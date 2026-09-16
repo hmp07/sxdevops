@@ -55,6 +55,13 @@ EVENT_CATEGORY_DEFINITIONS = [
         'required_fields': ['event_id', 'event_category', 'title', 'environment', 'result'],
         'recommended_fields': ['task_type', 'task_id', 'target', 'executor', 'duration_ms', 'schedule_id'],
     },
+    {
+        'key': 'alert',
+        'label': '告警事件',
+        'description': 'Zabbix 等问题导入告警中心的监控告警事件，为故障分析补充告警上下文。',
+        'required_fields': ['event_id', 'event_category', 'title', 'environment', 'result'],
+        'recommended_fields': ['resource_type', 'resource_id', 'severity', 'acknowledged'],
+    },
 ]
 EVENT_CATEGORY_MAP = {item['key']: item for item in EVENT_CATEGORY_DEFINITIONS}
 EVENT_CATEGORY_ALIASES = {
@@ -120,6 +127,22 @@ DEFAULT_EVENT_SOURCES = [
         'field_mapping': {'time': 'occurred_at', 'target': 'resource_name', 'status': 'result'},
         'config': {'resource_types': ['host_task', 'host_task_batch', 'host_task_schedule'], 'default_event_category': 'task_center'},
     },
+    {
+        'code': 'builtin-zabbix-alert',
+        'name': 'Zabbix 告警',
+        'source_kind': EventSource.KIND_BUILTIN,
+        'source_type': EventSource.TYPE_BUILTIN_ZABBIX,
+        'description': 'Zabbix 问题导入告警中心的系统事件，为故障分析补充监控告警上下文。',
+        'enabled': True,
+        'status': EventSource.STATUS_HEALTHY,
+        'auth_type': EventSource.AUTH_NONE,
+        'field_mapping': {'time': 'occurred_at', 'title': 'title', 'status': 'result'},
+        'config': {
+            'resource_types': ['zabbix_event'],
+            'supported_event_categories': ['alert'],
+            'default_event_category': 'alert',
+        },
+    },
     {'code': 'jira', 'name': 'Jira', 'source_kind': EventSource.KIND_EXTERNAL, 'source_type': EventSource.TYPE_JIRA, 'description': '接入 Jira issue 创建、流转、发布关联和故障工单事件。', 'enabled': False, 'status': EventSource.STATUS_NOT_CONFIGURED, 'auth_type': EventSource.AUTH_WEBHOOK, 'field_mapping': {'issue.key': 'resource_id', 'issue.fields.summary': 'title', 'user.name': 'actor'}, 'config': {'default_event_category': 'ops_transaction'}},
     {'code': 'jenkins', 'name': 'Jenkins', 'source_kind': EventSource.KIND_EXTERNAL, 'source_type': EventSource.TYPE_JENKINS, 'description': '接入 Jenkins 构建开始、成功、失败、回滚和部署流水线事件。', 'enabled': False, 'status': EventSource.STATUS_NOT_CONFIGURED, 'auth_type': EventSource.AUTH_WEBHOOK, 'field_mapping': {'job_name': 'application', 'build_number': 'resource_id', 'status': 'result'}, 'config': {'default_event_category': 'application_release'}},
     {'code': 'argocd', 'name': 'ArgoCD', 'source_kind': EventSource.KIND_EXTERNAL, 'source_type': EventSource.TYPE_ARGOCD, 'description': '接入 ArgoCD 应用同步、健康状态、回滚和 GitOps 发布事件。', 'enabled': False, 'status': EventSource.STATUS_NOT_CONFIGURED, 'auth_type': EventSource.AUTH_WEBHOOK, 'field_mapping': {'app.metadata.name': 'application', 'app.status.health.status': 'severity'}, 'config': {'default_event_category': 'application_release'}},
@@ -130,6 +153,7 @@ DEFAULT_EVENT_SOURCES = [
 BUILTIN_RESOURCE_TYPES = {
     EventSource.TYPE_BUILTIN_WORKORDER: ['deployment', 'sql_order', 'transaction_ticket', 'deployment_approval_flow'],
     EventSource.TYPE_BUILTIN_TASK: ['host_task', 'host_task_batch', 'host_task_schedule'],
+    EventSource.TYPE_BUILTIN_ZABBIX: ['zabbix_event'],
 }
 
 LEGACY_EVENT_SOURCE_CODES = {'builtin-k8s'}

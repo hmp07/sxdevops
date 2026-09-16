@@ -126,6 +126,7 @@ class EventSource(models.Model):
     TYPE_BUILTIN_WORKORDER = 'builtin_workorder'
     TYPE_BUILTIN_TASK = 'builtin_task'
     TYPE_BUILTIN_K8S = 'builtin_k8s'
+    TYPE_BUILTIN_ZABBIX = 'builtin_zabbix'
     TYPE_JIRA = 'jira'
     TYPE_JENKINS = 'jenkins'
     TYPE_ARGOCD = 'argocd'
@@ -135,6 +136,7 @@ class EventSource(models.Model):
         (TYPE_BUILTIN_WORKORDER, '工单系统'),
         (TYPE_BUILTIN_TASK, '任务中心'),
         (TYPE_BUILTIN_K8S, 'K8s 事件'),
+        (TYPE_BUILTIN_ZABBIX, 'Zabbix 告警'),
         (TYPE_JIRA, 'Jira'),
         (TYPE_JENKINS, 'Jenkins'),
         (TYPE_ARGOCD, 'ArgoCD'),

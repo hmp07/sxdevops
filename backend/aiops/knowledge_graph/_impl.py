@@ -2571,6 +2571,12 @@ def build_knowledge_graph(params=None):
             route='/observability/zabbix', status='enabled', description=desc,
         )
         add_edge(_node_key('capability', 'zabbix_monitoring'), node_id, '接入 Zabbix', 'capability_datasource')
+        if use_knowledge_env:
+            for environment in selected_env:
+                add_edge(
+                    _node_key('environment', environment), node_id,
+                    '接入 Zabbix 监控', 'environment_observability', 1,
+                )
 
     # iTop CMDB 数据源节点
     try:
@@ -3066,6 +3072,41 @@ def build_knowledge_graph(params=None):
             f'告警：{alert.title}',
         )
 
+    # Zabbix 告警节点 + 告警→主机边（限 20 条防图谱膨胀）
+    zabbix_alert_records = [
+        a for a in alert_records
+        if a.source_type == Alert.SOURCE_ZABBIX and a.status == Alert.STATUS_ACTIVE
+    ][:20]
+    for alert in zabbix_alert_records:
+        env_name = graph_environment(alert.environment, 'alert')
+        if not env_name:
+            continue
+        node_id = _node_key('alert', alert.id)
+        add_node(
+            node_id,
+            (alert.title or 'Zabbix 告警')[:64],
+            'alert',
+            'Zabbix 告警',
+            route='/alerts',
+            status=alert.status,
+            metric=2 if alert.level == 'critical' else 1,
+            environment=env_name,
+            details=[
+                {'label': '级别', 'value': alert.get_level_display() if hasattr(alert, 'get_level_display') else alert.level},
+                {'label': '状态', 'value': alert.get_status_display() if hasattr(alert, 'get_status_display') else alert.status},
+                {'label': '来源', 'value': alert.source or 'zabbix'},
+            ],
+        )
+        add_edge(_node_key('environment', env_name), node_id, '环境告警', 'environment_alert', 2)
+        if alert.host_id:
+            try:
+                tr = TaskResource.objects.filter(host_id=alert.host_id).first()
+                if tr:
+                    host_node = _node_key('infrastructure', 'task_resource', tr.id)
+                    if host_node in nodes:
+                        add_edge(node_id, host_node, '发生于主机', 'alert_host', 3)
+            except Exception:
+                pass
 
     for event in event_records:
         if _is_demoish_text(event.title, event.application, event.resource_name):
