@@ -1871,6 +1871,7 @@ def _zabbix_host_sync_worker(datasource_id):
                     'provider': MetricDataSource.PROVIDER_PROMETHEUS,
                     'is_enabled': True,
                     'description': f'Zabbix 路由标记 (数据源 #{instance.id})',
+                    'config': {'zabbix_datasource_id': instance.id},
                 },
             )
         except Exception:

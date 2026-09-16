@@ -332,25 +332,40 @@
         <el-form-item label="名称" prop="name">
           <el-input v-model.trim="sourceForm.name" placeholder="例如：电商测试 Prometheus" />
         </el-form-item>
-        <el-form-item label="查询地址" prop="query_url">
-          <el-input v-model.trim="sourceForm.query_url" placeholder="http://prometheus:9090" />
-        </el-form-item>
-        <el-form-item label="认证方式">
-          <el-select v-model="sourceForm.auth_type" style="width: 180px">
-            <el-option label="无认证" value="none" />
-            <el-option label="Basic" value="basic" />
-            <el-option label="Bearer Token" value="bearer" />
+        <el-form-item label="类型">
+          <el-select v-model="sourceForm.tsdb_type" style="width: 180px" @change="onSourceTypeChange">
+            <el-option label="Prometheus（PromQL）" value="prometheus" />
+            <el-option label="Zabbix（监控项 key）" value="zabbix" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="sourceForm.auth_type === 'basic'" label="Basic 账号">
-          <div class="inline-fields">
-            <el-input v-model.trim="sourceForm.username" placeholder="用户名" />
-            <el-input v-model="sourceForm.password" type="password" show-password placeholder="密码；已配置可留 configured" />
-          </div>
-        </el-form-item>
-        <el-form-item v-if="sourceForm.auth_type === 'bearer'" label="Bearer Token">
-          <el-input v-model="sourceForm.bearer_token" type="password" show-password placeholder="已配置可保留 configured" />
-        </el-form-item>
+        <template v-if="sourceForm.tsdb_type === 'zabbix'">
+          <el-form-item label="Zabbix 数据源" prop="zabbix_datasource_id">
+            <el-select v-model="sourceForm.zabbix_datasource_id" style="width: 100%" placeholder="选择要查询的 Zabbix 数据源">
+              <el-option v-for="ds in zabbixDataSources" :key="ds.id" :label="ds.name" :value="ds.id" />
+            </el-select>
+          </el-form-item>
+        </template>
+        <template v-else>
+          <el-form-item label="查询地址" prop="query_url">
+            <el-input v-model.trim="sourceForm.query_url" placeholder="http://prometheus:9090" />
+          </el-form-item>
+          <el-form-item label="认证方式">
+            <el-select v-model="sourceForm.auth_type" style="width: 180px">
+              <el-option label="无认证" value="none" />
+              <el-option label="Basic" value="basic" />
+              <el-option label="Bearer Token" value="bearer" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="sourceForm.auth_type === 'basic'" label="Basic 账号">
+            <div class="inline-fields">
+              <el-input v-model.trim="sourceForm.username" placeholder="用户名" />
+              <el-input v-model="sourceForm.password" type="password" show-password placeholder="密码；已配置可留 configured" />
+            </div>
+          </el-form-item>
+          <el-form-item v-if="sourceForm.auth_type === 'bearer'" label="Bearer Token">
+            <el-input v-model="sourceForm.bearer_token" type="password" show-password placeholder="已配置可保留 configured" />
+          </el-form-item>
+        </template>
         <el-form-item label="连接设置">
           <div class="inline-fields inline-fields--small">
             <el-checkbox v-model="sourceForm.tls_skip_verify">跳过 TLS 校验</el-checkbox>
@@ -383,6 +398,7 @@ import {
   deleteMetricDataSource,
   getMetricDataSources,
   getMetricSeriesNames,
+  getZabbixDataSources,
   queryMetrics,
   testMetricDataSource,
   updateMetricDataSource,
@@ -457,6 +473,8 @@ const sourceForm = reactive({
   name: '',
   provider: 'prometheus',
   description: '',
+  tsdb_type: 'prometheus',
+  zabbix_datasource_id: '',
   query_url: '',
   auth_type: 'none',
   username: '',
@@ -467,6 +485,7 @@ const sourceForm = reactive({
   is_enabled: true,
   is_default: false,
 })
+const zabbixDataSources = ref([])
 const sourceRules = {
   name: [{ required: true, message: '请填写数据源名称', trigger: 'blur' }],
   query_url: [{ required: true, message: '请填写 Prometheus 查询地址', trigger: 'blur' }],
@@ -1578,6 +1597,8 @@ function resetSourceForm(row = null) {
   sourceForm.name = row?.name || ''
   sourceForm.provider = row?.provider || 'prometheus'
   sourceForm.description = row?.description || ''
+  sourceForm.tsdb_type = row?.tsdb_type || 'prometheus'
+  sourceForm.zabbix_datasource_id = config.zabbix_datasource_id || ''
   sourceForm.query_url = config.query_url || config['prometheus.addr'] || ''
   sourceForm.auth_type = config.auth_type || 'none'
   sourceForm.username = config.username || config['prometheus.basic']?.['prometheus.user'] || ''
@@ -1591,32 +1612,48 @@ function resetSourceForm(row = null) {
 
 function buildSourcePayload() {
   const headers = {}
+  const isZabbix = sourceForm.tsdb_type === 'zabbix'
   return {
     name: sourceForm.name,
     provider: sourceForm.provider,
     description: sourceForm.description,
     environment: '',
     cluster_name: '',
-    tsdb_type: 'prometheus',
+    tsdb_type: sourceForm.tsdb_type,
     is_enabled: sourceForm.is_enabled,
     is_default: sourceForm.is_default,
-    config: {
-      query_url: sourceForm.query_url,
-      'prometheus.addr': sourceForm.query_url,
-      auth_type: sourceForm.auth_type,
-      username: sourceForm.username,
-      password: sourceForm.password,
-      bearer_token: sourceForm.bearer_token,
-      headers,
-      'prometheus.headers': headers,
-      timeout: sourceForm.timeout,
-      'prometheus.timeout': sourceForm.timeout,
-      tls_skip_verify: sourceForm.tls_skip_verify,
-      'prometheus.basic': {
-        'prometheus.user': sourceForm.username,
-        'prometheus.password': sourceForm.password,
-      },
-    },
+    config: isZabbix
+      ? { zabbix_datasource_id: sourceForm.zabbix_datasource_id }
+      : {
+          query_url: sourceForm.query_url,
+          'prometheus.addr': sourceForm.query_url,
+          auth_type: sourceForm.auth_type,
+          username: sourceForm.username,
+          password: sourceForm.password,
+          bearer_token: sourceForm.bearer_token,
+          headers,
+          'prometheus.headers': headers,
+          timeout: sourceForm.timeout,
+          'prometheus.timeout': sourceForm.timeout,
+          tls_skip_verify: sourceForm.tls_skip_verify,
+          'prometheus.basic': {
+            'prometheus.user': sourceForm.username,
+            'prometheus.password': sourceForm.password,
+          },
+        },
+  }
+}
+
+async function loadZabbixDataSources() {
+  try {
+    const response = await getZabbixDataSources()
+    zabbixDataSources.value = Array.isArray(response) ? response : (response.results || [])
+  } catch { /* 数据源列表拉取失败不阻断弹窗 */ }
+}
+
+function onSourceTypeChange() {
+  if (sourceForm.tsdb_type === 'zabbix' && !zabbixDataSources.value.length) {
+    loadZabbixDataSources()
   }
 }
 
@@ -1636,7 +1673,10 @@ async function loadDataSources() {
 
 async function runQuery() {
   if (!queryForm.promql.trim()) {
-    ElMessage.warning('请填写 PromQL')
+    const current = dataSources.value.find(item => String(item.id) === String(queryForm.metric_datasource_id))
+    ElMessage.warning(current?.tsdb_type === 'zabbix'
+      ? '请填写监控项 key（如 system.cpu.util 或 主机名:key）'
+      : '请填写 PromQL')
     return
   }
   queryLoading.value = true
@@ -1669,6 +1709,9 @@ async function runQuery() {
 function openDatasourceDialog(row = null) {
   resetSourceForm(row)
   dialog.visible = true
+  if (sourceForm.tsdb_type === 'zabbix') {
+    loadZabbixDataSources()
+  }
 }
 
 async function submitDatasource() {

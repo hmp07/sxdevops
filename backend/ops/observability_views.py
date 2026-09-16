@@ -718,6 +718,15 @@ def _resolve_metric_datasource_client(metric_datasource_id='', environment=''):
     datasource = _select_metric_datasource(metric_datasource_id=metric_datasource_id, environment=environment)
     if not datasource:
         return None
+    if datasource.tsdb_type == 'zabbix':
+        # Zabbix 路由标记数据源：走 ZabbixClient items/history/trends（见 execute_promql_query）
+        return {
+            'ready': True,
+            'source': 'zabbix',
+            'zabbix': True,
+            'description': f'{datasource.name}（Zabbix 监控）',
+            'metric_datasource': _metric_datasource_payload(datasource),
+        }
     config = datasource.config if isinstance(datasource.config, dict) else {}
     query_url = str(_metric_config_value(
         config,
@@ -997,6 +1006,11 @@ def execute_promql_query(query, *, range_query=False, start_time=None, end_time=
         start_dt = end_dt - timedelta(minutes=30)
     step_seconds = _normalize_promql_step(step)
 
+    if client.get('zabbix'):
+        return _execute_zabbix_metric_query(
+            query, range_query=range_query, start_dt=start_dt,
+            end_dt=end_dt, step_seconds=step_seconds, client=client)
+
     if range_query:
         results, result_type = _prometheus_query_range(client, query, start_dt, end_dt, step_seconds)
     else:
@@ -1015,6 +1029,87 @@ def execute_promql_query(query, *, range_query=False, start_time=None, end_time=
         'result': results,
         'sample': _promql_result_sample(results),
         'series_count': len(results or []),
+    }
+
+
+def _execute_zabbix_metric_query(query, *, range_query, start_dt, end_dt, step_seconds, client):
+    """Zabbix 指标查询：query 为监控项 key（支持 'host:key' 语法），返回 PromQL 兼容载荷。"""
+    from ops.models import ZabbixDataSource
+    from ops.zabbix_client import ZabbixClient
+
+    metric_ds = client.get('metric_datasource') or {}
+    config = metric_ds.get('config') if isinstance(metric_ds.get('config'), dict) else {}
+    ds_id = config.get('zabbix_datasource_id')
+    ds = ZabbixDataSource.objects.filter(id=ds_id, is_enabled=True).first() if ds_id else None
+    if ds is None:
+        ds = ZabbixDataSource.objects.filter(is_enabled=True).order_by('-is_default').first()
+    if ds is None:
+        raise RuntimeError('未找到可用的 Zabbix 数据源')
+    zclient = ZabbixClient(ds)
+
+    hostname = ''
+    key = query
+    if ':' in query and not query.startswith('http'):
+        head, _, rest = query.partition(':')
+        if head and rest:
+            hostname, key = head, rest
+
+    host_ids = None
+    if hostname:
+        hosts_resp = zclient.get_hosts(search=hostname)
+        hosts = hosts_resp if isinstance(hosts_resp, list) else []
+        host_ids = [str(h.get('hostid')) for h in hosts if h.get('hostid')]
+        if not host_ids:
+            raise RuntimeError(f'未找到主机: {hostname}')
+
+    items_resp = zclient.get_items(host_ids=host_ids, search_key=key, filter_status='0', limit=50)
+    items = items_resp if isinstance(items_resp, list) else []
+    numeric = [it for it in items if str(it.get('value_type') or '') in {'0', '3'}][:5]
+    if not numeric:
+        raise RuntimeError(f'未找到监控项: {key}')
+
+    window_days = max(0.0, (end_dt - start_dt).total_seconds() / 86400.0)
+    results = []
+    for it in numeric:
+        itemid = int(it.get('itemid'))
+        try:
+            if window_days > 2:
+                series = zclient.get_trends(
+                    [itemid], time_from=int(start_dt.timestamp()),
+                    time_to=int(end_dt.timestamp()), limit=500)
+            else:
+                series = zclient.get_history(
+                    [itemid], time_from=int(start_dt.timestamp()),
+                    time_to=int(end_dt.timestamp()), limit=500,
+                    history=int(it.get('value_type', '0') or 0))
+        except Exception:
+            series = []
+        values = []
+        for h in (series if isinstance(series, list) else []):
+            try:
+                values.append([float(h.get('clock', 0) or 0), str(h.get('value', ''))])
+            except (TypeError, ValueError):
+                continue
+        if not values and it.get('lastvalue') not in (None, ''):
+            values = [[float(it.get('lastclock', 0) or 0), str(it.get('lastvalue'))]]
+        results.append({
+            'metric': f"{it.get('name') or key}",
+            'values': values,
+        })
+
+    return {
+        'query': query,
+        'range': bool(range_query),
+        'start': start_dt.isoformat(),
+        'end': end_dt.isoformat(),
+        'step': step_seconds,
+        'source': 'zabbix',
+        'description': client.get('description'),
+        'metric_datasource': client.get('metric_datasource'),
+        'resultType': 'matrix',
+        'result': results,
+        'sample': _promql_result_sample(results),
+        'series_count': len(results),
     }
 
 
