@@ -40,6 +40,7 @@ FASTPATH_PATTERNS = [
             and _question_contains_any(q, [
                 '有哪些', '哪些', '列表', '当前', '今天', '今日',
                 '统计', '按级别', '告警级别', '未确认', '严重',
+                '信息', '详情', '查询',
             ])
         ),
         'params': lambda q: {

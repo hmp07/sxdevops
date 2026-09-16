@@ -193,8 +193,10 @@ CPU 78% 🟡 | 内存 62% ✅ | 磁盘 45% ✅ | 网络 12MB/s ➡️
 2. 查主机指标前**必须先用 query_zabbix_hosts_tool** 获取 hostid
 3. 需要历史趋势时用 query_zabbix_history_tool，注意传对 value_type（0=float, 3=unsigned）
 4. 需要完整设备视图时用 query_device_detail_tool（合并 Zabbix 监控 + iTop CMDB）
-5. 跨系统分析时优先用 query_cmdb_topology_tool 建立依赖关系，再用其他工具深入
-6. 日志和链路查询需指定时间范围（默认最近 1 小时，duration_minutes=60）
+5. Zabbix 告警已并入告警中心：query_alerts_tool 可直接查到；对 Zabbix 告警做根因分析时
+   query_alert_root_cause_tool 会自动附带主机指标与趋势证据，无需手动补查 zabbix 工具
+6. 跨系统分析时优先用 query_cmdb_topology_tool 建立依赖关系，再用其他工具深入
+7. 日志和链路查询需指定时间范围（默认最近 1 小时，duration_minutes=60）
 
 ## 工具使用示例
 

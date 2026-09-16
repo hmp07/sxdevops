@@ -2215,7 +2215,7 @@ def _action_question_matches(action_code, question, analysis_scope=None):
     if action_code == 'alert.root_cause':
         has_root_cause_intent = _question_contains_any(lowered, ['根因', '原因', '为什么', '可能原因', '定位', '最新', '最近一条', '最后一条', '这条'])
         has_alert_scope = _question_contains_any(lowered, ['告警', 'alert'])
-        has_alert_listing_intent = _question_contains_any(lowered, ['当前', '未确认', '严重', '有哪些', '哪些', '列表', '最新', '最近一条', '最后一条'])
+        has_alert_listing_intent = _question_contains_any(lowered, ['当前', '未确认', '严重', '有哪些', '哪些', '列表', '最新', '最近一条', '最后一条', '查询', '信息', '详情'])
         has_alert_analysis_intent = _question_contains_any(lowered, ['分析', '排查', '定位'])
         has_service_scope = (
             bool(_action_detected_service(question, analysis_scope=analysis_scope))
@@ -5547,34 +5547,58 @@ def query_alert_metrics(session, user_message, user, query='', alert_id=None, fi
     environment_name = knowledge_environment.get('name') if knowledge_environment else alert.environment
     evidence = []
     failures = []
-    for item in plan:
-        try:
-            payload = execute_promql_query(
-                item['promql'],
-                range_query=True,
-                start_time=start_time,
-                end_time=end_time,
-                step=step,
-                metric_datasource_id=selected_metric_datasource_id or '',
-                environment=environment_name or '',
-                prefer_metric_datasource=True,
-            )
-            evidence.append(_summarize_metric_query_result(item, payload))
-        except Exception as exc:
-            failure = {
-                'name': item.get('name'),
-                'category': item.get('category'),
-                'intent': item.get('intent'),
-                'weight': item.get('weight'),
-                'promql': item.get('promql'),
-                'status': 'failed',
-                'trend': 'unknown',
-                'series_count': 0,
-                'series': [],
-                'error': str(exc)[:240],
-            }
-            evidence.append(failure)
-            failures.append(failure)
+    # Zabbix 分支：选中 zabbix 标记数据源或告警本身来自 Zabbix 时，
+    # 走监控项最新值 + history/trends 趋势，不生成 PromQL
+    zabbix_marker = None
+    if selected_metric_datasource_id:
+        zabbix_marker = MetricDataSource.objects.filter(
+            id=selected_metric_datasource_id, tsdb_type='zabbix').first()
+    is_zabbix_alert = (
+        alert.source_type == Alert.SOURCE_ZABBIX
+        or bool((alert.labels or {}).get('zabbix_hostid'))
+        or bool(alert.host and str(alert.host.external_id or '').startswith('zabbix:'))
+    )
+    if zabbix_marker or is_zabbix_alert:
+        # Zabbix 告警无 Prometheus 语义标签，计划构建器产出为空：
+        # 用主机核心指标兜底计划（CPU/内存/磁盘，意图键驱动监控项匹配）
+        if not plan:
+            plan = [
+                {'name': 'CPU 使用率', 'category': '主机指标', 'intent': 'cpu', 'weight': 1, 'promql': ''},
+                {'name': '内存使用率', 'category': '主机指标', 'intent': 'memory', 'weight': 1, 'promql': ''},
+                {'name': '磁盘使用率', 'category': '主机指标', 'intent': 'disk', 'weight': 1, 'promql': ''},
+            ]
+        evidence, failures = _query_zabbix_alert_metrics(
+            session, user_message, user, alert, plan,
+            start_time, end_time, knowledge_environment, marker=zabbix_marker)
+    else:
+        for item in plan:
+            try:
+                payload = execute_promql_query(
+                    item['promql'],
+                    range_query=True,
+                    start_time=start_time,
+                    end_time=end_time,
+                    step=step,
+                    metric_datasource_id=selected_metric_datasource_id or '',
+                    environment=environment_name or '',
+                    prefer_metric_datasource=True,
+                )
+                evidence.append(_summarize_metric_query_result(item, payload))
+            except Exception as exc:
+                failure = {
+                    'name': item.get('name'),
+                    'category': item.get('category'),
+                    'intent': item.get('intent'),
+                    'weight': item.get('weight'),
+                    'promql': item.get('promql'),
+                    'status': 'failed',
+                    'trend': 'unknown',
+                    'series_count': 0,
+                    'series': [],
+                    'error': str(exc)[:240],
+                }
+                evidence.append(failure)
+                failures.append(failure)
 
     abnormal_items = [item for item in evidence if item.get('status') == 'abnormal']
     missing_items = [item for item in evidence if item.get('status') == 'missing']
@@ -5653,6 +5677,7 @@ def _infer_alert_root_cause(
     log_result=None,
     trace_result=None,
     metric_result=None,
+    zabbix_result=None,
 ):
     evidence = []
     causes = []
@@ -5703,6 +5728,16 @@ def _infer_alert_root_cause(
             elif resource_type == 'nodes' and str(item.get('status') or '').lower() != 'ready':
                 add_evidence('K8s 资源', f"节点 {name} 状态 {item.get('status') or '-'}")
                 add_cause('K8s 资源', f'节点 {name} 非 Ready，需排查节点压力、网络、kubelet 或运行时状态')
+
+    if zabbix_result:
+        zsummary = zabbix_result.get('summary') or {}
+        if zsummary.get('error'):
+            _append_unique(pending, f"Zabbix 主机证据查询未完成：{zsummary.get('error')}", limit=10)
+        for section in (zabbix_result.get('sections') or [])[:3]:
+            for item in (section.get('items') or [])[:4]:
+                add_evidence(section.get('title') or 'Zabbix 监控', str(item)[:150])
+        for anomaly in (zsummary.get('anomalies') or [])[:3]:
+            add_cause('Zabbix 主机指标', anomaly)
 
     if event_result:
         events = event_result.get('events') or []
@@ -5845,6 +5880,20 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
         except Exception as exc:
             k8s_result = {'summary': {'error': str(exc)[:200]}, 'sections': [{'title': 'K8s 关联快照', 'items': [str(exc)[:200]]}]}
 
+    zabbix_result = None
+    if (alert.source_type == Alert.SOURCE_ZABBIX
+            or (alert.host and str(alert.host.external_id or '').startswith('zabbix:'))
+            or (alert.labels or {}).get('zabbix_hostid')):
+        try:
+            zabbix_result = _query_zabbix_alert_evidence(
+                session, user_message, user, alert, knowledge_environment)
+        except Exception as exc:
+            zabbix_result = {
+                'summary': {'error': str(exc)[:200]},
+                'sections': [{'title': 'Zabbix 主机证据', 'items': [f'Zabbix 证据查询未完成：{str(exc)[:200]}']}],
+                'citations': [],
+            }
+
     event_result = query_events(session, user_message, user, query=scoped_query, date_filter='', limit=5)
     log_result = None
     trace_result = None
@@ -5890,6 +5939,7 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
         log_result=log_result,
         trace_result=trace_result,
         metric_result=metric_result,
+        zabbix_result=zabbix_result,
     )
     alert_fact = _alert_to_fact(alert)
     sections = [
@@ -5906,7 +5956,7 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
         {'title': '可能原因（基于证据）', 'items': analysis.get('causes') or ['证据不足，不能直接给出根因。']},
         {'title': '证据不足/待确认项', 'items': analysis.get('pending') or ['当前关联证据已列出，仍需结合现场处置结果最终确认。']},
     ]
-    for payload in [k8s_result, event_result, log_result, trace_result, metric_result]:
+    for payload in [k8s_result, zabbix_result, event_result, log_result, trace_result, metric_result]:
         if payload and payload.get('sections'):
             sections.extend(payload.get('sections')[:2])
     sections.append({
@@ -5920,6 +5970,7 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
     citations = _dedupe_citations(
         [{'title': '告警中心', 'path': '/alerts'}]
         + (k8s_result.get('citations', []) if k8s_result else [])
+        + (zabbix_result.get('citations', []) if zabbix_result else [])
         + event_result.get('citations', [])
         + (log_result.get('citations', []) if log_result else [])
         + (trace_result.get('citations', []) if trace_result else [])
@@ -5942,6 +5993,7 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
         'citations': citations,
         'alert': alert_fact,
         'k8s': k8s_result,
+        'zabbix': zabbix_result,
         'events': event_result,
         'logs': log_result,
         'traces': trace_result,
@@ -9045,6 +9097,228 @@ def query_recent_changes(session, user_message, user, limit=5):
 
 # ---- Zabbix MCP Tool Handlers ----
 
+
+def _query_zabbix_alert_evidence(session, user_message, user, alert, knowledge_environment):
+    """Zabbix 告警 → 主机 → 指标证据链（核心指标 + 监控项最新值 + 时间趋势）。
+
+    预算控制：核心指标每类 ≤3 项、最新值 ≤5 项、趋势 ≤2 项 × ≤100 点。
+    异常启发（CPU>90%、趋势上升）写入 summary['anomalies'] 供根因推断引用。
+    """
+    from ops.zabbix_client import ZabbixClient
+
+    hostid = str((alert.labels or {}).get('zabbix_hostid') or '').strip()
+    if not hostid and alert.host and str(alert.host.external_id or '').startswith('zabbix:'):
+        hostid = str(alert.host.external_id).split(':', 1)[1]
+
+    sections = []
+    anomalies = []
+    summary = {'hostid': hostid, 'sections': 0}
+
+    if not hostid:
+        summary['error'] = '告警未携带 zabbix hostid，无法关联主机证据'
+        return {'summary': summary, 'sections': sections, 'citations': []}
+
+    ds = _resolve_zabbix_datasource(None, knowledge_environment)
+    if not ds:
+        summary['error'] = '未找到可用的 Zabbix 数据源'
+        return {'summary': summary, 'sections': sections, 'citations': []}
+    client = ZabbixClient(ds)
+    env_name = (knowledge_environment or {}).get('name', '')
+
+    # 1. 主机核心指标（CPU/内存/磁盘/网络最新值）
+    metrics_result = query_zabbix_host_metrics(
+        session, user_message, user, hostid=hostid,
+        datasource_id=ds.id, environment=env_name)
+    if 'error' not in metrics_result:
+        items = []
+        for cat, cat_items in (metrics_result.get('metrics') or {}).items():
+            for it in cat_items[:3]:
+                last = it.get('lastvalue')
+                if last in (None, ''):
+                    continue
+                line = f"{it.get('name', '-')} = {last} {it.get('units', '')}"
+                items.append(line)
+                if 'cpu' in str(it.get('name', '') + it.get('key_', '')).lower():
+                    try:
+                        value = float(str(last).strip().rstrip('%'))
+                        if value > 90:
+                            anomalies.append(f'主机 CPU 使用率 {value}%，已接近饱和')
+                    except (ValueError, IndexError):
+                        pass
+        if items:
+            sections.append({'title': 'Zabbix 主机指标', 'items': items[:10]})
+            summary['sections'] += 1
+
+    # 2. 监控项最新值（前 5 个数值型）
+    items_result = query_zabbix_items(
+        session, user_message, user, datasource_id=ds.id, host_ids=[hostid],
+        limit=50, environment=env_name)
+    numeric_items = [
+        it for it in items_result.get('items', [])
+        if str(it.get('value_type') or '') in {'0', '3'} and it.get('lastvalue') not in (None, '')
+    ][:5]
+    if numeric_items:
+        sections.append({
+            'title': 'Zabbix 监控项最新值',
+            'items': [f"{it.get('name', '-')} = {it.get('lastvalue')} {it.get('units', '')}" for it in numeric_items],
+        })
+        summary['sections'] += 1
+
+    # 3. 时间趋势（前 2 个数值型 item）
+    trend_lines = []
+    for it in numeric_items[:2]:
+        hist_result = query_zabbix_history(
+            session, user_message, user, datasource_id=ds.id,
+            item_ids=[it.get('itemid')], limit=100, value_type=it.get('value_type'),
+            environment=env_name)
+        values = []
+        for h in hist_result.get('history', []) if isinstance(hist_result, dict) else []:
+            raw = str(h.get('value') or '')
+            try:
+                values.append(float(raw))
+            except ValueError:
+                continue
+        if len(values) >= 3:
+            vmin, vmax, vavg = min(values), max(values), sum(values) / len(values)
+            rising = values[-1] > values[0] * 1.3
+            trend_lines.append(
+                f"{it.get('name', '-')}: 近{len(values)}点 min={vmin:.1f} max={vmax:.1f} avg={vavg:.1f}"
+                + ('（呈上升趋势）' if rising else ''))
+            if rising:
+                anomalies.append(f"{it.get('name', '-')} 指标呈上升趋势（{values[0]:.1f} → {values[-1]:.1f}）")
+    if trend_lines:
+        sections.append({'title': 'Zabbix 指标时间趋势', 'items': trend_lines})
+        summary['sections'] += 1
+
+    summary['anomalies'] = anomalies[:5]
+    if not sections:
+        summary['error'] = 'Zabbix 主机未获取到可用监控项数据'
+    return {
+        'summary': summary,
+        'sections': sections,
+        'citations': [{'title': 'Zabbix 监控', 'path': '/observability/zabbix'}],
+    }
+
+
+def _query_zabbix_alert_metrics(session, user_message, user, alert, plan, start_time, end_time,
+                                knowledge_environment, marker=None):
+    """Zabbix 告警/标记的指标证据：监控项最新值 + history/trends 趋势，对齐 PromQL 证据形状。"""
+    from ops.zabbix_client import ZabbixClient
+
+    evidence = []
+    failures = []
+
+    def _fail(item, error):
+        failure = {
+            'name': item.get('name'), 'category': item.get('category'),
+            'intent': item.get('intent'), 'weight': item.get('weight'),
+            'promql': item.get('promql'), 'status': 'failed', 'trend': 'unknown',
+            'series_count': 0, 'series': [], 'error': str(error)[:240],
+        }
+        evidence.append(failure)
+        failures.append(failure)
+
+    marker_ds_id = ((marker.config or {}).get('zabbix_datasource_id')) if marker else None
+    ds = _resolve_zabbix_datasource(marker_ds_id, knowledge_environment)
+    if not ds:
+        for item in plan:
+            _fail(item, '未找到可用的 Zabbix 数据源')
+        return evidence, failures
+
+    hostid = str((alert.labels or {}).get('zabbix_hostid') or '').strip()
+    if not hostid and alert.host and str(alert.host.external_id or '').startswith('zabbix:'):
+        hostid = str(alert.host.external_id).split(':', 1)[1]
+    if not hostid:
+        for item in plan:
+            _fail(item, '告警未携带 zabbix hostid')
+        return evidence, failures
+
+    client = ZabbixClient(ds)
+    items_result = client.get_items(host_ids=[int(hostid)], filter_status='0', limit=1000)
+    if not isinstance(items_result, list):
+        error = items_result.get('error', '监控项获取失败') if isinstance(items_result, dict) else '监控项获取失败'
+        for item in plan:
+            _fail(item, error)
+        return evidence, failures
+    numeric_items = [it for it in items_result if str(it.get('value_type') or '') in {'0', '3'}]
+
+    INTENT_KEYS = {
+        'cpu': ('cpu.util', 'system.cpu'),
+        'memory': ('vm.memory', 'memory'),
+        'disk': ('vfs.fs', 'disk', 'storage'),
+        'network': ('net.if', 'network'),
+        'load': ('system.load', 'load'),
+    }
+    window_days = max(0.0, (end_time - start_time).total_seconds() / 86400.0)
+    matched_intents = set()
+    for item in plan:
+        intent = str(item.get('intent') or item.get('category') or '').lower()
+        keys = INTENT_KEYS.get(intent, ())
+        if keys:
+            candidates = [
+                it for it in numeric_items
+                if any(k in str(it.get('key_', '') + it.get('name', '')).lower() for k in keys)
+            ]
+        else:
+            candidates = []
+        if not candidates and not matched_intents:
+            candidates = numeric_items[:2]
+        if not candidates:
+            _fail(item, '无匹配监控项')
+            continue
+        it = candidates[0]
+        matched_intents.add(intent)
+        try:
+            if window_days > 2:
+                series_resp = client.get_trends(
+                    [int(it.get('itemid'))], time_from=int(start_time.timestamp()),
+                    time_to=int(end_time.timestamp()), limit=500)
+            else:
+                series_resp = client.get_history(
+                    [int(it.get('itemid'))], time_from=int(start_time.timestamp()),
+                    time_to=int(end_time.timestamp()), limit=500,
+                    history=int(it.get('value_type', '0') or 0))
+            values = []
+            for h in (series_resp if isinstance(series_resp, list) else []):
+                try:
+                    values.append(float(h.get('value', 0) or 0))
+                except (TypeError, ValueError):
+                    continue
+            if not values:
+                evidence.append({
+                    'name': item.get('name'), 'category': item.get('category'),
+                    'intent': intent, 'weight': item.get('weight'),
+                    'promql': item.get('promql'), 'status': 'missing', 'trend': 'unknown',
+                    'series_count': 0, 'series': [],
+                })
+                continue
+            vmin, vmax, vavg = min(values), max(values), sum(values) / len(values)
+            latest_v = values[-1]
+            rising = latest_v > values[0] * 1.3
+            status = 'abnormal' if ((intent == 'cpu' and latest_v > 90) or rising) else 'normal'
+            evidence.append({
+                'name': item.get('name'), 'category': item.get('category'),
+                'intent': intent, 'weight': item.get('weight'),
+                'promql': item.get('promql'), 'status': status,
+                'trend': 'rising' if rising else 'stable',
+                'series_count': 1,
+                'source': 'zabbix',
+                'series': [{
+                    'metric': it.get('name') or item.get('name'),
+                    'latest': round(latest_v, 2),
+                    'baseline': round(vavg, 2),
+                    'trend': 'rising' if rising else 'stable',
+                    'min': round(vmin, 2),
+                    'max': round(vmax, 2),
+                    'points': len(values),
+                    'unit': it.get('units', ''),
+                }],
+            })
+        except Exception as exc:
+            _fail(item, exc)
+    return evidence, failures
+
+
 def _query_zabbix_metric_proxy(session, user_message, user, query, expression, duration_minutes, limit,
                                 zabbix_ds, knowledge_environment, invocation, started_at):
     """Zabbix 数据源的指标查询代理：使用 Zabbix MCP 工具替代 PromQL。"""
@@ -9095,7 +9369,7 @@ def _query_zabbix_metric_proxy(session, user_message, user, query, expression, d
     }
 
 
-def query_zabbix_hosts(session, user_message, user, datasource_id=None, search='', limit=50):
+def query_zabbix_hosts(session, user_message, user, datasource_id=None, search='', limit=50, environment=''):
     """查询 Zabbix 主机列表和状态"""
     from ops.zabbix_client import ZabbixClient
     from ops.models import ZabbixDataSource
@@ -9105,7 +9379,8 @@ def query_zabbix_hosts(session, user_message, user, datasource_id=None, search='
         _finish_tool_invocation(invocation, {}, started_at, success=False)
         return {'error': '权限不足'}
     try:
-        ds = _resolve_zabbix_datasource(datasource_id)
+        knowledge_environment = _resolve_knowledge_environment_for_query('', environment) if environment else None
+        ds = _resolve_zabbix_datasource(datasource_id, knowledge_environment)
         if not ds:
             _finish_tool_invocation(invocation, {}, started_at, success=False)
             return {'error': '未找到可用的 Zabbix 数据源'}
@@ -9128,7 +9403,7 @@ def query_zabbix_hosts(session, user_message, user, datasource_id=None, search='
         return {'error': str(e)}
 
 
-def query_zabbix_problems(session, user_message, user, datasource_id=None, min_severity=None, limit=50):
+def query_zabbix_problems(session, user_message, user, datasource_id=None, min_severity=None, limit=50, environment=''):
     """查询 Zabbix 当前告警问题"""
     from ops.zabbix_client import ZabbixClient
     from ops.models import ZabbixDataSource
@@ -9138,7 +9413,8 @@ def query_zabbix_problems(session, user_message, user, datasource_id=None, min_s
         _finish_tool_invocation(invocation, {}, started_at, success=False)
         return {'error': '权限不足'}
     try:
-        ds = _resolve_zabbix_datasource(datasource_id)
+        knowledge_environment = _resolve_knowledge_environment_for_query('', environment) if environment else None
+        ds = _resolve_zabbix_datasource(datasource_id, knowledge_environment)
         if not ds:
             return {'error': '未找到可用的 Zabbix 数据源'}
         client = ZabbixClient(ds)
@@ -9179,7 +9455,7 @@ def query_zabbix_problems(session, user_message, user, datasource_id=None, min_s
         return {'error': str(e)}
 
 
-def query_zabbix_items(session, user_message, user, datasource_id=None, host_ids=None, search='', limit=50):
+def query_zabbix_items(session, user_message, user, datasource_id=None, host_ids=None, search='', limit=50, environment=''):
     """查询 Zabbix 监控项及最新值"""
     from ops.zabbix_client import ZabbixClient
     from ops.models import ZabbixDataSource
@@ -9189,7 +9465,8 @@ def query_zabbix_items(session, user_message, user, datasource_id=None, host_ids
         _finish_tool_invocation(invocation, {}, started_at, success=False)
         return {'error': '权限不足'}
     try:
-        ds = _resolve_zabbix_datasource(datasource_id)
+        knowledge_environment = _resolve_knowledge_environment_for_query('', environment) if environment else None
+        ds = _resolve_zabbix_datasource(datasource_id, knowledge_environment)
         if not ds:
             return {'error': '未找到可用的 Zabbix 数据源'}
         client = ZabbixClient(ds)
@@ -9213,7 +9490,7 @@ def query_zabbix_items(session, user_message, user, datasource_id=None, host_ids
         return {'error': str(e)}
 
 
-def query_zabbix_history(session, user_message, user, datasource_id=None, item_ids=None, limit=50, value_type=None):
+def query_zabbix_history(session, user_message, user, datasource_id=None, item_ids=None, limit=50, value_type=None, environment=''):
     """查询 Zabbix 监控项历史数据（自动匹配 value_type）"""
     from ops.zabbix_client import ZabbixClient
     from ops.models import ZabbixDataSource
@@ -9223,7 +9500,8 @@ def query_zabbix_history(session, user_message, user, datasource_id=None, item_i
         _finish_tool_invocation(invocation, {}, started_at, success=False)
         return {'error': '权限不足'}
     try:
-        ds = _resolve_zabbix_datasource(datasource_id)
+        knowledge_environment = _resolve_knowledge_environment_for_query('', environment) if environment else None
+        ds = _resolve_zabbix_datasource(datasource_id, knowledge_environment)
         if not ds:
             return {'error': '未找到可用的 Zabbix 数据源'}
         client = ZabbixClient(ds)
@@ -9257,7 +9535,7 @@ def query_zabbix_history(session, user_message, user, datasource_id=None, item_i
         return {'error': str(e)}
 
 
-def query_zabbix_host_metrics(session, user_message, user, hostid=None, datasource_id=None):
+def query_zabbix_host_metrics(session, user_message, user, hostid=None, datasource_id=None, environment=''):
     """查询 Zabbix 主机核心性能指标摘要（CPU/内存/磁盘/网络）
 
     一次调用获取主机的四大类关键指标，返回结构化摘要供 AI 分析使用。
@@ -9271,7 +9549,8 @@ def query_zabbix_host_metrics(session, user_message, user, hostid=None, datasour
         _finish_tool_invocation(invocation, {}, started_at, success=False)
         return {'error': '权限不足'}
     try:
-        ds = _resolve_zabbix_datasource(datasource_id)
+        knowledge_environment = _resolve_knowledge_environment_for_query('', environment) if environment else None
+        ds = _resolve_zabbix_datasource(datasource_id, knowledge_environment)
         if not ds:
             return {'error': '未找到可用的 Zabbix 数据源'}
         if not hostid:
@@ -9389,14 +9668,30 @@ def query_device_detail(session, user_message, user, hostname=''):
         return {'error': str(e)}
 
 
-def _resolve_zabbix_datasource(datasource_id=None):
-    """查找可用的 Zabbix 数据源"""
+def _resolve_zabbix_datasource(datasource_id=None, knowledge_environment=None):
+    """查找可用的 Zabbix 数据源。
+
+    解析顺序：显式 ID → 知识环境绑定（environment 同名优先 → is_default）→ 全局默认。
+    """
     from ops.models import ZabbixDataSource
     if datasource_id:
         try:
             return ZabbixDataSource.objects.get(id=datasource_id, is_enabled=True)
         except ZabbixDataSource.DoesNotExist:
             pass
+    if isinstance(knowledge_environment, dict):
+        ids = knowledge_environment.get('zabbix_datasource_ids') or []
+        env_name = knowledge_environment.get('name')
+    else:
+        ids = getattr(knowledge_environment, 'zabbix_datasource_ids', []) or []
+        env_name = getattr(knowledge_environment, 'name', '')
+    if ids:
+        qs = ZabbixDataSource.objects.filter(id__in=ids, is_enabled=True)
+        if env_name:
+            matched = qs.filter(environment=env_name).first()
+            if matched:
+                return matched
+        return qs.order_by('-is_default', 'name').first()
     return ZabbixDataSource.objects.filter(is_enabled=True).order_by('-is_default').first()
 
 
@@ -16084,6 +16379,18 @@ def _scope_tool_arguments(session, tool_name, arguments):
         query = str(scoped.get('query') or '').strip()
         if environment_name not in query:
             scoped['query'] = f'{environment_name} {query}'.strip()
+    # Zabbix 工具无 query 参数：直接写 environment，供 _resolve_zabbix_datasource
+    # 按知识环境绑定的 zabbix_datasource_ids 选择数据源
+    zabbix_tools = set(filter_feature_tools({
+        'query_zabbix_hosts',
+        'query_zabbix_problems',
+        'query_zabbix_items',
+        'query_zabbix_history',
+        'query_zabbix_host_metrics',
+        'query_device_detail',
+    }))
+    if tool_name in zabbix_tools and not scoped.get('environment'):
+        scoped['environment'] = environment_name
     if tool_name == 'generate_host_task' and not scoped.get('environment'):
         scoped['environment'] = environment_name
     return scoped

@@ -63,6 +63,20 @@ def _get_session_from_config(config: Optional[RunnableConfig]):
         return None
 
 
+def _current_environment_name(session):
+    """从会话上下文解析当前知识环境名（与 _scope_tool_arguments 同口径）。
+
+    Zabbix 工具按此环境解析知识环境绑定的数据源，保证多数据源时选对。
+    """
+    if session is None:
+        return ''
+    context = session.context or {}
+    env = context.get('current_environment')
+    if isinstance(env, dict):
+        return str(env.get('name') or '')
+    return str(env or '')
+
+
 def _safe_json(result) -> str:
     """安全序列化结果为 JSON 字符串。"""
     if isinstance(result, str):
@@ -151,8 +165,12 @@ def query_alerts_tool(
     user = _get_user_from_config(config)
     session = _get_session_from_config(config)
 
-    # 缓存键包含 user_id 防止跨用户数据泄露
-    cache_key = ['aiops', 'alerts', str(user.id if user else 'anon'), str(date_filter), str(level), str(status), str(limit)]
+    # 缓存键包含 user_id 防止跨用户数据泄露；query 文本入键防止不同问法 120s 内串缓存
+    cache_key = [
+        'aiops', 'alerts', str(user.id if user else 'anon'),
+        str(date_filter), str(level), str(status), str(limit),
+        str(query or '').strip().lower()[:80],
+    ]
     cached = _try_cache(cache_key, ttl=120)
     if cached is not None:
         return cached
@@ -252,6 +270,7 @@ def query_zabbix_hosts_tool(
     result = _impl(
         session, None, user,
         search=search, limit=limit,
+        environment=_current_environment_name(session),
     )
     result = _truncate_tool_output(result)
     return _safe_json(result)
@@ -282,6 +301,7 @@ def query_zabbix_problems_tool(
     result = _impl(
         session, None, user,
         min_severity=min_severity, limit=limit,
+        environment=_current_environment_name(session),
     )
     return _safe_json(result)
 
@@ -411,6 +431,7 @@ def query_zabbix_items_tool(
     result = _impl(
         session, None, user,
         host_ids=host_ids or [], search=search, limit=limit,
+        environment=_current_environment_name(session),
     )
     return _safe_json(result)
 
@@ -440,6 +461,7 @@ def query_zabbix_history_tool(
     result = _impl(
         session, None, user,
         item_ids=item_ids or [], value_type=value_type, limit=limit,
+        environment=_current_environment_name(session),
     )
     return _safe_json(result)
 
@@ -468,6 +490,7 @@ def query_zabbix_host_metrics_tool(
     result = _impl(
         session, None, user,
         hostid=hostid, datasource_id=datasource_id,
+        environment=_current_environment_name(session),
     )
     return _safe_json(result)
 
