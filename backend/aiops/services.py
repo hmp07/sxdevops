@@ -9159,19 +9159,14 @@ def query_zabbix_problems(session, user_message, user, datasource_id=None, min_s
             })
         # 静默同步告警到 Alert 模型，使告警中心可查看
         try:
-            from ops.zabbix_alert_bridge import upsert_alert_from_zabbix_problem
-            ds_name = ds.name if ds else ''
+            from ops.zabbix_alert_bridge import resolve_problem_host, upsert_alert_from_zabbix_problem
+            ds_env = (ds.environment or ds.name) if ds else ''
             for p in (result or []):
                 try:
-                    host_name = ''
-                    trigger_id = p.get('objectid', '')
-                    if trigger_id:
-                        triggers_resp = client.get_triggers(trigger_ids=[trigger_id])
-                        if isinstance(triggers_resp, list) and triggers_resp:
-                            hosts = triggers_resp[0].get('hosts', [])
-                            if hosts:
-                                host_name = hosts[0].get('host', '')
-                    upsert_alert_from_zabbix_problem(p, host_name=host_name, env_name=ds_name)
+                    host_name, host_id, visible_name = resolve_problem_host(client, p)
+                    upsert_alert_from_zabbix_problem(
+                        p, host_name=host_name, host_id=host_id,
+                        visible_name=visible_name, env_name=ds_env)
                 except Exception:
                     pass
         except Exception:

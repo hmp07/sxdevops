@@ -1302,6 +1302,10 @@ class ZabbixDataSource(models.Model):
     timeout = models.PositiveIntegerField('超时(秒)', default=15)
     is_enabled = models.BooleanField('启用', default=True)
     is_default = models.BooleanField('默认数据源', default=False)
+    environment = models.CharField(
+        '所属环境', max_length=64, blank=True, default='',
+        help_text='告警入库的 environment 取值；留空则使用数据源名',
+    )
     config = models.JSONField('扩展配置', default=dict, blank=True)
     last_sync_at = models.DateTimeField('上次同步', null=True, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
@@ -1874,19 +1878,14 @@ def _zabbix_host_sync_worker(datasource_id):
 
         # 主机导入后拉取一次 Zabbix 告警
         try:
-            from ops.zabbix_alert_bridge import upsert_alert_from_zabbix_problem
+            from ops.zabbix_alert_bridge import resolve_problem_host, upsert_alert_from_zabbix_problem
             _, __, problems = _fetch_zabbix_problems(instance.name, client)
             for p in problems:
                 try:
-                    host_name = ''
-                    trigger_id = p.get('objectid', '')
-                    if trigger_id:
-                        triggers_resp = client.get_triggers(trigger_ids=[trigger_id])
-                        if isinstance(triggers_resp, list) and triggers_resp:
-                            trigger_hosts = triggers_resp[0].get('hosts', [])
-                            if trigger_hosts:
-                                host_name = trigger_hosts[0].get('host', '')
-                    upsert_alert_from_zabbix_problem(p, host_name=host_name, env_name=instance.name)
+                    host_name, host_id, visible_name = resolve_problem_host(client, p)
+                    upsert_alert_from_zabbix_problem(
+                        p, host_name=host_name, host_id=host_id,
+                        visible_name=visible_name, env_name=(instance.environment or instance.name))
                 except Exception:
                     pass
         except Exception as e:

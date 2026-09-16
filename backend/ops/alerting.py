@@ -196,6 +196,12 @@ def _status_to_alert_status(value, payload=None):
 
 
 def _host_for(resource, labels):
+    # Zabbix 专用关联键优先：hostid → Host.external_id（文本匹配兜底保留）
+    zabbix_hostid = _text(labels.get('zabbix_hostid'))
+    if zabbix_hostid:
+        host = Host.objects.filter(external_id=f'zabbix:{zabbix_hostid}').first()
+        if host:
+            return host
     candidates = [
         resource,
         labels.get('instance'),

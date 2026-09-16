@@ -30,7 +30,29 @@ def _record_event(alert, created):
         pass
 
 
-def _build_normalized(problem, host_name='', env_name=''):
+def resolve_problem_host(client, problem):
+    """解析 problem 的关联主机：返回 (host_name 技术名, host_id, visible_name 可见名)。
+
+    通过 trigger.get 的 selectHosts 获取；失败时返回 ('', '', '')。
+    """
+    trigger_id = problem.get('objectid', '')
+    if not trigger_id:
+        return '', '', ''
+    try:
+        resp = client.get_triggers(trigger_ids=[trigger_id])
+    except Exception:
+        return '', '', ''
+    if isinstance(resp, list) and resp and resp[0].get('hosts'):
+        h = resp[0]['hosts'][0]
+        return (
+            str(h.get('host', '') or ''),
+            str(h.get('hostid', '') or ''),
+            str(h.get('name', '') or ''),
+        )
+    return '', '', ''
+
+
+def _build_normalized(problem, host_name='', host_id='', visible_name='', env_name=''):
     """将 Zabbix problem 构建为统一告警流水线的标准化字典"""
     event_id = str(problem.get('eventid', ''))
     severity = int(problem.get('severity', 0))
@@ -52,7 +74,12 @@ def _build_normalized(problem, host_name='', env_name=''):
         'resource_type': 'host',
         'resource': host_name or '',
         'environment': env_name or '',
-        'labels': {'zabbix_severity': str(severity), 'host': host_name or '', 'hostname': host_name or ''},
+        'labels': {
+            'zabbix_severity': str(severity),
+            'host': host_name or '',
+            'hostname': visible_name or host_name or '',
+            'zabbix_hostid': str(host_id or ''),
+        },
         'annotations': {
             'acknowledged': str(problem.get('acknowledged', '')),
             'opdata': str(problem.get('opdata', '')),
@@ -64,7 +91,7 @@ def _build_normalized(problem, host_name='', env_name=''):
     }
 
 
-def upsert_alert_from_zabbix_problem(problem, host_name='', env_name=''):
+def upsert_alert_from_zabbix_problem(problem, host_name='', host_id='', visible_name='', env_name=''):
     """将 Zabbix problem 通过统一流水线转换为 Alert 并返回 (alert, created)"""
     from ops import alerting
 
@@ -72,7 +99,7 @@ def upsert_alert_from_zabbix_problem(problem, host_name='', env_name=''):
     if not event_id:
         return None, False
 
-    normalized = _build_normalized(problem, host_name, env_name)
+    normalized = _build_normalized(problem, host_name, host_id, visible_name, env_name)
     alert, created = alerting.upsert_alert(normalized, integration=None, actor='zabbix_poll')
 
     if alert:

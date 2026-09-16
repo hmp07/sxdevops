@@ -13,7 +13,7 @@ from django.utils.timezone import now
 
 from ops.models import ZabbixDataSource
 from ops.zabbix_client import ZabbixClient
-from ops.zabbix_alert_bridge import upsert_alert_from_zabbix_problem
+from ops.zabbix_alert_bridge import resolve_problem_host, upsert_alert_from_zabbix_problem
 
 
 class Command(BaseCommand):
@@ -71,28 +71,24 @@ class Command(BaseCommand):
             updated = 0
             for problem in problems:
                 event_id = problem.get('eventid', '')
-                host_name = ''
+                host_name, host_id, visible_name = '', '', ''
                 try:
                     # objectid 是触发器 ID，需通过 trigger.get 获取关联主机
-                    triggers_resp = client.get_triggers(trigger_ids=[problem.get('objectid', '')])
-                    if isinstance(triggers_resp, list) and triggers_resp:
-                        hosts = triggers_resp[0].get('hosts', [])
-                        if hosts:
-                            host_name = hosts[0].get('host', '')
-                            # 尝试通过 DeviceMapping 按 hostid 查找 Host 记录
-                            if not host_name:
-                                hostid = hosts[0].get('hostid', '')
-                                if hostid:
-                                    from ops.models import DeviceMapping
-                                    dm = DeviceMapping.objects.filter(zabbix_hostid=hostid).select_related('config_item').first()
-                                    if dm and dm.config_item:
-                                        host_name = dm.config_item.name
+                    host_name, host_id, visible_name = resolve_problem_host(client, problem)
+                    if not host_name and host_id:
+                        # 兜底：通过 DeviceMapping 按 hostid 查找 iTop CI 名
+                        from ops.models import DeviceMapping
+                        dm = DeviceMapping.objects.filter(zabbix_hostid=host_id).select_related('config_item').first()
+                        if dm and dm.config_item:
+                            host_name = dm.config_item.name
                 except (ValueError, KeyError, TypeError) as e:
                     self.stderr.write(f'    主机查找失败 (problem={event_id}): {e}')
                 except Exception as e:
                     self.stderr.write(f'    网络/API 错误 (problem={event_id}): {e}')
 
-                alert, is_new = upsert_alert_from_zabbix_problem(problem, host_name=host_name, env_name=ds.name)
+                alert, is_new = upsert_alert_from_zabbix_problem(
+                    problem, host_name=host_name, host_id=host_id,
+                    visible_name=visible_name, env_name=(ds.environment or ds.name))
                 if alert:
                     if is_new:
                         created += 1

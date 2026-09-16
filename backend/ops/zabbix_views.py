@@ -200,23 +200,20 @@ def zabbix_poll_alerts(request):
     client, err = _get_client(request.GET.get('datasource_id'))
     if err: return err
     try:
-        from .zabbix_alert_bridge import upsert_alert_from_zabbix_problem
+        from .zabbix_alert_bridge import resolve_problem_host, upsert_alert_from_zabbix_problem
         problems = client.get_problems()
         if isinstance(problems, dict) and 'error' in problems:
             return Response({'error': problems['error']}, status=status.HTTP_400_BAD_REQUEST)
         problem_list = problems if isinstance(problems, list) else []
+        ds = ZabbixDataSource.objects.filter(id=client.datasource_id).first()
+        ds_env = (ds.environment or ds.name) if ds else ''
         created = 0
         for p in problem_list:
             try:
-                host_name = ''
-                trigger_id = p.get('objectid', '')
-                if trigger_id:
-                    triggers_resp = client.get_triggers(trigger_ids=[trigger_id])
-                    if isinstance(triggers_resp, list) and triggers_resp:
-                        trigger_hosts = triggers_resp[0].get('hosts', [])
-                        if trigger_hosts:
-                            host_name = trigger_hosts[0].get('host', '')
-                alert, is_new = upsert_alert_from_zabbix_problem(p, host_name=host_name, env_name=client._zabbix_version and 'Zabbix' or '')
+                host_name, host_id, visible_name = resolve_problem_host(client, p)
+                alert, is_new = upsert_alert_from_zabbix_problem(
+                    p, host_name=host_name, host_id=host_id,
+                    visible_name=visible_name, env_name=ds_env)
                 if is_new: created += 1
             except Exception:
                 pass
