@@ -196,6 +196,8 @@ export const getZabbixDataSources = () => request.get('/observability/zabbix/dat
 export const createZabbixDataSource = (data) => request.post('/observability/zabbix/datasources/', data)
 export const updateZabbixDataSource = (id, data) => request.put(`/observability/zabbix/datasources/${id}/`, data)
 export const deleteZabbixDataSource = (id) => request.delete(`/observability/zabbix/datasources/${id}/`)
+// POST 删除动作：生产网络路径对 DELETE 方法有限制时的兜底（与创建/编辑同链路）
+export const removeZabbixDataSource = (id) => request.post(`/observability/zabbix/datasources/${id}/remove/`)
 export const testZabbixConnection = (id) => request.post(`/observability/zabbix/datasources/${id}/test_connection/`)
 
 // Zabbix 代理查询

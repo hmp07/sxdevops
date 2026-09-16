@@ -34,4 +34,6 @@ WORKDIR /app/backend
 EXPOSE 8000
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["python", "-m", "daphne", "-b", "0.0.0.0", "-p", "8000", "sxdevops.asgi:application"]
+# --http-timeout：挂起的请求 60s 后由 daphne 主动 503 并写访问日志，
+# 避免故障静默无痕（历史问题：请求被阻塞时访问日志无记录、客户端只见超时）
+CMD ["python", "-m", "daphne", "-b", "0.0.0.0", "-p", "8000", "--http-timeout", "60", "sxdevops.asgi:application"]

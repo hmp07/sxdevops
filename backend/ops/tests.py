@@ -3597,3 +3597,15 @@ class ZabbixDataSourceSaveTests(TestCase):
             _zabbix_host_sync_worker(ds.id)
         self.assertNotIn(ds.id, _SYNC_IN_FLIGHT)
         self.assertEqual(Host.objects.count(), 0)
+    @patch('ops.models.threading')
+    @patch('ops.zabbix_client.ZabbixClient')
+    def test_remove_action_returns_200_and_deletes(self, mock_zabbix, mock_thread):
+        ds = ZabbixDataSource.objects.create(**self._payload())
+        response = self.client.post(
+            f'/api/observability/zabbix/datasources/{ds.id}/remove/'
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['success'])
+        self.assertFalse(ZabbixDataSource.objects.filter(id=ds.id).exists())
+        mock_zabbix.assert_not_called()
+

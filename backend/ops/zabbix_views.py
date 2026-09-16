@@ -31,7 +31,20 @@ class ZabbixDataSourceViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'update': 'ops.zabbix.datasource.manage',
         'partial_update': 'ops.zabbix.datasource.manage',
         'destroy': 'ops.zabbix.datasource.manage',
+        'remove': 'ops.zabbix.datasource.manage',
     }
+
+    @drf_action(detail=True, methods=['post'])
+    def remove(self, request, pk=None):
+        """删除数据源（POST 动作 + 200 JSON 响应）。
+
+        与默认 DELETE/204 等价的删除入口：生产网络路径对 DELETE 方法/204 空响应
+        可能有限制（DELETE 请求从未到达后端），而 POST + 200 JSON 与已验证可用
+        的创建/编辑走完全相同的链路。
+        """
+        ds = self.get_object()
+        ds.delete()
+        return Response({'success': True, 'id': int(pk)})
 
     @drf_action(detail=True, methods=['post'],
                   permission_classes=[IsAuthenticated, build_rbac_permission('ops.zabbix.datasource.manage')])
