@@ -551,12 +551,15 @@ def _clean_catalog_value(value):
 
 
 def _safe_api_url(url):
-    """脱敏 API URL，仅保留主机名"""
+    """脱敏 API URL，仅保留主机名（scheme-only 标记如 demo:// 无主机名，原样返回）"""
     if not url:
         return None
     from urllib.parse import urlparse, urlunparse
     parsed = urlparse(url)
-    safe = parsed._replace(netloc=parsed.hostname + (f':{parsed.port}' if parsed.port else ''))
+    hostname = parsed.hostname or ''
+    if not hostname:
+        return url
+    safe = parsed._replace(netloc=hostname + (f':{parsed.port}' if parsed.port else ''))
     return urlunparse(safe)
 
 
