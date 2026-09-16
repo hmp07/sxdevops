@@ -390,6 +390,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # 生产安全设备阻断 DELETE/PUT/PATCH 时，前端以 POST + X-HTTP-Method-Override 转发，
+    # 本中间件在路由前还原原始方法（置于最前，保证路由/视图按原方法执行）
+    'sxdevops.http_method_override.HttpMethodOverrideMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',

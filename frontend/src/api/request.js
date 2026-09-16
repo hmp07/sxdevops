@@ -90,6 +90,14 @@ request.interceptors.request.use((config) => {
         config.headers = config.headers || {}
         config.headers.Authorization = `Token ${token}`
     }
+    // 生产安全设备可能阻断 DELETE/PUT/PATCH 请求：统一转为 POST 并携带
+    // X-HTTP-Method-Override 头，后端 HttpMethodOverrideMiddleware 在路由前还原原方法
+    const method = String(config.method || 'get').toLowerCase()
+    if (['delete', 'put', 'patch'].includes(method)) {
+        config.headers = config.headers || {}
+        config.headers['X-HTTP-Method-Override'] = method.toUpperCase()
+        config.method = 'post'
+    }
     return config
 })
 

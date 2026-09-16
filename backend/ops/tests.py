@@ -3609,3 +3609,85 @@ class ZabbixDataSourceSaveTests(TestCase):
         self.assertFalse(ZabbixDataSource.objects.filter(id=ds.id).exists())
         mock_zabbix.assert_not_called()
 
+class HttpMethodOverrideTests(TestCase):
+    """生产安全设备阻断 DELETE/PUT/PATCH：POST + X-HTTP-Method-Override 还原原方法。"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = get_user_model().objects.create_superuser(
+            'mo-admin', 'mo@example.com', 'Admin@123456'
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def _ds_payload(self, name):
+        return {
+            'name': name,
+            'api_url': 'http://zabbix.internal/api_jsonrpc.php',
+            'auth_type': 'token',
+            'auth_token': 'secret-token',
+            'is_enabled': True,
+        }
+
+    @patch('ops.models.threading')
+    def test_delete_override_routes_to_destroy(self, mock_thread):
+        ds = ZabbixDataSource.objects.create(**self._ds_payload('MO DS'))
+        response = self.client.post(
+            f'/api/observability/zabbix/datasources/{ds.id}/',
+            HTTP_X_HTTP_METHOD_OVERRIDE='DELETE',
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(ZabbixDataSource.objects.filter(id=ds.id).exists())
+
+    def test_put_override_updates_host(self):
+        host = Host.objects.create(hostname='mo-host', ip_address='10.0.0.1')
+        response = self.client.post(
+            f'/api/hosts/{host.id}/',
+            {'hostname': 'mo-host-2', 'ip_address': '10.0.0.1'},
+            format='json',
+            HTTP_X_HTTP_METHOD_OVERRIDE='PUT',
+        )
+        self.assertEqual(response.status_code, 200)
+        host.refresh_from_db()
+        self.assertEqual(host.hostname, 'mo-host-2')
+
+    def test_patch_override_updates_user(self):
+        response = self.client.post(
+            f'/api/users/{self.user.id}/',
+            {'username': 'mo-admin', 'first_name': 'Override'},
+            format='json',
+            HTTP_X_HTTP_METHOD_OVERRIDE='PATCH',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.first_name, 'Override')
+
+    @patch('ops.models.threading')
+    def test_post_without_override_stays_post(self, mock_thread):
+        response = self.client.post(
+            '/api/observability/zabbix/datasources/',
+            self._ds_payload('MO Plain Post'),
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(mock_thread.Thread.called)
+
+    @patch('ops.models.threading')
+    def test_override_ignored_on_non_post_method(self, mock_thread):
+        # 收窄：仅原始方法为 POST 时才应用覆盖；DELETE 携带 override 头仍按 DELETE 执行
+        ds = ZabbixDataSource.objects.create(**self._ds_payload('MO NonPost'))
+        response = self.client.delete(
+            f'/api/observability/zabbix/datasources/{ds.id}/',
+            HTTP_X_HTTP_METHOD_OVERRIDE='PUT',
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(ZabbixDataSource.objects.filter(id=ds.id).exists())
+
+    def test_invalid_override_is_ignored(self):
+        # TRACE 不在白名单 → 按普通 POST 处理 → 创建主机成功
+        response = self.client.post(
+            '/api/hosts/',
+            {'hostname': 'mo-invalid-host', 'ip_address': '10.0.0.9'},
+            format='json',
+            HTTP_X_HTTP_METHOD_OVERRIDE='TRACE',
+        )
+        self.assertEqual(response.status_code, 201)

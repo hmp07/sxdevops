@@ -156,8 +156,8 @@ import { ElMessage } from 'element-plus'
 import { Monitor, Plus, RefreshRight, Search } from '@element-plus/icons-vue'
 import {
   createZabbixDataSource,
+  deleteZabbixDataSource,
   getZabbixDataSources,
-  removeZabbixDataSource,
   testZabbixConnection,
   updateZabbixDataSource,
 } from '@/api/modules/ops'
@@ -293,7 +293,8 @@ async function handleSave() {
 
 async function handleDelete(id) {
   try {
-    await removeZabbixDataSource(id)
+    // request.js 拦截器会自动将 DELETE 转为 POST + X-HTTP-Method-Override
+    await deleteZabbixDataSource(id)
     ElMessage.success('Zabbix 数据源已删除')
     await fetchItems()
   } catch {
