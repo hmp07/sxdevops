@@ -517,6 +517,10 @@ LOG_PROVIDER_CONFIGS = {
     },
 }
 
+# 平台演示模式总开关：未开启时各观测数据源默认不进入演示模式
+# （演示容器设置 SXDEVOPS_DEMO_MODE=1；各源仍可用 XX_DEMO_MODE 单独覆盖）
+_OBS_DEMO_DEFAULT = '1' if os.getenv('SXDEVOPS_DEMO_MODE') == '1' else '0'
+
 OBSERVABILITY_CONFIG = {
     'tracing': {
         'default_provider': os.getenv('TRACING_DEFAULT_PROVIDER', 'skywalking'),
@@ -528,28 +532,28 @@ OBSERVABILITY_CONFIG = {
         'oap_url': os.getenv('SKYWALKING_OAP_URL', ''),
         'graphql_path': os.getenv('SKYWALKING_GRAPHQL_PATH', '/graphql'),
         'default_layer': os.getenv('SKYWALKING_DEFAULT_LAYER', ''),
-        'demo_mode': os.getenv('SKYWALKING_DEMO_MODE', '1') == '1',
+        'demo_mode': os.getenv('SKYWALKING_DEMO_MODE', _OBS_DEMO_DEFAULT) == '1',
     },
     'tempo': {
         'provider': 'tempo',
         'enabled': os.getenv('TEMPO_ENABLED', '0') == '1',
         'ui_url': os.getenv('TEMPO_UI_URL', ''),
         'query_url': os.getenv('TEMPO_QUERY_URL', ''),
-        'demo_mode': os.getenv('TEMPO_DEMO_MODE', '1') == '1',
+        'demo_mode': os.getenv('TEMPO_DEMO_MODE', _OBS_DEMO_DEFAULT) == '1',
     },
     'jaeger': {
         'provider': 'jaeger',
         'enabled': os.getenv('JAEGER_ENABLED', '0') == '1',
         'ui_url': os.getenv('JAEGER_UI_URL', ''),
         'query_url': os.getenv('JAEGER_QUERY_URL', ''),
-        'demo_mode': os.getenv('JAEGER_DEMO_MODE', '1') == '1',
+        'demo_mode': os.getenv('JAEGER_DEMO_MODE', _OBS_DEMO_DEFAULT) == '1',
     },
     'zipkin': {
         'provider': 'zipkin',
         'enabled': os.getenv('ZIPKIN_ENABLED', '0') == '1',
         'ui_url': os.getenv('ZIPKIN_UI_URL', ''),
         'query_url': os.getenv('ZIPKIN_QUERY_URL', ''),
-        'demo_mode': os.getenv('ZIPKIN_DEMO_MODE', '1') == '1',
+        'demo_mode': os.getenv('ZIPKIN_DEMO_MODE', _OBS_DEMO_DEFAULT) == '1',
     },
     'prometheus': {
         'enabled': os.getenv('PROMETHEUS_ENABLED', '1') != '0',
@@ -565,7 +569,7 @@ OBSERVABILITY_CONFIG = {
         'enabled': os.getenv('GRAFANA_ENABLED', '1') != '0',
         'url': os.getenv('GRAFANA_URL', ''),
         'default_path': os.getenv('GRAFANA_DEFAULT_PATH', ''),
-        'demo_mode': os.getenv('GRAFANA_DEMO_MODE', '1') == '1',
+        'demo_mode': os.getenv('GRAFANA_DEMO_MODE', _OBS_DEMO_DEFAULT) == '1',
         'dashboards': _json_env('GRAFANA_DASHBOARDS_JSON', DEFAULT_GRAFANA_DASHBOARDS),
     },
 }

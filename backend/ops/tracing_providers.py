@@ -1,9 +1,12 @@
-﻿from datetime import datetime, timedelta
+﻿import os
+from datetime import datetime, timedelta
 
 import requests as http_requests
 from django.conf import settings
 from rest_framework import status
 
+# 平台演示模式总开关：未开启时链路追踪不再回退到内置演示数据
+TRACING_DEMO_ENABLED = os.environ.get('SXDEVOPS_DEMO_MODE') == '1'
 
 REQUEST_TIMEOUT = 20
 DEFAULT_TRACE_LIMIT = 20
@@ -132,7 +135,7 @@ def _provider_config(defaults, key, endpoint_keys=None):
     config = dict(defaults.get(key, {}))
     config.setdefault('provider', key)
     config.setdefault('enabled', False if key != 'skywalking' else True)
-    config.setdefault('demo_mode', True)
+    config.setdefault('demo_mode', TRACING_DEMO_ENABLED)
     for endpoint_key in endpoint_keys or []:
         config.setdefault(endpoint_key, '')
     return config
@@ -254,7 +257,7 @@ def _default_provider_id():
     for candidate in ('skywalking', 'tempo', 'jaeger', 'zipkin'):
         if configs[candidate].get('enabled'):
             return candidate
-    return 'demo'
+    return 'demo' if TRACING_DEMO_ENABLED else 'skywalking'
 
 
 def _resolve_provider(provider='', datasource_id=None):
@@ -284,14 +287,16 @@ def _resolve_provider(provider='', datasource_id=None):
             raise ObservabilityError('链路数据源不存在或已停用', status.HTTP_404_NOT_FOUND, {'detail': str(exc)}) from exc
 
     provider = (provider or '').strip().lower()
-    if provider == 'demo':
+    if provider == 'demo' and TRACING_DEMO_ENABLED:
         return 'demo', {'provider': 'demo', 'enabled': True, 'demo_mode': True}
     if provider and provider in configs and configs[provider].get('enabled'):
         return provider, configs[provider]
     default_provider = _default_provider_id()
     if default_provider in configs:
         return default_provider, configs[default_provider]
-    return 'demo', {'provider': 'demo', 'enabled': True, 'demo_mode': True}
+    if TRACING_DEMO_ENABLED:
+        return 'demo', {'provider': 'demo', 'enabled': True, 'demo_mode': True}
+    return 'skywalking', configs['skywalking']
 
 
 def _join_base_url(base, path=''):
@@ -380,6 +385,8 @@ def _provider_meta(provider_id, config, source='demo', warning=''):
         provider_name = PROVIDER_LABELS['demo']
     if source == 'demo':
         status_text = '演示模式' if provider_id == 'demo' else f'{provider_name} 演示模式'
+    elif source == 'unconfigured':
+        status_text = f'{provider_name} 未配置'
     else:
         status_text = f'已接入 {provider_name}'
     if warning:
@@ -408,11 +415,16 @@ def list_provider_metas(active_provider='', include_demo_fallback=True):
         config = configs[provider_id]
         if not config.get('enabled'):
             continue
-        source = provider_id if _provider_is_query_ready(config) else 'demo'
+        if _provider_is_query_ready(config):
+            source = provider_id
+        elif TRACING_DEMO_ENABLED:
+            source = 'demo'
+        else:
+            source = 'unconfigured'
         metas.append(_provider_meta(provider_id, config, source=source))
-    if include_demo_fallback:
+    if include_demo_fallback and TRACING_DEMO_ENABLED:
         metas.append(_provider_meta('demo', {'enabled': True}, source='demo'))
-    if not metas and include_demo_fallback:
+    if not metas and include_demo_fallback and TRACING_DEMO_ENABLED:
         metas.append(_provider_meta('demo', {'enabled': True}, source='demo'))
     active = active_provider or _default_provider_id()
     return [
