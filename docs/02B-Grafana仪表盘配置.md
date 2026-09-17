@@ -39,7 +39,9 @@ SxDevOps 可以承接已有的 Grafana 仪表盘，在平台内以 iframe 嵌入
 点击 **从 Grafana 同步** → 获取看板列表 → 勾选要导入的看板 → 选择目标目录 → 导入。
 平台通过 Grafana `api/search` 自动发现目录与看板（需 Service Account Token 具备 Viewer 权限），按 UID 去重，不会覆盖手动配置的条目。
 
-> **列表不全提示**：Grafana 10+ 新建的文件夹默认权限不含 Viewer。若看板存放在文件夹中而同步列表缺失，请在 Grafana 中对目标文件夹（Dashboards → 文件夹 → Settings → Permissions）为 Service Account 显式添加 **Viewer** 权限，或把看板放入 General。
+> **列表不全提示（两个常见原因）**：
+> 1. Service Account 创建时选择了 **No basic role**（无基础角色）——此时只能看到被逐个共享/授权的看板。处理：Service accounts 中点开该账号，Role 改为 **Viewer**。
+> 2. Grafana 10+ 新建的文件夹默认权限不含 Viewer——看板在文件夹中时同步列表缺失。处理：Dashboards → 目标文件夹 → Settings → Permissions 为 Service Account 显式添加 **Viewer** 权限。
 
 **方式二：手动添加**
 

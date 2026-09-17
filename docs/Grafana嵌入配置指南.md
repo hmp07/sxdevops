@@ -79,7 +79,9 @@ environment:
 2. 角色设为 **Viewer**（`api/search` 只返回该账号有权限的看板，最小权限原则）
 3. 添加 Token（`glsa_...`），复制后填入平台「仪表盘 → 设置 → API Token」
 
-**文件夹权限（同步列表不全的常见原因）**：Grafana 10+ 新建的文件夹默认权限只含 Admin/Editor，**不含 Viewer**。看板放入文件夹后，Service Account 将无法通过 `api/search` 看到它们。处理：Dashboards → 目标文件夹 → **Settings → Permissions** → Add permission → 选择该 Service Account → 角色 **Viewer**（或把看板放在 General 目录）。
+> **必须选择基础角色 Viewer，不要选 "No basic role"**：Grafana 11+ 支持创建无基础角色的账号，此时账号只能看到被**逐个共享/显式授权**的看板，`api/search` 返回列表会严重不全（即使看板都在 General 目录）。已创建的无角色 SA 可在 Service accounts 列表中点开该账号，把 Role 改为 Viewer 即可。
+
+**文件夹权限（同步列表不全的另一个常见原因）**：Grafana 10+ 新建的文件夹默认权限只含 Admin/Editor，**不含 Viewer**。看板放入文件夹后，Service Account 将无法通过 `api/search` 看到它们。处理：Dashboards → 目标文件夹 → **Settings → Permissions** → Add permission → 选择该 Service Account → 角色 **Viewer**（或把看板放在 General 目录）。
 
 请求认证方式（平台自动附加）：
 
