@@ -141,6 +141,7 @@ location /grafana/ {
 | iframe 跳转登录页 | 匿名访问未开启或 JWT secret 不一致；用平台「测试连接」的嵌入就绪探测确认 |
 | 从 Grafana 同步为空列表 | Service Account Token 角色权限不足（需 Viewer）或所属 Org 不对 |
 | 同步列表看板不全 | 看板所在文件夹未授权给 Service Account（Grafana 10+ 新文件夹默认不含 Viewer）；在文件夹 Permissions 中为 Service Account 添加 Viewer |
+| 同步列表看板不全（仅部分可见） | **General 目录权限被清空**：目录内无显式权限的看板继承该限制、仅管理员可见，而带显式看板级授权的看板仍可见，造成"部分可见"现象；在 General 目录 Settings → Permissions 中加回 **Viewer** 角色 |
 | 测试连接报证书/重定向错误 | 反代强制 HTTP→HTTPS 且证书自签；平台配置直连 Grafana 地址并关闭 TLS 验证（见五.6） |
 | 面板列表获取失败 | Token 无该看板读权限，或看板 UID 拼写错误 |
 | JWT 登录 401 | 两端 secret 不一致 / JWT 已过期（平台签发 60 秒短时 Token，打开看板时实时签发） |
