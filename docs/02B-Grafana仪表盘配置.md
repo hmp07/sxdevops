@@ -27,9 +27,10 @@ SxDevOps 可以承接已有的 Grafana 仪表盘，在平台内以 iframe 嵌入
 | TLS 验证 | 是否校验证书（自签名内网可关闭） | 开启（推荐） |
 | 请求超时 | 平台调用 Grafana API 的超时（秒） | `10` |
 
-保存前可点击 **测试连接**：平台会返回 Grafana 版本与组织信息，并探测 iframe 嵌入就绪状态（若提示"匿名访问可能未开启"，请按 [Grafana嵌入配置指南](Grafana嵌入配置指南.md) 配置 Grafana 侧开关）。
+保存前可点击 **测试连接**：平台会返回 Grafana 版本与组织信息，并探测 iframe 嵌入就绪状态（若提示"匿名访问可能未开启"，请按 [Grafana嵌入配置指南](Grafana嵌入配置指南.md) 配置 Grafana 侧开关）。测试使用弹窗中当前的 **TLS 验证** 与 **请求超时** 值，无需先保存即可生效。
 
 > Token 留空保存表示保留已配置值；Token 与 JWT Secret 均加密存储且永不回传前端。
+> URL 留空保存同样保留已配置值，不会清空已有连接信息。
 
 ### 2.3 添加仪表盘（两种方式）
 
@@ -37,6 +38,8 @@ SxDevOps 可以承接已有的 Grafana 仪表盘，在平台内以 iframe 嵌入
 
 点击 **从 Grafana 同步** → 获取看板列表 → 勾选要导入的看板 → 选择目标目录 → 导入。
 平台通过 Grafana `api/search` 自动发现目录与看板（需 Service Account Token 具备 Viewer 权限），按 UID 去重，不会覆盖手动配置的条目。
+
+> **列表不全提示**：Grafana 10+ 新建的文件夹默认权限不含 Viewer。若看板存放在文件夹中而同步列表缺失，请在 Grafana 中对目标文件夹（Dashboards → 文件夹 → Settings → Permissions）为 Service Account 显式添加 **Viewer** 权限，或把看板放入 General。
 
 **方式二：手动添加**
 
@@ -71,3 +74,13 @@ SxDevOps 可以承接已有的 Grafana 仪表盘，在平台内以 iframe 嵌入
 1. 设置对话框填写 Grafana URL → 测试连接 → 显示版本与组织信息
 2. 从 Grafana 同步导入看板 → 点击打开看板 → 确认 iframe 正常渲染（无登录页跳转）
 3. 选择自动刷新 → 确认面板数据按间隔更新
+
+### 4.1 故障排查
+
+| 现象 | 可能原因 | 处理 |
+|------|---------|------|
+| 测试连接报证书错误 | Grafana 使用自签名证书 | 设置中关闭 **TLS 验证**（仅内网），或配置受信证书 |
+| 测试连接报重定向错误 | 前置反代强制 HTTP→HTTPS 且证书未受信 | 直接使用 Grafana 服务地址（如 `http://192.168.x.x:3000`），或关闭 TLS 验证后使用 HTTPS 地址 |
+| 测试连接报 401/403 | Token 无效或 Service Account 权限不足 | 重新生成 Token，确认角色为 Viewer 且对目标看板有读权限 |
+| 同步列表不全 | 看板所在文件夹未授权给 Service Account | 为文件夹添加 Service Account 的 Viewer 权限（见 2.3 提示） |
+| 导入后看板打开 404 | 看板 URL 路径不正确 | 重新同步导入（平台已按 Grafana 返回的标准路径 `/d/{uid}/{slug}` 生成地址） |

@@ -79,6 +79,8 @@ environment:
 2. 角色设为 **Viewer**（`api/search` 只返回该账号有权限的看板，最小权限原则）
 3. 添加 Token（`glsa_...`），复制后填入平台「仪表盘 → 设置 → API Token」
 
+**文件夹权限（同步列表不全的常见原因）**：Grafana 10+ 新建的文件夹默认权限只含 Admin/Editor，**不含 Viewer**。看板放入文件夹后，Service Account 将无法通过 `api/search` 看到它们。处理：Dashboards → 目标文件夹 → **Settings → Permissions** → Add permission → 选择该 Service Account → 角色 **Viewer**（或把看板放在 General 目录）。
+
 请求认证方式（平台自动附加）：
 
 ```http
@@ -111,6 +113,7 @@ Authorization: Bearer <SERVICE_ACCOUNT_TOKEN>
 3. **Service Account Token 最小化**：仅 Viewer 角色、单独账号、定期轮换；Token 加密存储于平台数据库
 4. **JWT secret 轮换**：平台 GrafanaSetting.jwt_secret 与 Grafana `key_file` 需同步轮换，两端不一致会拒绝登录
 5. **TLS**：生产环境 Grafana 必须 HTTPS；平台默认校验 TLS 证书，自签名内网可显式关闭（不推荐）
+6. **反向代理**：若 nginx 等反代将 HTTP 强制 301/302 跳转到 HTTPS 且证书自签，平台测试连接会报证书或重定向错误。建议平台直接配置 Grafana 服务地址（如 `http://<host>:3000`）并在设置中关闭 TLS 验证，或为反代域名配置受信证书
 
 ---
 
@@ -135,5 +138,7 @@ location /grafana/ {
 | iframe 一片空白 | ① `allow_embedding = true` 是否生效（改后重启 Grafana）② 浏览器控制台 CSP 报错 |
 | iframe 跳转登录页 | 匿名访问未开启或 JWT secret 不一致；用平台「测试连接」的嵌入就绪探测确认 |
 | 从 Grafana 同步为空列表 | Service Account Token 角色权限不足（需 Viewer）或所属 Org 不对 |
+| 同步列表看板不全 | 看板所在文件夹未授权给 Service Account（Grafana 10+ 新文件夹默认不含 Viewer）；在文件夹 Permissions 中为 Service Account 添加 Viewer |
+| 测试连接报证书/重定向错误 | 反代强制 HTTP→HTTPS 且证书自签；平台配置直连 Grafana 地址并关闭 TLS 验证（见五.6） |
 | 面板列表获取失败 | Token 无该看板读权限，或看板 UID 拼写错误 |
 | JWT 登录 401 | 两端 secret 不一致 / JWT 已过期（平台签发 60 秒短时 Token，打开看板时实时签发） |

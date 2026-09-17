@@ -3,7 +3,7 @@ from urllib.parse import quote
 import json
 import re
 from datetime import datetime, timedelta, timezone as datetime_timezone
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests as http_requests
 from django.conf import settings
@@ -1688,12 +1688,52 @@ def _grafana_connection_target(data):
     return url.rstrip('/') if url else '', api_token, config
 
 
+def _grafana_get(url, *, headers, timeout, verify, params=None):
+    """GET Grafana API：同主机一次性重定向跟随 + 2xx 才解析 JSON + 可读中文错误。
+
+    - 保持 allow_redirects=False 的 SSRF 跳转边界；仅跟随与当前 URL 同主机
+      （hostname 一致，允许 http↔https 协议升级）的一次重定向——适配前置反代
+      强制 HTTP→HTTPS 的场景；跨主机重定向拒绝并返回可读错误。
+    - 仅 2xx 解析 JSON；非 2xx / TLS / 连接类异常统一转为带中文指引的 ValueError。
+    """
+    def _request(target_url):
+        try:
+            return http_requests.get(target_url, params=params, headers=headers, timeout=timeout, verify=verify, allow_redirects=False)
+        except http_requests.exceptions.SSLError:
+            raise ValueError('TLS 证书校验失败（可能为自签名证书）：请在设置中关闭"TLS 验证"或配置受信证书') from None
+        except http_requests.exceptions.Timeout:
+            raise ValueError('Grafana 请求超时：请检查网络连通性或在设置中增大超时') from None
+        except http_requests.exceptions.ConnectionError:
+            raise ValueError('无法连接 Grafana：请检查 URL 与网络连通性') from None
+
+    resp = _request(url)
+    if resp.status_code in (301, 302, 303, 307, 308):
+        location = str(resp.headers.get('Location') or '')
+        current = urlparse(url)
+        target = urlparse(urljoin(url, location)) if location else None
+        if not target or not target.scheme or not target.hostname:
+            raise ValueError(f'Grafana 返回重定向 (HTTP {resp.status_code}) 但缺少有效目标地址')
+        if (target.hostname or '').rstrip('.').lower() != (current.hostname or '').rstrip('.').lower():
+            raise ValueError(f'Grafana URL 重定向至 {location[:120]}，跨主机重定向已阻止，请直接使用该地址')
+        # 同主机（如反代强制 http→https）：跟随一次，认证头由 _request 原样携带
+        resp = _request(target.geturl())
+    if resp.status_code in (401, 403):
+        raise ValueError('Grafana 认证失败 (HTTP 401/403)：API Token 无效或权限不足，请确认 Service Account 角色与看板目录权限')
+    if resp.status_code >= 400:
+        raise ValueError(f'Grafana API 访问失败: HTTP {resp.status_code}')
+    try:
+        return resp.json()
+    except ValueError:
+        raise ValueError(f'Grafana 返回非 JSON 内容 (HTTP {resp.status_code})：请确认 URL 指向 Grafana 根地址') from None
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, build_rbac_permission('ops.grafana.view')])
 def grafana_test_connection(request):
     """Grafana 连接测试：版本/组织信息 + 嵌入就绪探测。
 
     body 可带 {url, api_token} 用于测试尚未保存的配置；省略则用已保存配置。
+    tls_verify / timeout 可随请求体传入（测试弹窗当前值），未传回退已保存配置。
     """
     if not user_has_permissions(request.user, ['ops.grafana.manage']):
         return Response({'detail': '缺少 ops.grafana.manage 权限'}, status=status.HTTP_403_FORBIDDEN)
@@ -1705,29 +1745,31 @@ def grafana_test_connection(request):
     if not url or _is_example_url(url):
         return Response({'status': 'error', 'message': 'Grafana URL 未配置'}, status=status.HTTP_400_BAD_REQUEST)
 
+    body = request.data or {}
     headers = _grafana_api_headers({'api_token': api_token}) if api_token else {'Accept': 'application/json'}
-    timeout = min(max(_config_int(config.get('timeout'), 10), 3), 60)
-    verify = bool(config.get('tls_verify', True))
+    timeout = min(max(_config_int(body.get('timeout', config.get('timeout')), 10), 3), 60)
+    verify = bool(body.get('tls_verify', config.get('tls_verify', True)))
 
     version = ''
     org = {}
+    health_error = None
     try:
-        # allow_redirects=False：防止目标地址 30x 重定向到内部地址（SSRF 跳转防护）
-        health = http_requests.get(f'{url}/api/health', headers=headers, timeout=timeout, verify=verify, allow_redirects=False)
-        if health.status_code < 400:
-            body = health.json()
-            version = body.get('version') or ''
-        else:
-            # 部分版本 /api/health 需管理员权限，回退 /api/org
-            org_resp = http_requests.get(f'{url}/api/org', headers=headers, timeout=timeout, verify=verify, allow_redirects=False)
-            if org_resp.status_code >= 400:
-                return Response(
-                    {'status': 'error', 'message': f'Grafana API 访问失败: HTTP {org_resp.status_code}'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            org = org_resp.json()
-    except Exception as exc:
-        return Response({'status': 'error', 'message': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        health = _grafana_get(f'{url}/api/health', headers=headers, timeout=timeout, verify=verify)
+        if isinstance(health, dict):
+            version = health.get('version') or ''
+    except ValueError as exc:
+        health_error = str(exc)
+    if not version:
+        # 部分版本 /api/health 需管理员权限，回退 /api/org
+        try:
+            org_payload = _grafana_get(f'{url}/api/org', headers=headers, timeout=timeout, verify=verify)
+            if isinstance(org_payload, dict):
+                org = org_payload
+        except ValueError:
+            return Response(
+                {'status': 'error', 'message': health_error or 'Grafana API 访问失败，请检查 URL 与认证配置'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
     # 嵌入就绪探测：带匿名身份的请求访问 /login，若被 302 跳离登录页说明匿名访问已启用
     embed_warning = ''
@@ -1756,10 +1798,10 @@ def grafana_test_connection(request):
     }
     if not org:
         try:
-            org_resp = http_requests.get(f'{url}/api/org', headers=headers, timeout=timeout, verify=verify, allow_redirects=False)
-            if org_resp.status_code < 400:
-                payload['org'] = org_resp.json()
-        except Exception:
+            org_payload = _grafana_get(f'{url}/api/org', headers=headers, timeout=timeout, verify=verify)
+            if isinstance(org_payload, dict):
+                payload['org'] = org_payload
+        except ValueError:
             pass
     return Response(payload)
 
@@ -1818,17 +1860,15 @@ def grafana_discover(request):
     def _fetch_search(search_type):
         results = []
         for page in range(1, 4):
-            resp = http_requests.get(
+            items = _grafana_get(
                 f'{url}/api/search',
                 params={'type': search_type, 'limit': 5000, 'page': page},
                 headers=headers,
                 timeout=timeout,
                 verify=verify,
-                allow_redirects=False,  # SSRF 跳转防护
             )
-            if resp.status_code >= 400:
-                raise RuntimeError(f'Grafana api/search 失败: HTTP {resp.status_code}')
-            items = resp.json()
+            if not isinstance(items, list):
+                raise ValueError(f'Grafana api/search 返回异常结构 (type={search_type})')
             results.extend(items)
             if len(items) < 5000:
                 break
@@ -1837,7 +1877,7 @@ def grafana_discover(request):
     try:
         folders_raw = _fetch_search('dash-folder')
         dashboards_raw = _fetch_search('dash-db')
-    except Exception as exc:
+    except ValueError as exc:
         return Response({'status': 'error', 'message': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
     folders = [
@@ -1848,7 +1888,9 @@ def grafana_discover(request):
         {
             'uid': item.get('uid') or '',
             'title': item.get('title') or '',
-            'slug': item.get('slug') or item.get('uri') or '',
+            # Grafana 12 返回 slug 为空、uri 形如 "db/{slug}"：取末段作为 slug，
+            # 避免前端拼出 /d/{uid}/db/{slug} 的错误路径
+            'slug': item.get('slug') or (str(item.get('uri') or '')).rsplit('/', 1)[-1] or '',
             'url': item.get('url') or '',
             'folderUid': item.get('folderUid') or '',
             'folderTitle': item.get('folderTitle') or '',
@@ -2046,6 +2088,7 @@ def observability_overview(request):
 
     provider = request.query_params.get('provider', '')
     layer = request.query_params.get('layer', '')
+    warnings = []
     try:
         catalog = load_tracing_catalog(
             provider=provider,
@@ -2053,7 +2096,10 @@ def observability_overview(request):
             datasource_id=request.query_params.get('datasource_id', ''),
         ) if access['trace'] else None
     except ObservabilityError as exc:
-        return Response({'detail': str(exc), 'error': exc.detail}, status=exc.status_code)
+        # 链路追踪未配置/查询失败时降级返回，不再让整个聚合页 400
+        #（Grafana、日志、告警等模块不受影响），错误以 warnings 呈现
+        catalog = None
+        warnings.append(f'链路追踪未配置：{exc}')
     grafana = _grafana_meta() if access['grafana'] else None
     logs = _log_module_summary() if (access['log_query'] or access['log_datasource']) else None
     alerts = _alert_module_summary() if access['alerts'] else None
@@ -2100,6 +2146,7 @@ def observability_overview(request):
             'unacknowledged_alerts': alerts['unacknowledged'] if alerts else 0,
         },
         'navigation': navigation,
+        'warnings': warnings,
         'recent_traces': catalog['recent_traces'] if catalog else [],
         'providers': catalog['providers'] if catalog else [
             {

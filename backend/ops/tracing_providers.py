@@ -250,10 +250,24 @@ def get_tracing_provider_configs():
 def _default_provider_id():
     defaults = _observability_defaults()
     tracing_defaults = defaults.get('tracing', {}) if isinstance(defaults.get('tracing'), dict) else {}
-    requested = tracing_defaults.get('default_provider') or 'skywalking'
+    requested = tracing_defaults.get('default_provider') or ''
     configs = get_tracing_provider_configs()
-    if requested in configs and configs[requested].get('enabled'):
+    if requested and requested in configs and configs[requested].get('enabled'):
         return requested
+    # 未显式指定默认供应商：优先使用数据源中标记为默认（is_default）的启用数据源，
+    # 避免回退到未配置地址的内置供应商（如 SkyWalking）导致查询报错
+    try:
+        from .models import TracingDataSource
+
+        default_datasource = (
+            TracingDataSource.objects.filter(is_enabled=True, is_default=True)
+            .order_by('id')
+            .first()
+        )
+        if default_datasource and default_datasource.provider in configs and configs[default_datasource.provider].get('enabled'):
+            return default_datasource.provider
+    except Exception:
+        pass
     for candidate in ('skywalking', 'tempo', 'jaeger', 'zipkin'):
         if configs[candidate].get('enabled'):
             return candidate

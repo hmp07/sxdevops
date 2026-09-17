@@ -1073,11 +1073,15 @@ function applyGrafanaConfig(data = {}) {
 async function loadOverview() {
   loading.value = true
   try {
+    // 总览与 Grafana 配置独立加载：总览失败不得阻止配置刷新，
+    // 否则后续保存会使用陈旧配置（空 URL）覆盖已存连接信息
     const [overviewData, configData] = await Promise.all([
-      getObservabilityOverview(),
-      canManageGrafana.value ? getGrafanaConfig() : Promise.resolve(null),
+      getObservabilityOverview().catch(() => null),
+      canManageGrafana.value ? getGrafanaConfig().catch(() => null) : Promise.resolve(null),
     ])
-    overview.value = overviewData
+    if (overviewData) {
+      overview.value = overviewData
+    }
     if (configData) {
       applyGrafanaConfig(configData)
     }
@@ -1180,10 +1184,10 @@ function buildGrafanaPayload({ dashboardsSource = grafanaConfig.dashboards, fold
 
   const mergedFolders = mergeFolderConfigs(foldersSource, normalizedDashboards)
 
-  return {
-    // 保留当前连接配置，避免目录/看板保存时清空已存 Grafana URL
+  // 保留当前连接配置，避免目录/看板保存时清空已存 Grafana URL；
+  // url 为空时不提交（后端 partial 保存保留已存值，杜绝清空）
+  const payload = {
     enabled: grafanaConfig.enabled,
-    url: String(grafanaConfig.url || '').trim(),
     default_path: String(grafanaConfig.default_path || '').trim(),
     folders: mergedFolders.map((item) => ({
       path: item.path,
@@ -1192,16 +1196,25 @@ function buildGrafanaPayload({ dashboardsSource = grafanaConfig.dashboards, fold
     })),
     dashboards: normalizedDashboards.filter((item) => item.title && item.full_url),
   }
+  const urlValue = String(grafanaConfig.url || '').trim()
+  if (urlValue) {
+    payload.url = urlValue
+  }
+  return payload
 }
 
 function buildGrafanaConnectionPayload() {
   const payload = {
     enabled: settingsDialog.visible ? true : grafanaConfig.enabled,
-    url: String(settingsDialog.url || '').trim(),
     default_path: String(settingsDialog.default_path || '').trim(),
     org_id: Number(settingsDialog.org_id || 1),
     tls_verify: Boolean(settingsDialog.tls_verify),
     timeout: Number(settingsDialog.timeout || 10),
+  }
+  // URL 为空时不提交（partial 保存保留已存值，杜绝清空已保存地址）
+  const urlValue = String(settingsDialog.url || '').trim()
+  if (urlValue) {
+    payload.url = urlValue
   }
   // 留空表示不修改已保存凭据（write_only 字段语义）
   if (settingsDialog.api_token) {
@@ -1256,7 +1269,12 @@ async function runGrafanaTest() {
   settingsDialog.testing = true
   settingsDialog.testResult = null
   try {
-    const payload = { url: settingsDialog.url }
+    // 携带弹窗当前 TLS/超时设置，让测试结果与用户所填配置一致（未保存也可生效）
+    const payload = {
+      url: settingsDialog.url,
+      tls_verify: Boolean(settingsDialog.tls_verify),
+      timeout: Number(settingsDialog.timeout || 10),
+    }
     if (settingsDialog.api_token) {
       payload.api_token = settingsDialog.api_token
     }
@@ -1316,13 +1334,19 @@ async function importGrafanaDiscovery() {
   }
   syncDialog.importing = true
   try {
-    const nextDashboards = [...grafanaConfig.dashboards]
+    // 仅保留带 UID 的真实看板：未配置 Grafana 时展示的内置演示看板无 UID，不得随导入持久化
+    const nextDashboards = grafanaConfig.dashboards.filter((item) => String(item.uid || ''))
     selected.forEach((item) => {
       const uid = String(item.uid || '')
       const exists = nextDashboards.some((existing) => String(existing.uid || '') === uid)
       if (exists) return
       const folder = syncDialog.targetFolder || item.folderTitle || ''
-      const embedPath = `/d/${item.uid}/${item.slug || ''}`
+      // 优先使用 Grafana 返回的看板路径（/d/{uid}/{slug}），
+      // 避免自拼 slug 携带 "db/" 前缀生成错误路径
+      const grafanaUrl = String(item.url || '').trim()
+      const isAbsolute = /^https?:\/\//i.test(grafanaUrl)
+      const embedPath = isAbsolute ? new URL(grafanaUrl).pathname : (grafanaUrl || `/d/${item.uid}/${item.slug || ''}`)
+      const baseUrl = String(syncDialog.url || grafanaConfig.url || '').replace(/\/+$/, '')
       nextDashboards.push({
         uid: item.uid,
         key: uid,
@@ -1332,7 +1356,7 @@ async function importGrafanaDiscovery() {
         folder: normalizeFolderPath(folder),
         folder_collapsed: false,
         path: embedPath,
-        full_url: `${String(syncDialog.url || grafanaConfig.url || '').replace(/\/+$/, '')}${embedPath}`,
+        full_url: isAbsolute ? grafanaUrl : `${baseUrl}${embedPath}`,
         panel_count: 0,
         panel_id: null,
         tags: Array.isArray(item.tags) ? item.tags : [],

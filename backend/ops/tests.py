@@ -1216,7 +1216,7 @@ class ObservabilityViewsTests(TestCase):
         login_resp = MagicMock()
         login_resp.status_code = 302
         login_resp.headers = {'Location': '/'}
-        mock_get.side_effect = [health_resp, org_resp, login_resp]
+        mock_get.side_effect = [health_resp, login_resp, org_resp]
 
         response = self.client.post('/api/observability/grafana/test/', {}, format='json')
 
@@ -1234,10 +1234,13 @@ class ObservabilityViewsTests(TestCase):
         health_resp = MagicMock()
         health_resp.status_code = 200
         health_resp.json.return_value = {'version': '10.4.0'}
+        login_resp = MagicMock()
+        login_resp.status_code = 302
+        login_resp.headers = {'Location': '/'}
         org_resp = MagicMock()
         org_resp.status_code = 200
         org_resp.json.return_value = {'id': 1, 'name': 'Demo Org'}
-        mock_get.side_effect = [health_resp, org_resp]
+        mock_get.side_effect = [health_resp, login_resp, org_resp]
 
         response = self.client.post(
             '/api/observability/grafana/test/',
@@ -1265,10 +1268,13 @@ class ObservabilityViewsTests(TestCase):
         health_resp = MagicMock()
         health_resp.status_code = 200
         health_resp.json.return_value = {'version': '11.0.0'}
+        login_resp = MagicMock()
+        login_resp.status_code = 302
+        login_resp.headers = {'Location': '/'}
         org_resp = MagicMock()
         org_resp.status_code = 200
         org_resp.json.return_value = {'id': 1, 'name': 'Main Org.'}
-        mock_get.side_effect = [health_resp, org_resp]
+        mock_get.side_effect = [health_resp, login_resp, org_resp]
 
         response = self.client.post(
             '/api/observability/grafana/test/',
@@ -1336,6 +1342,145 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(payload['dashboard_count'], 1)
         self.assertEqual(payload['dashboards'][0]['uid'], 'infra-overview')
         self.assertEqual(payload['dashboards'][0]['folderTitle'], '基础设施')
+
+    @patch('ops.observability_views.http_requests.get')
+    def test_grafana_discover_uses_uri_segment_as_slug_fallback(self, mock_get):
+        """Grafana 12 返回 slug 为空、uri 形如 "db/{slug}"：取末段作为 slug，避免拼出错误路径。"""
+        GrafanaSetting.objects.create(name='default', url='http://grafana.disc.internal.local', api_token='glsa_disc')
+        folders_resp = MagicMock()
+        folders_resp.status_code = 200
+        folders_resp.json.return_value = []
+        dashboards_resp = MagicMock()
+        dashboards_resp.status_code = 200
+        dashboards_resp.json.return_value = [
+            {
+                'uid': 'fe0ylyg4cdd6oc',
+                'title': 'Zabbix Server Dashboard',
+                'slug': '',
+                'uri': 'db/zabbix-server-dashboard',
+                'url': '/d/fe0ylyg4cdd6oc/zabbix-server-dashboard',
+                'tags': [],
+            }
+        ]
+        mock_get.side_effect = [folders_resp, dashboards_resp]
+
+        response = self.client.post('/api/observability/grafana/discover/', {}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['dashboard_count'], 1)
+        self.assertEqual(payload['dashboards'][0]['slug'], 'zabbix-server-dashboard')
+
+    @patch('ops.observability_views.http_requests.get')
+    def test_grafana_test_connection_follows_same_host_redirect_once(self, mock_get):
+        """反代强制 HTTP→HTTPS（同主机 301）：跟随一次并成功返回版本。"""
+        GrafanaSetting.objects.create(name='default', url='http://grafana.redirect.internal.local', api_token='glsa_redir')
+        redirect_resp = MagicMock()
+        redirect_resp.status_code = 301
+        redirect_resp.headers = {'Location': 'https://grafana.redirect.internal.local/api/health'}
+        health_resp = MagicMock()
+        health_resp.status_code = 200
+        health_resp.json.return_value = {'version': '12.4.2'}
+        login_resp = MagicMock()
+        login_resp.status_code = 302
+        login_resp.headers = {'Location': '/'}
+        org_resp = MagicMock()
+        org_resp.status_code = 200
+        org_resp.json.return_value = {'id': 1, 'name': 'Main Org.'}
+        mock_get.side_effect = [redirect_resp, health_resp, login_resp, org_resp]
+
+        response = self.client.post('/api/observability/grafana/test/', {}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['version'], '12.4.2')
+        self.assertEqual(payload['org']['name'], 'Main Org.')
+        # 第二次调用为同主机重定向目标，认证头原样携带
+        self.assertEqual(mock_get.call_args_list[1][1]['headers']['Authorization'], 'Bearer glsa_redir')
+
+    @patch('ops.observability_views.http_requests.get')
+    def test_grafana_test_connection_rejects_cross_host_redirect(self, mock_get):
+        """SSRF 边界：跨主机重定向不跟随，返回可读错误。"""
+        GrafanaSetting.objects.create(name='default', url='http://grafana.redirect.internal.local', api_token='glsa_redir')
+        redirect_resp = MagicMock()
+        redirect_resp.status_code = 301
+        redirect_resp.headers = {'Location': 'http://attacker.internal.local/api/health'}
+        org_resp = MagicMock()
+        org_resp.status_code = 401
+        mock_get.side_effect = [redirect_resp, org_resp]
+
+        response = self.client.post('/api/observability/grafana/test/', {}, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('重定向', response.json()['message'])
+        self.assertEqual(mock_get.call_count, 2, '跨主机重定向不得被跟随')
+
+    @patch('ops.observability_views.http_requests.get')
+    def test_grafana_test_connection_html_response_readable_error(self, mock_get):
+        """2xx 但返回 HTML（如登录页/反代拦截）：报可读错误而非 JSONDecodeError 原文。"""
+        GrafanaSetting.objects.create(name='default', url='http://grafana.html.internal.local', api_token='glsa_html')
+        health_resp = MagicMock()
+        health_resp.status_code = 200
+        health_resp.json.side_effect = ValueError('Expecting value: line 1 column 1 (char 0)')
+        org_resp = MagicMock()
+        org_resp.status_code = 401
+        mock_get.side_effect = [health_resp, org_resp]
+
+        response = self.client.post('/api/observability/grafana/test/', {}, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('非 JSON', response.json()['message'])
+
+    @patch('ops.observability_views.http_requests.get')
+    def test_grafana_test_connection_honors_body_tls_and_timeout(self, mock_get):
+        """请求体 tls_verify/timeout 覆盖已保存配置，测试弹窗开关真正生效。"""
+        GrafanaSetting.objects.create(
+            name='default', url='http://grafana.body.internal.local', api_token='glsa_body', tls_verify=True, timeout=10
+        )
+        health_resp = MagicMock()
+        health_resp.status_code = 200
+        health_resp.json.return_value = {'version': '12.4.2'}
+        login_resp = MagicMock()
+        login_resp.status_code = 302
+        login_resp.headers = {'Location': '/'}
+        org_resp = MagicMock()
+        org_resp.status_code = 200
+        org_resp.json.return_value = {'id': 1, 'name': 'Main Org.'}
+        mock_get.side_effect = [health_resp, login_resp, org_resp]
+
+        response = self.client.post(
+            '/api/observability/grafana/test/',
+            {'url': 'http://grafana.body.internal.local', 'api_token': 'glsa_body', 'tls_verify': False, 'timeout': 17},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        first_call_kwargs = mock_get.call_args_list[0][1]
+        self.assertIs(first_call_kwargs['verify'], False)
+        self.assertEqual(first_call_kwargs['timeout'], 17)
+
+    def test_observability_overview_degrades_when_tracing_provider_unconfigured(self):
+        """链路追踪未配置时 overview 降级返回 200 + warnings，不再 400 阻断聚合页。"""
+        with override_settings(
+            OBSERVABILITY_CONFIG={
+                'skywalking': {
+                    'enabled': True,
+                    'ui_url': '',
+                    'oap_url': '',
+                    'graphql_path': '/graphql',
+                    'default_layer': '',
+                    'demo_mode': False,
+                },
+                'grafana': {'enabled': True, 'url': '', 'default_path': '', 'demo_mode': True},
+            }
+        ):
+            response = self.client.get('/api/observability/overview/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload.get('warnings'))
+        self.assertIn('查询地址未配置', payload['warnings'][0])
+        self.assertIsNotNone(payload['modules']['grafana'])
 
     def test_grafana_embed_token_requires_jwt_secret(self):
         response = self.client.post('/api/observability/grafana/embed-token/', {}, format='json')
