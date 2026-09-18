@@ -872,6 +872,8 @@ class ResourceRequestViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         obj = self.get_object()
         if obj.status != 'pending':
             return Response({'detail': '只能审批待审批资源'}, status=400)
+        if not request.user.is_superuser and obj.applicant == request.user.username:
+            return Response({'detail': '申请人与审批人不能为同一人（职责分离）'}, status=status.HTTP_403_FORBIDDEN)
         obj.status = 'approved'
         obj.approver = request.user.username
         obj.approval_comment = (request.data.get('comment') or request.data.get('approval_comment') or '').strip()

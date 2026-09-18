@@ -153,6 +153,25 @@ class RbacSecurityHardeningTests(TestCase):
         target.refresh_from_db()
         self.assertTrue(target.is_staff)
 
+    def test_rbac_fail_closed_undeclared_action_denied(self):
+        """fail-closed：未声明权限码的 action 一律拒绝（防遗漏登记导致越权）。"""
+        from rest_framework.test import APIRequestFactory
+        from rest_framework.views import APIView
+
+        from .permissions import RBACPermission
+
+        class _UndeclaredActionView(APIView):
+            action = 'custom_action'
+
+            def get_required_permissions(self):
+                return []
+
+        factory = APIRequestFactory()
+        request = factory.post('/x/')
+        request.user = self._make_manager('fail-closed-user')
+
+        self.assertFalse(RBACPermission().has_permission(request, _UndeclaredActionView()))
+
     def test_login_failure_lockout(self):
         for _ in range(10):
             response = self.client.post(

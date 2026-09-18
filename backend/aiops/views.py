@@ -887,6 +887,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'messages': ['aiops.chat.view'],
         'send_message': ['aiops.chat.view'],
         'send_message_async': ['aiops.chat.view'],
+        'send_message_stream': ['aiops.chat.view'],
     }
 
     def get_queryset(self):
@@ -1181,6 +1182,7 @@ class AIOpsAuditSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'list': ['aiops.audit.view'],
         'retrieve': ['aiops.audit.view'],
         'destroy': ['aiops.audit.manage'],
+        'bulk_delete': ['aiops.audit.manage'],
     }
 
     def get_queryset(self):
@@ -1276,6 +1278,7 @@ class AIOpsToolInvocationViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'list': ['aiops.audit.view'],
         'retrieve': ['aiops.audit.view'],
         'destroy': ['aiops.audit.manage'],
+        'bulk_delete': ['aiops.audit.manage'],
     }
 
     def get_queryset(self):
@@ -1360,6 +1363,7 @@ class AIOpsPendingActionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'list': ['aiops.audit.view'],
         'retrieve': ['aiops.audit.view'],
         'destroy': ['aiops.audit.manage'],
+        'bulk_delete': ['aiops.audit.manage'],
     }
 
     def get_queryset(self):
@@ -1661,6 +1665,9 @@ class AIOpsRunbookViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         source_session = AIOpsChatSession.objects.filter(id=source_session_id).first()
         if not source_session:
             return Response({'detail': '来源会话不存在'}, status=status.HTTP_400_BAD_REQUEST)
+        # 跨用户读防护：仅会话所有者（或超管）可从该会话生成 Runbook
+        if source_session.user_id and source_session.user_id != request.user.id and not request.user.is_superuser:
+            return Response({'detail': '仅会话所有者可以从该会话生成 Runbook'}, status=status.HTTP_403_FORBIDDEN)
         try:
             runbook = build_runbook_draft_from_session(source_session, user=request.user, payload=request.data)
         except ValueError as exc:

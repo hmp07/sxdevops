@@ -1,6 +1,10 @@
-﻿from rest_framework.permissions import SAFE_METHODS, BasePermission, IsAuthenticated
+﻿import logging
+
+from rest_framework.permissions import SAFE_METHODS, BasePermission, IsAuthenticated
 
 from .services import DEMO_ACCOUNT_MUTATION_MESSAGE, is_demo_account, user_has_permissions
+
+logger = logging.getLogger(__name__)
 
 
 class RBACPermission(BasePermission):
@@ -29,7 +33,13 @@ class RBACPermission(BasePermission):
         if isinstance(codes, str):
             codes = [codes]
         if not codes:
-            return True
+            # fail-closed：未声明权限码的动作一律拒绝（防遗漏登记导致越权放行）
+            logger.warning(
+                'RBAC fail-closed 拒绝: %s action=%s 未声明权限码',
+                type(view).__name__, action or request.method,
+            )
+            self.message = '该操作未配置权限码，已拒绝执行（安全默认）。'
+            return False
         if user_has_permissions(request.user, codes):
             return True
         self.message = f'缺少权限: {", ".join(codes)}'

@@ -23,6 +23,7 @@ from ops.models import (
     DockerHost,
     GrafanaSetting,
     Host,
+    HostTask,
     K8sCluster,
     K8sConfigRevision,
     LogDataSource,
@@ -4101,3 +4102,58 @@ class ZabbixEventGovernanceTests(TestCase):
         alerting.upsert_alert(dict(payload), actor='webhook')
         alerting.upsert_alert(dict(payload), actor='webhook')
         self.assertGreaterEqual(AlertAction.objects.count(), 2)
+
+
+class TaskOwnershipTests(TestCase):
+    """任务中心属主隔离：普通用户仅可见自己的任务；ops.task.manage 豁免。"""
+
+    def setUp(self):
+        from rbac.services import ensure_builtin_rbac
+        from rbac.models import Role, PermissionDefinition
+
+        ensure_builtin_rbac()
+        execute_perm = PermissionDefinition.objects.get(code='ops.task.execute')
+        manage_perm = PermissionDefinition.objects.get(code='ops.task.manage')
+        self.executor_role = Role.objects.create(code='task-executor', name='Task Executor')
+        self.executor_role.permissions.add(execute_perm)
+        self.manager_role = Role.objects.create(code='task-manager', name='Task Manager')
+        self.manager_role.permissions.add(execute_perm, manage_perm)
+        self.user_a = get_user_model().objects.create_user('task-owner-a', password='Admin@123456')
+        self.user_b = get_user_model().objects.create_user('task-owner-b', password='Admin@123456')
+        self.manager = get_user_model().objects.create_user('task-manager-user', password='Admin@123456')
+        self.executor_role.users.add(self.user_a, self.user_b)
+        self.manager_role.users.add(self.manager)
+        self.client = APIClient()
+
+    def test_owner_sees_only_own_tasks(self):
+        HostTask.objects.create(name='A 的任务', task_type=HostTask.TASK_RUN_COMMAND, created_by=self.user_a.username)
+        HostTask.objects.create(name='B 的任务', task_type=HostTask.TASK_RUN_COMMAND, created_by=self.user_b.username)
+
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.get('/api/host-tasks/')
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        items = payload.get('results') if isinstance(payload, dict) else payload
+        names = [item['name'] for item in items]
+        self.assertIn('A 的任务', names)
+        self.assertNotIn('B 的任务', names)
+
+    def test_task_manage_sees_all_tasks(self):
+        HostTask.objects.create(name='A 的任务', task_type=HostTask.TASK_RUN_COMMAND, created_by=self.user_a.username)
+        HostTask.objects.create(name='B 的任务', task_type=HostTask.TASK_RUN_COMMAND, created_by=self.user_b.username)
+
+        self.client.force_authenticate(user=self.manager)
+        response = self.client.get('/api/host-tasks/')
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        items = payload.get('results') if isinstance(payload, dict) else payload
+        names = [item['name'] for item in items]
+        self.assertIn('A 的任务', names)
+        self.assertIn('B 的任务', names)
+
+    def test_owner_cannot_retrieve_other_task(self):
+        task_b = HostTask.objects.create(name='B 的任务', task_type=HostTask.TASK_RUN_COMMAND, created_by=self.user_b.username)
+
+        self.client.force_authenticate(user=self.user_a)
+        response = self.client.get(f'/api/host-tasks/{task_b.id}/')
+        self.assertEqual(response.status_code, 404)

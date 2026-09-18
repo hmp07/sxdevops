@@ -1866,7 +1866,18 @@ def create_external_task(payload, user):
     return task
 
 
+def _ensure_external_task_owner(task, user):
+    """A2A 外部任务属主校验：仅任务创建者（或超管）可操作。"""
+    if getattr(user, 'is_superuser', False):
+        return
+    if not user or not getattr(user, 'is_authenticated', False):
+        raise ValueError('未登录，不能操作任务')
+    if task.created_by_id and task.created_by_id != user.id:
+        raise ValueError('仅任务创建者可操作该任务')
+
+
 def cancel_external_task(task, user=None):
+    _ensure_external_task_owner(task, user)
     if task.status in {AIOpsExternalTask.STATUS_COMPLETED, AIOpsExternalTask.STATUS_CANCELED}:
         raise ValueError('任务已结束，不能取消')
     task.status = AIOpsExternalTask.STATUS_CANCELED
@@ -1880,6 +1891,7 @@ def cancel_external_task(task, user=None):
 
 
 def run_external_task_orchestration(task, user=None):
+    _ensure_external_task_owner(task, user)
     if task.status in {AIOpsExternalTask.STATUS_COMPLETED, AIOpsExternalTask.STATUS_CANCELED}:
         raise ValueError('任务已结束，不能再次运行')
     action = _action_registry_item_by_code(task.action_code, user=user, include_unavailable=True)
@@ -1929,6 +1941,7 @@ def run_external_task_orchestration(task, user=None):
 
 
 def interrupt_external_task(task, user=None):
+    _ensure_external_task_owner(task, user)
     if task.status in {AIOpsExternalTask.STATUS_COMPLETED, AIOpsExternalTask.STATUS_CANCELED}:
         raise ValueError('任务已结束，不能中断')
     action = _action_registry_item_by_code(task.action_code, user=user, include_unavailable=True) or {}

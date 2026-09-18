@@ -343,6 +343,9 @@ def batch_action_view(request):
         'environments': ['ops.multicloud.sync'] if action in {'sync_inventory', 'sync_cmdb'} else ['ops.multicloud.manage'],
         'assets': ['ops.multicloud.manage'],
     }.get(scope, [])
+    if not permission_codes:
+        # fail-closed：未知 scope 一律拒绝（空权限集会因 user_has_permissions 语义被放行）
+        return Response({'detail': f'未知的资源类型 scope: {scope}'}, status=status.HTTP_400_BAD_REQUEST)
     if action == 'sync_cmdb':
         permission_codes = ['ops.multicloud.sync', 'cmdb.ci.manage']
 

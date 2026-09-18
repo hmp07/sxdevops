@@ -135,6 +135,11 @@ class SqlOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 {'error': f'当前状态为"{order.get_status_display()}"，不可审核'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if not request.user.is_superuser and order.submitter == request.user.username:
+            return Response(
+                {'error': '提交人与审核人不能为同一人（职责分离）'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         order.status = 'approved'
         order.reviewer = request.user.username
         order.review_comment = request.data.get('comment', '')
@@ -181,6 +186,11 @@ class SqlOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             return Response(
                 {'error': f'当前状态为"{order.get_status_display()}"，不可执行'},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not request.user.is_superuser and order.submitter == request.user.username:
+            return Response(
+                {'error': '提交人与执行人不能为同一人（职责分离）'},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         order.status = 'executing'

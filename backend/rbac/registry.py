@@ -7,6 +7,7 @@ PERMISSION_DEFINITIONS = [
     ('ops.host.terminal', '使用 WebShell', 'ops', '通过浏览器进入主机终端'),
     ('ops.host.execute', '执行主机任务', 'ops', '通过任务中心批量执行主机巡检与运维命令'),
     ('ops.task.execute', '执行任务中心任务', 'ops', '通过任务中心执行主机、K8s 与自动化调度任务'),
+    ('ops.task.manage', '管理全部任务', 'ops', '查看并操作所有用户的任务中心任务（属主隔离豁免）'),
     ('ops.task.resource.view', '查看任务资源底座', 'ops', '查看任务中心独立执行资源、环境与系统树'),
     ('ops.task.resource.manage', '管理任务资源底座', 'ops', '维护任务中心独立执行资源、环境与系统树'),
     ('ops.host.schedule.view', '查看定时任务', 'ops', '查看主机定时编排、执行记录与下次执行时间'),
@@ -89,6 +90,7 @@ PERMISSION_DEFINITIONS = [
     ('rbac.audit.manage', '管理操作审计', 'rbac', '按保留策略批量清理操作审计记录'),
     # Zabbix
     ('ops.zabbix.view', '查看 Zabbix 监控', 'ops', '查看 Zabbix 主机、监控项、历史数据和问题'),
+    ('ops.zabbix.manage', '管理 Zabbix 监控', 'ops', '触发 Zabbix 告警轮询等管理操作'),
     ('ops.zabbix.datasource.view', '查看 Zabbix 数据源', 'ops', '查看 Zabbix Server 连接配置'),
     ('ops.zabbix.datasource.manage', '管理 Zabbix 数据源', 'ops', '新增、编辑、删除、测试 Zabbix 数据源'),
     # iTop / CMDB
@@ -112,7 +114,7 @@ BUILTIN_ROLES = [
         'description': '负责主机、部署、容器、日志与 CMDB 维护。',
         'permissions': [
             'aiops.knowledge.view', 'aiops.knowledge.manage',
-            'ops.dashboard.view', 'ops.host.view', 'ops.host.manage', 'ops.host.terminal', 'ops.host.execute', 'ops.task.execute', 'ops.task.resource.view', 'ops.task.resource.manage',
+            'ops.dashboard.view', 'ops.host.view', 'ops.host.manage', 'ops.host.terminal', 'ops.host.execute', 'ops.task.execute', 'ops.task.manage', 'ops.task.resource.view', 'ops.task.resource.manage',
             'ops.host.schedule.view', 'ops.host.schedule.manage', 'ops.host.schedule.execute',
             'ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve',
             'ops.ticket.view', 'ops.ticket.manage', 'ops.ticket.approve',
@@ -130,7 +132,7 @@ BUILTIN_ROLES = [
             'cmdb.dashboard.view', 'cmdb.ci.view',
             'cmdb.ci.manage', 'cmdb.topology.view', 'cmdb.cost.view', 'cmdb.request.submit',
             'cmdb.request.approve',
-            'ops.zabbix.view', 'ops.zabbix.datasource.view', 'ops.zabbix.datasource.manage',
+            'ops.zabbix.view', 'ops.zabbix.manage', 'ops.zabbix.datasource.view', 'ops.zabbix.datasource.manage',
             'cmdb.itop.view', 'cmdb.itop.datasource.view', 'cmdb.itop.datasource.manage', 'cmdb.itop.ticket.view',
         ],
     },

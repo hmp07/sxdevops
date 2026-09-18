@@ -367,6 +367,9 @@ ALLOWED_HOSTS = [
 
 X_FRAME_OPTIONS = os.getenv('X_FRAME_OPTIONS', 'SAMEORIGIN')
 
+# 通用告警接入（generic webhook）共享令牌：未配置则拒绝接收通用告警，防未认证告警注入
+GENERIC_WEBHOOK_TOKEN = os.getenv('SXDEVOPS_GENERIC_WEBHOOK_TOKEN', '')
+
 
 # Application definition
 

@@ -1,6 +1,7 @@
 import json
 from datetime import timedelta
 import paramiko
+from django.conf import settings
 from django.db.models import Avg, Count, Q
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -13,6 +14,7 @@ from eventwall.mixins import EventWallModelViewSetMixin
 from eventwall.models import EventRecord
 from eventwall.services import build_json_preview, build_resource, record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
+from rbac.services import user_has_permissions
 
 from . import deployer
 from .host_task_schedules import (
@@ -142,17 +144,21 @@ def _initialize_approval_steps(deployment):
 
 
 def _match_step_approver(user, step):
-    if user.is_superuser:
-        return True
+    """审批人校验（收紧版）。
+
+    - 审批节点未配置审批人：拒绝普通审批人；仅 superuser 可作为显式应急
+      通道通过（调用方需写审计事件），避免发布流程因配置缺失被绕过。
+    - 未知 approver_type：拒绝（fail-closed）。
+    """
     if not step or not step.approver_value:
-        return True
+        return bool(getattr(user, 'is_superuser', False))
     if step.approver_type == 'user':
         return user.username == step.approver_value
     if step.approver_type == 'role':
         return user.rbac_roles.filter(code=step.approver_value).exists()
     if step.approver_type == 'group':
         return user.rbac_groups.filter(code=step.approver_value).exists()
-    return True
+    return False
 
 
 def _apply_system_alias_filter(request, queryset, *fields):
@@ -561,6 +567,14 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if self.action == 'retrieve':
             return HostTaskDetailSerializer
         return HostTaskSerializer
+
+    def get_queryset(self):
+        # 属主隔离：普通用户仅可见/操作自己创建的任务；超管与 ops.task.manage 豁免
+        queryset = super().get_queryset()
+        user = getattr(self.request, 'user', None)
+        if user and user.is_authenticated and not user.is_superuser and not user_has_permissions(user, ['ops.task.manage']):
+            queryset = queryset.filter(created_by=user.username)
+        return queryset
 
     def list(self, request, *args, **kwargs):
         mark_stale_running_host_tasks()
@@ -1417,6 +1431,21 @@ class DeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewset
         if current_step and not _match_step_approver(request.user, current_step):
             return Response({'detail': '\u5f53\u524d\u8d26\u53f7\u4e0d\u5728\u8be5\u5ba1\u6279\u8282\u70b9\u7684\u5ba1\u6279\u8303\u56f4\u5185'}, status=status.HTTP_403_FORBIDDEN)
 
+        # \u8d85\u7ba1\u5e94\u6025\u901a\u9053\u5ba1\u8ba1\uff1a\u8282\u70b9\u672a\u914d\u7f6e\u5ba1\u6279\u4eba\u65f6\u4ec5\u8d85\u7ba1\u53ef\u901a\u8fc7\uff0c\u4e14\u5fc5\u987b\u7559\u75d5
+        if current_step and not current_step.approver_value and getattr(request.user, 'is_superuser', False):
+            record_event(
+                request=request,
+                module='ops',
+                category='approval',
+                action='approve_emergency',
+                title='\u8d85\u7ba1\u5e94\u6025\u5ba1\u6279\u53d1\u5e03\u5355',
+                summary=f'\u5ba1\u6279\u8282\u70b9\u672a\u914d\u7f6e\u5ba1\u6279\u4eba\uff0c\u8d85\u7ba1 {request.user.username} \u4f7f\u7528\u5e94\u6025\u901a\u9053\u5ba1\u6279\u53d1\u5e03\u5355 #{deployment.id}',
+                severity=EventRecord.SEVERITY_WARNING,
+                resource_type='deployment',
+                resource_id=deployment.id,
+                resource_name=str(deployment),
+            )
+
         if current_step:
             current_step.status = 'approved'
             current_step.is_current = False
@@ -1455,6 +1484,21 @@ class DeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewset
         current_step = deployment.current_approval_step
         if current_step and not _match_step_approver(request.user, current_step):
             return Response({'detail': '\u5f53\u524d\u8d26\u53f7\u4e0d\u5728\u8be5\u5ba1\u6279\u8282\u70b9\u7684\u5ba1\u6279\u8303\u56f4\u5185'}, status=status.HTTP_403_FORBIDDEN)
+
+        # \u8d85\u7ba1\u5e94\u6025\u901a\u9053\u5ba1\u8ba1\uff1a\u8282\u70b9\u672a\u914d\u7f6e\u5ba1\u6279\u4eba\u65f6\u4ec5\u8d85\u7ba1\u53ef\u901a\u8fc7\uff0c\u4e14\u5fc5\u987b\u7559\u75d5
+        if current_step and not current_step.approver_value and getattr(request.user, 'is_superuser', False):
+            record_event(
+                request=request,
+                module='ops',
+                category='approval',
+                action='reject_emergency',
+                title='\u8d85\u7ba1\u5e94\u6025\u9a73\u56de\u53d1\u5e03\u5355',
+                summary=f'\u5ba1\u6279\u8282\u70b9\u672a\u914d\u7f6e\u5ba1\u6279\u4eba\uff0c\u8d85\u7ba1 {request.user.username} \u4f7f\u7528\u5e94\u6025\u901a\u9053\u9a73\u56de\u53d1\u5e03\u5355 #{deployment.id}',
+                severity=EventRecord.SEVERITY_WARNING,
+                resource_type='deployment',
+                resource_id=deployment.id,
+                resource_name=str(deployment),
+            )
 
         if current_step:
             current_step.status = 'rejected'
@@ -1695,6 +1739,8 @@ class TransactionTicketViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, 
         ticket = self.get_object()
         if ticket.status != TransactionTicket.STATUS_PENDING:
             return Response({'detail': '仅待审批工单支持通过操作'}, status=status.HTTP_400_BAD_REQUEST)
+        if not request.user.is_superuser and ticket.applicant == request.user.username:
+            return Response({'detail': '申请人与审批人不能为同一人（职责分离）'}, status=status.HTTP_403_FORBIDDEN)
         return self._transition_ticket(
             request,
             ticket,
@@ -1709,6 +1755,8 @@ class TransactionTicketViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, 
         ticket = self.get_object()
         if ticket.status != TransactionTicket.STATUS_PENDING:
             return Response({'detail': '仅待审批工单支持驳回操作'}, status=status.HTTP_400_BAD_REQUEST)
+        if not request.user.is_superuser and ticket.applicant == request.user.username:
+            return Response({'detail': '申请人与审批人不能为同一人（职责分离）'}, status=status.HTTP_403_FORBIDDEN)
         return self._transition_ticket(
             request,
             ticket,
@@ -2108,10 +2156,20 @@ def alert_webhook(request, provider, token=''):
         or request.headers.get('X-Sxdevops-Token')
         or request.headers.get('X-SxDevOps-Token')
     )
-    if provider != Alert.SOURCE_GENERIC and not supplied_token:
+    if provider == Alert.SOURCE_GENERIC:
+        # 通用告警接入必须携带共享令牌（SXDEVOPS_GENERIC_WEBHOOK_TOKEN），防未认证告警注入
+        configured_token = getattr(settings, 'GENERIC_WEBHOOK_TOKEN', '') or ''
+        if not configured_token:
+            return Response(
+                {'detail': '通用告警接入未配置令牌（SXDEVOPS_GENERIC_WEBHOOK_TOKEN），拒绝接收。'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if supplied_token != configured_token:
+            return Response({'detail': '通用告警接入令牌无效。'}, status=status.HTTP_403_FORBIDDEN)
+    elif not supplied_token:
         return Response({'detail': '该告警接入源必须携带有效令牌。'}, status=status.HTTP_403_FORBIDDEN)
     integration = resolve_integration(provider, supplied_token)
-    if supplied_token and not integration:
+    if supplied_token and not integration and provider != Alert.SOURCE_GENERIC:
         return Response({'detail': '告警接入源令牌无效或已禁用。'}, status=status.HTTP_403_FORBIDDEN)
     result = ingest_webhook(provider, request.data, integration=integration, request=request)
     return Response({

@@ -1036,7 +1036,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'pvcs': ['ops.k8s.view'],
         'storageclasses': ['ops.k8s.view'],
         'configmaps': ['ops.k8s.view'],
-        'secrets': ['ops.k8s.view'],
+        'secrets': ['ops.k8s.manage'],
         'resource_yaml': ['ops.k8s.view'],
         'config_resource_detail': ['ops.k8s.view'],
         'config_resource_preview': ['ops.k8s.manage'],

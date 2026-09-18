@@ -194,7 +194,7 @@ def zabbix_device_mappings(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, build_rbac_permission('ops.zabbix.view')])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.zabbix.manage')])
 def zabbix_poll_alerts(request):
     """手动触发 Zabbix 告警轮询"""
     client, err = _get_client(request.GET.get('datasource_id'))
