@@ -1,5 +1,8 @@
-﻿from django.contrib.auth import authenticate, get_user_model
+﻿import logging
+
+from django.contrib.auth import authenticate, get_user_model
 from django.core.cache import cache
+from django.db import OperationalError
 from rest_framework import filters, status, viewsets
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.authtoken.models import Token
@@ -36,6 +39,8 @@ from .services import (
     user_has_permissions,
 )
 
+
+logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
@@ -232,11 +237,19 @@ def _login_lock_key(request, username):
     return f'login-fail:{username}:{request.META.get("REMOTE_ADDR", "")}'
 
 
+def _safe_ensure_builtin_rbac():
+    """同步内置权限的容错封装：数据库繁忙（如 SQLite 锁冲突）时仅记日志，不阻断登录/会话。"""
+    try:
+        ensure_builtin_rbac()
+    except OperationalError:
+        logger.warning('ensure_builtin_rbac 跳过：数据库繁忙（并发写锁）', exc_info=True)
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 @throttle_classes([LoginAnonRateThrottle, LoginUserRateThrottle])
 def login_view(request):
-    ensure_builtin_rbac()
+    _safe_ensure_builtin_rbac()
     serializer = LoginSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     username = serializer.validated_data['username']
@@ -281,7 +294,7 @@ def logout_view(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def current_user_view(request):
-    ensure_builtin_rbac()
+    _safe_ensure_builtin_rbac()
     return Response(UserSerializer(request.user).data)
 
 

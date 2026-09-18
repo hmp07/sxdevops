@@ -27,6 +27,18 @@ SYSTEM_MODULE_CATALOG = [
 
 @transaction.atomic
 def ensure_builtin_rbac():
+    expected_permissions = sum(1 for code, *_ in PERMISSION_DEFINITIONS if permission_feature_enabled(code))
+    # 快速路径：权限与内置角色数量一致时跳过全量重写。
+    # 登录/刷新 profile 高频调用本函数，全量 update_or_create 会在 SQLite 上
+    # 与内置轮询调度器等写事务抢锁（database is locked）；仅在数量变化
+    # （新增权限码/角色）时才执行完整同步，内容漂移可用 /auth/sync/ 或
+    # manage.py seed_data 全量刷新。
+    if (
+        PermissionDefinition.objects.filter(is_builtin=True).count() == expected_permissions
+        and Role.objects.filter(is_builtin=True).count() == len(BUILTIN_ROLES)
+    ):
+        return
+
     permission_by_code = {}
     for index, (code, name, category, description) in enumerate(PERMISSION_DEFINITIONS, start=1):
         if not permission_feature_enabled(code):

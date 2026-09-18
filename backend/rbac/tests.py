@@ -215,6 +215,24 @@ class RbacSecurityHardeningTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn('default_password_warning', response.json())
 
+    def test_login_survives_builtin_sync_lock_error(self):
+        """内置权限同步遇数据库锁（SQLite 并发写）时登录仍应成功。"""
+        from django.core.cache import cache
+        from django.db import OperationalError
+        from unittest.mock import patch
+
+        cache.clear()
+        ensure_builtin_rbac()
+        User.objects.create_user(username='lock-user', password='Admin@123456')
+        with patch('rbac.views.ensure_builtin_rbac', side_effect=OperationalError('database is locked')):
+            response = self.client.post(
+                '/api/auth/login/',
+                {'username': 'lock-user', 'password': 'Admin@123456'},
+                content_type='application/json',
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json().get('token'))
+
 
 class TokenLifecycleTests(TestCase):
     """Token 生命周期：超龄 token 自动失效并删除。"""

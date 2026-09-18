@@ -171,11 +171,14 @@ def _sqlite_database_config(section):
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': db_name,
     }
-    # 演示/本地并发场景：SSE 线程与聊天 worker 线程同时写 SQLite
-    # 默认 5s 锁等待，可通过 SQLITE_TIMEOUT 环境变量调大（仅 sqlite 生效）
-    timeout = int(os.environ.get('SQLITE_TIMEOUT', '0') or 0)
-    if timeout > 0:
-        config['OPTIONS'] = {'timeout': timeout}
+    # 演示/本地并发场景：SSE 线程、聊天 worker 线程与内置轮询调度器同时写 SQLite。
+    # 默认 20s 锁等待（可通过 SQLITE_TIMEOUT 调大）+ WAL 模式（读不阻塞写，
+    # 大幅减少 "database is locked"）
+    timeout = int(os.environ.get('SQLITE_TIMEOUT', '20') or 20)
+    config['OPTIONS'] = {
+        'timeout': timeout,
+        'init_command': 'PRAGMA journal_mode=WAL;',
+    }
     return config
 
 
