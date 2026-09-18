@@ -3,6 +3,8 @@ import { ElMessage } from 'element-plus'
 
 const TOKEN_KEY = 'sxdevops_token'
 const USER_KEY = 'sxdevops_user'
+// 会话存储：与 stores/auth.js 一致（浏览器关闭即失效，重开需重新登录）
+const sessionStore = window.sessionStorage
 let isHandlingSessionExpired = false
 
 const request = axios.create({
@@ -72,8 +74,8 @@ function redirectToLogin() {
 }
 
 function handleSessionExpired() {
-    localStorage.removeItem(TOKEN_KEY)
-    localStorage.removeItem(USER_KEY)
+    sessionStore.removeItem(TOKEN_KEY)
+    sessionStore.removeItem(USER_KEY)
 
     if (isHandlingSessionExpired) return
     isHandlingSessionExpired = true
@@ -85,7 +87,7 @@ function handleSessionExpired() {
 }
 
 request.interceptors.request.use((config) => {
-    const token = localStorage.getItem(TOKEN_KEY)
+    const token = sessionStore.getItem(TOKEN_KEY)
     if (token) {
         config.headers = config.headers || {}
         config.headers.Authorization = `Token ${token}`

@@ -4,24 +4,30 @@ import { getCurrentUser, login as loginApi, logout as logoutApi } from '@/api/mo
 
 const TOKEN_KEY = 'sxdevops_token'
 const USER_KEY = 'sxdevops_user'
+// 会话存储：浏览器关闭即清除，重开必须重新登录认证（安全加固）
+const sessionStore = window.sessionStorage
 
 function loadStoredUser() {
   try {
-    const raw = localStorage.getItem(USER_KEY)
+    const raw = sessionStore.getItem(USER_KEY)
     return raw ? JSON.parse(raw) : null
   } catch {
-    localStorage.removeItem(USER_KEY)
+    sessionStore.removeItem(USER_KEY)
     return null
   }
 }
 
 export const useAuthStore = defineStore('auth', () => {
-  const token = ref(localStorage.getItem(TOKEN_KEY) || '')
+  const token = ref(sessionStore.getItem(TOKEN_KEY) || '')
   const currentUser = ref(loadStoredUser())
   const initialized = ref(false)
 
   const isAuthenticated = computed(() => !!token.value && !!currentUser.value)
   const permissions = computed(() => currentUser.value?.effective_permissions || [])
+  // 零权限账号：非超管且没有任何有效权限（用于 403 死循环治理）
+  const hasNoAccess = computed(
+    () => !!currentUser.value && !currentUser.value.is_superuser && permissions.value.length === 0
+  )
   const displayName = computed(() => {
     if (!currentUser.value) return ''
     return currentUser.value.display_name || currentUser.value.username || ''
@@ -30,18 +36,18 @@ export const useAuthStore = defineStore('auth', () => {
   function persistToken(value) {
     token.value = value || ''
     if (token.value) {
-      localStorage.setItem(TOKEN_KEY, token.value)
+      sessionStore.setItem(TOKEN_KEY, token.value)
     } else {
-      localStorage.removeItem(TOKEN_KEY)
+      sessionStore.removeItem(TOKEN_KEY)
     }
   }
 
   function persistUser(user) {
     currentUser.value = user || null
     if (currentUser.value) {
-      localStorage.setItem(USER_KEY, JSON.stringify(currentUser.value))
+      sessionStore.setItem(USER_KEY, JSON.stringify(currentUser.value))
     } else {
-      localStorage.removeItem(USER_KEY)
+      sessionStore.removeItem(USER_KEY)
     }
   }
 
@@ -57,6 +63,14 @@ export const useAuthStore = defineStore('auth', () => {
   async function bootstrap() {
     if (initialized.value) return currentUser.value
     initialized.value = true
+
+    // 清理历史 localStorage 残留（旧版本持久化登录态，迁移到 sessionStorage 后不再使用）
+    try {
+      window.localStorage.removeItem(TOKEN_KEY)
+      window.localStorage.removeItem(USER_KEY)
+    } catch {
+      /* ignore */
+    }
 
     if (!token.value) {
       persistUser(null)
@@ -125,6 +139,7 @@ export const useAuthStore = defineStore('auth', () => {
     initialized,
     isAuthenticated,
     permissions,
+    hasNoAccess,
     displayName,
     bootstrap,
     login,

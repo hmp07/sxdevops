@@ -570,7 +570,8 @@ router.beforeEach(async (to) => {
   }
 
   if (to.meta.public) {
-    if (to.name === 'Login' && authStore.isAuthenticated) {
+    // 仅"有可用权限"的已登录用户才从登录页弹回首页；零权限用户允许停留在登录页切换账号
+    if (to.name === 'Login' && authStore.isAuthenticated && !authStore.hasNoAccess) {
       return '/dashboard'
     }
     return true
@@ -578,6 +579,11 @@ router.beforeEach(async (to) => {
 
   if (!authStore.isAuthenticated) {
     return { name: 'Login', query: { redirect: to.fullPath } }
+  }
+
+  // 零权限账号：任何页面入口都引导回登录页（403 死循环治理）
+  if (authStore.hasNoAccess) {
+    return { name: 'Login' }
   }
 
   const allowed = to.meta.permission
@@ -600,6 +606,37 @@ router.beforeEach(async (to) => {
 
   return true
 })
+
+// 首个可访问页面（按侧边栏菜单顺序），供 403 页"回到首页"与将来复用
+const ACCESSIBLE_ROUTE_TABLE = [
+  { path: '/dashboard', permission: 'ops.dashboard.view' },
+  { path: '/aiops/chat', permission: 'aiops.chat.view' },
+  { path: '/observability/boards', permission: 'ops.grafana.view' },
+  { path: '/observability/metrics', permission: 'ops.metric.query' },
+  { path: '/logs/query', permission: 'ops.log.query' },
+  { path: '/observability/tracing', permission: 'ops.trace.view' },
+  { path: '/observability/datasources', anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.zabbix.datasource.view'] },
+  { path: '/alerts', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
+  { path: '/events/wall', permission: 'eventwall.view' },
+  { path: '/tasks/workbench', anyPermissions: ['ops.task.execute', 'ops.host.execute'] },
+  { path: '/workorders/releases', anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'] },
+  { path: '/workorders/sql', anyPermissions: ['sqlaudit.datasource.view', 'sqlaudit.order.view', 'sqlaudit.order.submit', 'sqlaudit.order.review', 'sqlaudit.order.execute', 'sqlaudit.query.view', 'sqlaudit.query.execute'] },
+  { path: '/workorders/transactions', anyPermissions: ['ops.ticket.view', 'ops.ticket.manage', 'ops.ticket.approve'] },
+  { path: '/containers/k8s', permission: 'ops.k8s.view' },
+  { path: '/cmdb/dashboard', permission: 'cmdb.dashboard.view' },
+  { path: '/users', anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view'] },
+]
+
+export function firstAccessibleRoute() {
+  const authStore = useAuthStore(pinia)
+  for (const entry of ACCESSIBLE_ROUTE_TABLE) {
+    const ok = entry.permission
+      ? authStore.hasPermission(entry.permission)
+      : authStore.hasAnyPermission(entry.anyPermissions || [])
+    if (ok) return entry.path
+  }
+  return null
+}
 
 export default router
 
