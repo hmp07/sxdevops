@@ -3,6 +3,38 @@ import { ElMessage } from 'element-plus'
 import AppLayout from '@/layout/AppLayout.vue'
 import { pinia } from '@/stores'
 import { useAuthStore } from '@/stores/auth'
+import { getModuleSettings } from '@/api/modules/rbac'
+
+// 模块开关缓存：路由守卫按模块停用状态拦截（与 AppLayout 菜单共用同一事件刷新）
+let moduleSettingsCache = null
+let moduleSettingsPromise = null
+
+async function isModuleEnabled(moduleKey) {
+  if (moduleSettingsCache === null) {
+    if (!moduleSettingsPromise) {
+      moduleSettingsPromise = getModuleSettings({ skipErrorMessage: true })
+        .then((items) => {
+          moduleSettingsCache = Array.isArray(items) ? items : []
+          return moduleSettingsCache
+        })
+        .catch(() => {
+          moduleSettingsCache = []
+          return moduleSettingsCache
+        })
+        .finally(() => {
+          moduleSettingsPromise = null
+        })
+    }
+    moduleSettingsCache = await moduleSettingsPromise
+  }
+  const entry = moduleSettingsCache.find((item) => item.code === moduleKey)
+  if (!entry) return true
+  return entry.required ? true : entry.enabled !== false
+}
+
+window.addEventListener('sxdevops-module-settings-updated', () => {
+  moduleSettingsCache = null
+})
 
 const TASK_SCHEDULES_VISIBLE = false
 const observabilityBoardPermissions = ['ops.grafana.view']
@@ -154,6 +186,7 @@ const routes = [
         name: 'WorkOrderReleases',
         component: () => import('@/views/Deployments.vue'),
         meta: {
+          moduleKey: 'workorders',
           title: '应用发布',
           icon: 'Promotion',
           anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'],
@@ -164,6 +197,7 @@ const routes = [
         name: 'WorkOrderApprovalFlows',
         component: () => import('@/views/Deployments.vue'),
         meta: {
+          moduleKey: 'workorders',
           title: '审批流',
           icon: 'Checked',
           anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'],
@@ -174,6 +208,7 @@ const routes = [
         name: 'WorkOrderSqlAudit',
         component: () => import('@/views/SqlAudit.vue'),
         meta: {
+          moduleKey: 'workorders',
           title: 'SQL 审计',
           icon: 'DataAnalysis',
           defaultTab: 'orders',
@@ -193,6 +228,7 @@ const routes = [
         name: 'TransactionTickets',
         component: () => import('@/views/TransactionTickets.vue'),
         meta: {
+          moduleKey: 'workorders',
           title: '事务工单',
           icon: 'Tickets',
           anyPermissions: ['ops.ticket.view', 'ops.ticket.manage', 'ops.ticket.approve'],
@@ -202,13 +238,13 @@ const routes = [
         path: 'containers/k8s',
         name: 'ContainerManageK8s',
         component: () => import('@/views/K8sManage.vue'),
-        meta: { title: 'K8s 集群', icon: 'Connection', permission: 'ops.k8s.view' },
+        meta: { title: 'K8s 集群', icon: 'Connection', permission: 'ops.k8s.view', moduleKey: 'containers' },
       },
       {
         path: 'containers/docker',
         name: 'ContainerManageDocker',
         component: () => import('@/views/ContainerManage.vue'),
-        meta: { title: 'Docker 环境', icon: 'Platform', permission: 'ops.docker.view' },
+        meta: { title: 'Docker 环境', icon: 'Platform', permission: 'ops.docker.view', moduleKey: 'containers' },
       },
       {
         path: 'logs',
@@ -551,6 +587,15 @@ router.beforeEach(async (to) => {
   if (!allowed) {
     ElMessage.warning('你没有访问该页面的权限')
     return { name: 'Forbidden' }
+  }
+
+  // 模块开关拦截：被停用的模块即使有权限也无法通过 URL 直达页面（后端 API 仍由 RBAC 保护）
+  if (to.meta.moduleKey) {
+    const moduleEnabled = await isModuleEnabled(to.meta.moduleKey)
+    if (!moduleEnabled) {
+      ElMessage.warning('该模块已被停用')
+      return { name: 'Forbidden' }
+    }
   }
 
   return true

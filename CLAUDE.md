@@ -16,8 +16,10 @@ pip install -r requirements.txt
 python manage.py migrate                  # apply migrations
 python manage.py seed_data                # seed demo data (users, hosts, tasks)
 python manage.py seed_templates           # seed AI agent & task templates
-python -m daphne -b 0.0.0.0 -p 8000 sxdevops.asgi:application
+DEBUG=1 python -m daphne -b 0.0.0.0 -p 8000 sxdevops.asgi:application
 ```
+
+> 本地开发需显式 `DEBUG=1`：DEBUG 默认已改为 `0`，且生产模式（DEBUG=0）下缺失 SECRET_KEY 会拒绝启动。测试运行器不受影响（自动使用开发回退密钥）。历史明文凭据可用 `python manage.py encrypt_legacy_credentials --apply` 回填加密。
 
 Backend tests:
 ```bash
