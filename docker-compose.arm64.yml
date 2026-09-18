@@ -38,7 +38,9 @@ services:
       # Django 密钥：部署时生成随机值注入（openssl rand -hex 32）
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required, see .env.arm64.example}
       DEBUG: "0"
-      CORS_ALLOW_ALL_ORIGINS: "1"
+      # 允许访问的主机名/IP（逗号分隔）：生产建议按实际地址收窄，如 10.4.0.249
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+      CORS_ALLOW_ALL_ORIGINS: "0"
       # 容器启动流程: 等待 DB → 迁移 → 模板种子 + 管理员账号初始化（生产默认不加载演示种子数据）
       SXDEVOPS_WAIT_FOR_DB: "1"
       SXDEVOPS_MIGRATE: "1"
