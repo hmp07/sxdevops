@@ -23,8 +23,8 @@ services:
       # 生产部署必填：docker compose 时通过 .env 或 -e 注入随机值，缺失则容器启动即报错
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required - generate with "openssl rand -base64 48"}
       DEBUG: "0"
-      # 允许访问的主机名/IP（逗号分隔）：生产建议在 .env 收窄为实际地址
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+      # 允许访问的主机名/IP（逗号分隔）：必填，按实际访问地址配置（Host 头防护，不允许 * 兜底）
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?ALLOWED_HOSTS is required - set to your actual domain/IP in .env}
       CORS_ALLOW_ALL_ORIGINS: "0"
       SXDEVOPS_WAIT_FOR_DB: "1"
       SXDEVOPS_MIGRATE: "1"
