@@ -1459,6 +1459,26 @@ class ObservabilityViewsTests(TestCase):
         self.assertIs(first_call_kwargs['verify'], False)
         self.assertEqual(first_call_kwargs['timeout'], 17)
 
+    @patch('ops.observability_views.http_requests.get')
+    def test_grafana_test_connection_embed_probe_reports_anonymous_off(self, mock_get):
+        """匿名访问未开启（匿名 /api/org 返回 401）时给出可读的嵌入预警。"""
+        GrafanaSetting.objects.create(name='default', url='http://grafana.embed.internal.local', api_token='glsa_embed')
+        health_resp = MagicMock()
+        health_resp.status_code = 200
+        health_resp.json.return_value = {'version': '12.4.2'}
+        probe_resp = MagicMock()
+        probe_resp.status_code = 401
+        org_resp = MagicMock()
+        org_resp.status_code = 200
+        org_resp.json.return_value = {'id': 1, 'name': 'Main Org.'}
+        mock_get.side_effect = [health_resp, probe_resp, org_resp]
+
+        response = self.client.post('/api/observability/grafana/test/', {}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn('匿名访问未开启', payload['embed_warning'])
+
     def test_observability_overview_degrades_when_tracing_provider_unconfigured(self):
         """链路追踪未配置时 overview 降级返回 200 + warnings，不再 400 阻断聚合页。"""
         with override_settings(

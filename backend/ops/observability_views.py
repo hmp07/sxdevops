@@ -1771,22 +1771,19 @@ def grafana_test_connection(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-    # 嵌入就绪探测：带匿名身份的请求访问 /login，若被 302 跳离登录页说明匿名访问已启用
+    # 嵌入就绪探测：匿名请求 /api/org——匿名访问开启时返回 200 组织信息，
+    # 未开启时返回 401（Grafana 12 中 /login 恒 200，不能再作为判定依据）
     embed_warning = ''
     try:
         probe = http_requests.get(
-            f'{url}/login',
-            headers={'Accept': 'text/html'},
+            f'{url}/api/org',
+            headers={'Accept': 'application/json'},
             timeout=timeout,
             verify=verify,
             allow_redirects=False,
         )
-        if probe.status_code in (302, 301):
-            location = str(probe.headers.get('Location') or '')
-            if '/login' in location:
-                embed_warning = '匿名访问可能未开启，iframe 嵌入将跳转登录页'
-        elif probe.status_code == 200:
-            embed_warning = '匿名访问可能未开启，iframe 嵌入将停留在登录页（请确认 allow_embedding 与匿名/JWT 配置）'
+        if probe.status_code in (401, 403):
+            embed_warning = '匿名访问未开启，iframe 嵌入将跳转登录页（Grafana 需启用 [auth.anonymous] 或配置 JWT 免密）'
     except Exception:
         pass
 
