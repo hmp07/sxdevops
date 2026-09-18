@@ -581,11 +581,6 @@ router.beforeEach(async (to) => {
     return { name: 'Login', query: { redirect: to.fullPath } }
   }
 
-  // 零权限账号：任何页面入口都引导回登录页（403 死循环治理）
-  if (authStore.hasNoAccess) {
-    return { name: 'Login' }
-  }
-
   const allowed = to.meta.permission
     ? authStore.hasPermission(to.meta.permission)
     : authStore.hasAnyPermission(to.meta.anyPermissions || [])

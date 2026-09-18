@@ -102,7 +102,7 @@ export const useAuthStore = defineStore('auth', () => {
     persistToken(response.token)
     setUser(response.user)
     initialized.value = true
-    return response.user
+    return response
   }
 
   async function logout() {

@@ -26,6 +26,7 @@ from .serializers import (
     user_has_escalation_privileges,
 )
 from .services import (
+    DEFAULT_ADMIN_PASSWORD,
     DEMO_ACCOUNT_MUTATION_MESSAGE,
     ensure_builtin_rbac,
     ensure_default_superuser,
@@ -261,7 +262,11 @@ def login_view(request):
         return Response({'detail': '用户已被禁用。'}, status=status.HTTP_403_FORBIDDEN)
     token, _ = Token.objects.get_or_create(user=user)
     token = rotate_token_if_expired(token)
-    return Response({'token': token.key, 'user': UserSerializer(user).data})
+    payload = {'token': token.key, 'user': UserSerializer(user).data}
+    # 默认密码警示：仍在使用默认口令的账号（如 admin/演示账号）登录时提示修改
+    if user.check_password(DEFAULT_ADMIN_PASSWORD):
+        payload['default_password_warning'] = True
+    return Response(payload)
 
 
 @api_view(['POST'])

@@ -118,8 +118,8 @@ const router = useRouter()
 const authStore = useAuthStore()
 const loading = ref(false)
 const form = reactive({
-  username: 'admin',
-  password: 'Admin@123456',
+  username: '',
+  password: '',
 })
 
 const features = [
@@ -159,8 +159,11 @@ async function handleLogin() {
 
   loading.value = true
   try {
-    await authStore.login(form)
+    const response = await authStore.login(form)
     ElMessage.success('登录成功')
+    if (response?.default_password_warning) {
+      ElMessage.warning('当前账号仍在使用默认密码，请尽快修改！')
+    }
     router.replace('/dashboard')
   } finally {
     loading.value = false

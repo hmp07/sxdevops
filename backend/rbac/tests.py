@@ -187,6 +187,34 @@ class RbacSecurityHardeningTests(TestCase):
         )
         self.assertEqual(response.status_code, 429)
 
+    def test_login_with_default_password_reports_warning(self):
+        from django.core.cache import cache
+
+        cache.clear()  # 清空登录限流/锁定计数（前置锁定测试耗尽限流预算）
+        ensure_builtin_rbac()
+        User.objects.create_superuser(username='warn-admin', password='Admin@123456')
+        response = self.client.post(
+            '/api/auth/login/',
+            {'username': 'warn-admin', 'password': 'Admin@123456'},
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json().get('default_password_warning'))
+
+    def test_login_with_custom_password_has_no_warning(self):
+        from django.core.cache import cache
+
+        cache.clear()  # 清空登录限流/锁定计数（前置锁定测试耗尽限流预算）
+        ensure_builtin_rbac()
+        User.objects.create_superuser(username='safe-admin', password='Str0ng#Custom!Pass')
+        response = self.client.post(
+            '/api/auth/login/',
+            {'username': 'safe-admin', 'password': 'Str0ng#Custom!Pass'},
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('default_password_warning', response.json())
+
 
 class TokenLifecycleTests(TestCase):
     """Token 生命周期：超龄 token 自动失效并删除。"""
