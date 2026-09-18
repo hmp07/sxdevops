@@ -2629,6 +2629,8 @@ def build_knowledge_graph(params=None):
 
     if _cmdb_enabled:
         _cmdb_ci_covered = set(_cmdb_mapping_by_ci_id.keys())  # 已有 Zabbix 映射的 CI，不重复创建主机节点
+        # 默认环境节点名（CI 自身未标环境时回退到筛选环境；均无则不建环境边）
+        _default_env_name = _clean(next(iter(selected_env))) if selected_env else ''
 
         for ci_id, ci in _cmdb_ci_lookup.items():
             ci_type_name = ci.ci_type.name if ci.ci_type else ''
@@ -2651,7 +2653,9 @@ def build_knowledge_graph(params=None):
                             {'label': '状态', 'value': ci.status},
                         ],
                     )
-                    add_edge(env_id, node_id, '包含系统', 'environment_system')
+                    env_name = _clean(ci.environment) or _default_env_name
+                    if env_name:
+                        add_edge(_node_key('environment', env_name), node_id, '包含系统', 'environment_system')
                 _cmdb_system_nodes[ci.name] = node_id
 
             # -- BusinessProcess → service 节点 --
@@ -2673,7 +2677,9 @@ def build_knowledge_graph(params=None):
                 if sys_node:
                     add_edge(sys_node, node_id, '包含流程', 'system_service')
                 elif bl:
-                    add_edge(env_id, node_id, '业务流程', 'environment_service')
+                    env_name = _clean(ci.environment) or _default_env_name
+                    if env_name:
+                        add_edge(_node_key('environment', env_name), node_id, '业务流程', 'environment_service')
 
             # -- DBServer / WebServer / WebApplication → runtime_component 节点 --
             elif ci_type_name in ('数据库服务器', 'Web服务器', 'Web应用'):
@@ -2719,7 +2725,9 @@ def build_knowledge_graph(params=None):
                 if sys_node:
                     add_edge(sys_node, node_id, '包含主机', 'system_infrastructure')
                 else:
-                    add_edge(env_id, node_id, '孤立主机', 'environment_infrastructure')
+                    env_name = _clean(ci.environment) or _default_env_name
+                    if env_name:
+                        add_edge(_node_key('environment', env_name), node_id, '孤立主机', 'environment_infrastructure')
 
         # -- 加载 CIRelation 作为图谱边 --
         ci_ids = set(_cmdb_ci_lookup.keys())

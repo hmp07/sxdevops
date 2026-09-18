@@ -43,11 +43,14 @@ class RBACMiddleware(AgentMiddleware):
     @property
     def permissions(self) -> set:
         if self._permissions is None:
-            if self.user and hasattr(self.user, 'get_all_permissions'):
-                close_old_connections()
-                self._permissions = set(self.user.get_all_permissions())
-            else:
-                self._permissions = set()
+            # 平台 RBAC 语义：effective_permissions（自定义权限码），
+            # 而非 Django 原生 get_all_permissions（'ops.view_alert' 风格，与平台码不匹配）
+            from rbac.services import get_user_effective_permissions
+
+            close_old_connections()
+            self._permissions = set(
+                get_user_effective_permissions(self.user) if self.user else []
+            )
         return self._permissions
 
     def _tool_name_to_permission(self, tool_name: str) -> Optional[str]:
@@ -127,11 +130,13 @@ class AuditMiddleware(AgentMiddleware):
         started_at = time.time()
 
         # 执行工具调用
+        caught = None
         try:
             result = handler(request)
             success = True
             error_msg = ''
         except Exception as exc:
+            caught = exc
             result = None
             success = False
             error_msg = str(exc)[:500]
@@ -156,7 +161,7 @@ class AuditMiddleware(AgentMiddleware):
                 logger.warning("工具审计写入失败 (%s): %s", tool_name, exc)
 
         if not success:
-            raise  # re-raise after audit
+            raise caught  # re-raise after audit
 
         return result
 
