@@ -54,6 +54,22 @@ def resolve_problem_host(client, problem):
     return '', '', ''
 
 
+def _unified_fingerprint(problem):
+    """与 webhook 路径完全一致的指纹算法（双路径去重的关键）。
+
+    webhook 侧经 normalize_alert_payload → _fingerprint('zabbix', {'fingerprint': triggerid 优先})
+    → sha256('zabbix:{triggerid}')；此处复用同一 _fingerprint 实现，杜绝算法漂移。
+    """
+    from ops.alerting import _fingerprint
+
+    trigger_id = str(problem.get('objectid') or problem.get('triggerid') or problem.get('trigger_id') or '')
+    event_id = str(problem.get('eventid') or problem.get('event_id') or '')
+    base = trigger_id or event_id
+    if not base:
+        return ''
+    return _fingerprint('zabbix', {'fingerprint': base, 'external_id': event_id})
+
+
 def _build_normalized(problem, host_name='', host_id='', visible_name='', env_name=''):
     """将 Zabbix problem 构建为统一告警流水线的标准化字典"""
     event_id = str(problem.get('eventid', ''))
@@ -70,7 +86,7 @@ def _build_normalized(problem, host_name='', host_id='', visible_name='', env_na
         'source': 'zabbix_api',
         'source_type': 'zabbix',
         'external_id': event_id,
-        'fingerprint': f'zabbix:{event_id}',
+        'fingerprint': _unified_fingerprint(problem),
         'group_key': '',
         'message': problem.get('name', ''),
         'resource_type': 'host',

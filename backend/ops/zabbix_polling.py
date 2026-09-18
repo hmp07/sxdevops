@@ -1,10 +1,21 @@
 """Zabbix 告警轮询服务 — 供管理命令与内置调度器共用。"""
 
+import os
+from datetime import timedelta
+
 from django.utils.timezone import now
 
 from ops.models import ZabbixDataSource
 from ops.zabbix_alert_bridge import resolve_problem_host, upsert_alert_from_zabbix_problem
 from ops.zabbix_client import ZabbixClient
+
+
+def _poll_window_hours():
+    value = os.environ.get('SXDEVOPS_ZABBIX_POLL_WINDOW_HOURS', '24').strip()
+    try:
+        return max(int(value), 1)
+    except (TypeError, ValueError):
+        return 24
 
 
 def _log(out, msg):
@@ -14,6 +25,10 @@ def _log(out, msg):
 
 def poll_zabbix_alerts_once(datasource_id=None, dry_run=False, out=None):
     """单轮轮询启用 Zabbix 数据源的问题并导入告警。
+
+    拉取最近 SXDEVOPS_ZABBIX_POLL_WINDOW_HOURS（默认 24）小时窗口内的
+    问题（含已恢复问题，r_eventid 非空 → 原告警转 resolved），作为
+    webhook 推送的小时级兜底；指纹与 webhook 路径一致，天然去重。
 
     out: 可选 stdout 类对象（None 则静默）。
     返回 {'datasource_count', 'problem_count', 'created', 'updated', 'errors'}。
@@ -31,19 +46,21 @@ def poll_zabbix_alerts_once(datasource_id=None, dry_run=False, out=None):
         'errors': [],
     }
 
+    window_from = int((now() - timedelta(hours=_poll_window_hours())).timestamp())
+
     for ds in sources:
         stats['datasource_count'] += 1
         _log(out, f'正在从 "{ds.name}" ({ds.api_url}) 拉取告警...\n')
         try:
             client = ZabbixClient(ds)
-            result = client.get_problems()
+            result = client.get_problems(recent=False, time_from=window_from)
             if not isinstance(result, list):
                 error = result.get('error', '未知错误') if isinstance(result, dict) else '未知错误'
                 stats['errors'].append(f'{ds.name}: {error}')
                 continue
             problems = result
             stats['problem_count'] += len(problems)
-            _log(out, f'  获取到 {len(problems)} 个活跃问题\n')
+            _log(out, f'  获取到 {len(problems)} 个问题（{_poll_window_hours()}h 窗口，含恢复事件）\n')
 
             if dry_run:
                 for p in problems[:5]:

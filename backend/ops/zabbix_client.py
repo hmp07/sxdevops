@@ -295,16 +295,23 @@ class ZabbixClient:
             return {'error': '认证失败'}
         return self._call('trigger.get', params)
 
-    def get_problems(self, host_ids=None, severities=None):
-        """获取当前问题（Zabbix 7.4 problem.get 不支持 selectHosts/sortfield）"""
+    def get_problems(self, host_ids=None, severities=None, recent=True, time_from=None):
+        """获取问题列表（Zabbix 7.4 problem.get 不支持 selectHosts/sortfield）。
+
+        recent=False 时返回历史窗口内的问题（含已恢复问题，r_eventid 非空），
+        配合 time_from（clock 时间戳）限定窗口；默认仅活跃问题。
+        """
         params = {
             'output': ['eventid', 'name', 'severity', 'clock', 'source', 'objectid',
                        'acknowledged', 'r_eventid'],
+            'recent': recent,
         }
         if host_ids:
             params['hostids'] = host_ids
         if severities:
             params['severities'] = severities
+        if time_from:
+            params['time_from'] = str(time_from)
         if not self._ensure_auth():
             return {'error': '认证失败'}
         return self._call('problem.get', params)

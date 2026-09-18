@@ -46,6 +46,8 @@ services:
       SXDEVOPS_MIGRATE: "1"
       # 生产部署默认关闭演示种子（seed_data 全部为演示数据）；管理员账号由 ensure_admin 按 .env 口令创建/加固
       SXDEVOPS_SEED_DATA: "0"
+      # Zabbix 告警混合接入：webhook 推送为主，内置轮询为小时级兜底（整点对齐）
+      SXDEVOPS_ZABBIX_POLL_INTERVAL: ${SXDEVOPS_ZABBIX_POLL_INTERVAL:-3600}
       SXDEVOPS_SEED_TEMPLATES: "1"
       # 管理员账号初始化口令（.env 注入，未配置启动即报错）
       SXDEVOPS_ADMIN_PASSWORD: ${SXDEVOPS_ADMIN_PASSWORD:?SXDEVOPS_ADMIN_PASSWORD is required, see .env.arm64.example}

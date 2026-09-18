@@ -14,8 +14,9 @@ logger = logging.getLogger(__name__)
 _scheduler_lock = threading.Lock()
 _scheduler_started = False
 
-# Zabbix 告警轮询内置调度（不再依赖服务器外部 cron）
-ZABBIX_POLL_INTERVAL = int(os.environ.get('SXDEVOPS_ZABBIX_POLL_INTERVAL', 300))
+# Zabbix 告警轮询内置调度（不再依赖服务器外部 cron）。
+# 混合方案下轮询为小时级兜底（webhook 推送负责秒级重要告警），默认 3600s。
+ZABBIX_POLL_INTERVAL = int(os.environ.get('SXDEVOPS_ZABBIX_POLL_INTERVAL', 3600))
 DISABLE_ZABBIX_POLL = os.environ.get('SXDEVOPS_DISABLE_ZABBIX_POLL') == '1'
 
 # 事件墙滚动保留：非外部接入事件保留天数（0 = 不清理）
@@ -75,16 +76,28 @@ def run_daily_event_cleanup():
 
 
 def run_observability_history_scheduler_loop():
-    """内置调度主循环：每轮独立 try/except，异常自愈（下轮重试），线程随进程退出。"""
+    """内置调度主循环：每轮独立 try/except，异常自愈（下轮重试），线程随进程退出。
+
+    小时级间隔时对齐整点运行（首轮启动即执行，随后睡到下一个整点），
+    避免长时间漂移。
+    """
     global _last_daily_cleanup_date
     logger.info('zabbix alert poll scheduler started (interval=%ss)', ZABBIX_POLL_INTERVAL)
     while True:
         run_zabbix_poll_once()
+        # 兜底重扫：未完成 AI 分析的 critical 活跃 zabbix 告警重新入队（覆盖进程重启/漏触发）
+        try:
+            from .alert_ai_analysis import requeue_unanalyzed_alerts
+
+            requeue_unanalyzed_alerts()
+        except Exception:
+            logger.exception('requeue unanalyzed alerts failed')
         today = timezone.localtime().date()
         if _last_daily_cleanup_date != today:
             _last_daily_cleanup_date = today
             run_daily_event_cleanup()
-        time.sleep(ZABBIX_POLL_INTERVAL)
+        sleep_seconds = _seconds_until_next_hour() if ZABBIX_POLL_INTERVAL >= 3600 else ZABBIX_POLL_INTERVAL
+        time.sleep(sleep_seconds)
 
 
 def start_observability_history_scheduler():
