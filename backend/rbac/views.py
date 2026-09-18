@@ -13,6 +13,8 @@ from eventwall.mixins import EventWallModelViewSetMixin
 from eventwall.models import EventRecord
 from eventwall.services import record_event
 
+from .authentication import rotate_token_if_expired
+
 from .models import PermissionDefinition, Role, SystemModuleSetting, UserGroup
 from .permissions import RBACPermissionMixin, build_rbac_permission
 from .serializers import (
@@ -258,6 +260,7 @@ def login_view(request):
     if not user.is_active:
         return Response({'detail': '用户已被禁用。'}, status=status.HTTP_403_FORBIDDEN)
     token, _ = Token.objects.get_or_create(user=user)
+    token = rotate_token_if_expired(token)
     return Response({'token': token.key, 'user': UserSerializer(user).data})
 
 

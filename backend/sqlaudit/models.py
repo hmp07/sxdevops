@@ -1,5 +1,7 @@
 ﻿from django.db import models
 
+from sxdevops.fields import EncryptedCharField
+
 
 class DataSource(models.Model):
     """数据库数据源"""
@@ -14,7 +16,7 @@ class DataSource(models.Model):
     host = models.CharField('主机地址', max_length=256)
     port = models.PositiveIntegerField('端口', default=3306)
     user = models.CharField('用户名', max_length=128)
-    password = models.CharField('密码', max_length=512)
+    password = EncryptedCharField('密码', max_length=512)
     charset = models.CharField('字符集', max_length=32, default='utf8mb4')
     remark = models.TextField('备注', blank=True, default='')
     is_active = models.BooleanField('启用', default=True)

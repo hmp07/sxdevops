@@ -4,6 +4,8 @@ from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
+
+from sxdevops.fields import EncryptedCharField
 from django.utils import timezone
 from django.utils.text import slugify
 
@@ -38,7 +40,7 @@ class Host(models.Model):
     disk_usage = models.FloatField('\u78c1\u76d8\u4f7f\u7528\u7387(%)', default=0)
     ssh_port = models.IntegerField('SSH \u7aef\u53e3', default=22)
     ssh_user = models.CharField('SSH \u7528\u6237', max_length=64, default='root')
-    ssh_password = models.CharField('SSH \u5bc6\u7801', max_length=256, blank=True, default='')
+    ssh_password = EncryptedCharField('SSH \u5bc6\u7801', max_length=256, blank=True, default='')
     source = models.CharField('\u6765\u6e90', max_length=32, default='manual')
     external_id = models.CharField('\u5916\u90e8 ID', max_length=128, blank=True, default='', db_index=True)
     created_at = models.DateTimeField('\u521b\u5efa\u65f6\u95f4', auto_now_add=True)
@@ -133,7 +135,7 @@ class TaskResource(models.Model):
     ip_address = models.GenericIPAddressField('IP 地址', null=True, blank=True)
     ssh_port = models.PositiveIntegerField('SSH 端口', default=22)
     ssh_user = models.CharField('SSH 用户', max_length=64, blank=True, default='root')
-    ssh_password = models.CharField('SSH 密码', max_length=256, blank=True, default='')
+    ssh_password = EncryptedCharField('SSH 密码', max_length=256, blank=True, default='')
     host = models.ForeignKey('Host', on_delete=models.SET_NULL, null=True, blank=True, related_name='task_resources', verbose_name='关联主机')
     external_id = models.CharField('外部 ID', max_length=128, blank=True, default='', db_index=True)
     cluster = models.ForeignKey('K8sCluster', on_delete=models.SET_NULL, null=True, blank=True, related_name='task_resources', verbose_name='K8s 集群')
@@ -1297,7 +1299,7 @@ class ZabbixDataSource(models.Model):
     auth_type = models.CharField('认证方式', max_length=16, choices=[('token', 'API Token'), ('userpass', '用户名/密码')], default='token')
     auth_token = models.CharField('API Token', max_length=256, blank=True, default='')
     username = models.CharField('用户名', max_length=64, blank=True, default='')
-    password = models.CharField('密码', max_length=256, blank=True, default='')
+    password = EncryptedCharField('密码', max_length=256, blank=True, default='')
     tls_verify = models.BooleanField('TLS 验证', default=True)
     timeout = models.PositiveIntegerField('超时(秒)', default=15)
     is_enabled = models.BooleanField('启用', default=True)
@@ -1498,7 +1500,7 @@ class DockerHost(models.Model):
     ip_address = models.GenericIPAddressField('IP 地址')
     ssh_port = models.IntegerField('SSH 端口', default=22)
     ssh_user = models.CharField('SSH 用户', max_length=64, default='root')
-    ssh_password = models.CharField('SSH 密码', max_length=256, blank=True, default='')
+    ssh_password = EncryptedCharField('SSH 密码', max_length=256, blank=True, default='')
     docker_api_version = models.CharField('Docker API 版本', max_length=16, blank=True, default='')
     status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default='disconnected')
     description = models.CharField('描述', max_length=256, blank=True, default='')
@@ -1525,7 +1527,7 @@ class NginxEnvironment(models.Model):
     ip_address = models.GenericIPAddressField('IP 地址')
     ssh_port = models.IntegerField('SSH 端口', default=22)
     ssh_user = models.CharField('SSH 用户', max_length=64, default='root')
-    ssh_password = models.CharField('SSH 密码', max_length=256, blank=True, default='')
+    ssh_password = EncryptedCharField('SSH 密码', max_length=256, blank=True, default='')
     nginx_path = models.CharField('Nginx 路径', max_length=256, default='/etc/nginx')
     status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default='disconnected')
     description = models.CharField('描述', max_length=256, blank=True, default='')

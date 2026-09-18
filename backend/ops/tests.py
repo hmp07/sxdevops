@@ -4157,3 +4157,56 @@ class TaskOwnershipTests(TestCase):
         self.client.force_authenticate(user=self.user_a)
         response = self.client.get(f'/api/host-tasks/{task_b.id}/')
         self.assertEqual(response.status_code, 404)
+
+
+class CredentialEncryptionTests(TestCase):
+    """凭据落库加密：写入侧加密、读取侧透明解密、历史明文兼容、回填命令幂等。"""
+
+    def _raw_value(self, model, pk, field):
+        from django.db import connection
+
+        with connection.cursor() as cur:
+            cur.execute(f'SELECT {field} FROM {model._meta.db_table} WHERE id=%s', [pk])
+            return cur.fetchone()[0]
+
+    def test_host_password_encrypted_at_rest(self):
+        host = Host.objects.create(hostname='enc-host', ip_address='10.0.0.99', ssh_password='secret-pass-123')
+        host.refresh_from_db()
+        raw = self._raw_value(host, host.id, 'ssh_password')
+        self.assertTrue(str(raw).startswith('enc:'), f'库内应为密文，实际: {str(raw)[:24]}...')
+        self.assertEqual(host.ssh_password, 'secret-pass-123')
+
+    def test_legacy_plaintext_reads_transparently(self):
+        host = Host.objects.create(hostname='legacy-host', ip_address='10.0.0.98')
+        from django.db import connection
+
+        with connection.cursor() as cur:
+            cur.execute("UPDATE ops_host SET ssh_password='legacy-plain' WHERE id=%s", [host.id])
+        host.refresh_from_db()
+        self.assertEqual(host.ssh_password, 'legacy-plain')
+
+    def test_encrypt_legacy_credentials_dry_run_and_apply(self):
+        host = Host.objects.create(hostname='migrate-host', ip_address='10.0.0.97')
+        from django.db import connection
+
+        with connection.cursor() as cur:
+            cur.execute("UPDATE ops_host SET ssh_password='migrate-plain' WHERE id=%s", [host.id])
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        out = StringIO()
+        call_command('encrypt_legacy_credentials', stdout=out)
+        self.assertIn('dry-run', out.getvalue())
+        raw = self._raw_value(host, host.id, 'ssh_password')
+        self.assertEqual(str(raw), 'migrate-plain', 'dry-run 不得写入')
+
+        call_command('encrypt_legacy_credentials', '--apply', stdout=out)
+        raw = self._raw_value(host, host.id, 'ssh_password')
+        self.assertTrue(str(raw).startswith('enc:'))
+        host.refresh_from_db()
+        self.assertEqual(host.ssh_password, 'migrate-plain', '解密后值不变')
+        # 幂等：重复执行不改变
+        call_command('encrypt_legacy_credentials', '--apply', stdout=out)
+        raw_again = self._raw_value(host, host.id, 'ssh_password')
+        self.assertEqual(raw, raw_again)

@@ -186,3 +186,38 @@ class RbacSecurityHardeningTests(TestCase):
             content_type='application/json',
         )
         self.assertEqual(response.status_code, 429)
+
+
+class TokenLifecycleTests(TestCase):
+    """Token 生命周期：超龄 token 自动失效并删除。"""
+
+    def test_expired_token_rejected(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+        from rest_framework.authtoken.models import Token
+        from rest_framework.test import APIClient
+
+        ensure_builtin_rbac()
+        user = User.objects.create_user(username='expiring-user', password='Admin@123456')
+        token = Token.objects.create(user=user)
+        Token.objects.filter(pk=token.pk).update(created=timezone.now() - timedelta(days=31))
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+        response = client.get('/api/auth/me/')
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(Token.objects.filter(pk=token.pk).exists(), '超龄 token 应被删除')
+
+    def test_fresh_token_accepted(self):
+        from rest_framework.authtoken.models import Token
+        from rest_framework.test import APIClient
+
+        ensure_builtin_rbac()
+        user = User.objects.create_user(username='fresh-user', password='Admin@123456')
+        token = Token.objects.create(user=user)
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+        response = client.get('/api/auth/me/')
+        self.assertEqual(response.status_code, 200)

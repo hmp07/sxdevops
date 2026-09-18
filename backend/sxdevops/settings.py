@@ -489,7 +489,7 @@ CSRF_COOKIE_SECURE = _bool_value(os.getenv('CSRF_COOKIE_SECURE'), not DEBUG)
 # DRF
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.TokenAuthentication',
+        'rbac.authentication.ExpiringTokenAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [

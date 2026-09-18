@@ -1,5 +1,7 @@
 from django.db import models
 
+from sxdevops.fields import EncryptedCharField
+
 
 class CloudCredential(models.Model):
     PROVIDER_CHOICES = [
@@ -28,7 +30,7 @@ class CloudCredential(models.Model):
     account_name = models.CharField('账号别名', max_length=128, blank=True, default='')
     auth_mode = models.CharField('认证方式', max_length=16, choices=AUTH_MODE_CHOICES, default='aksk')
     access_key_id = models.CharField('Access Key ID', max_length=255, blank=True, default='')
-    access_key_secret = models.CharField('Access Key Secret', max_length=255, blank=True, default='')
+    access_key_secret = EncryptedCharField('Access Key Secret', max_length=255, blank=True, default='')
     project_id = models.CharField('项目 / 租户', max_length=128, blank=True, default='')
     role_arn = models.CharField('角色 ARN', max_length=255, blank=True, default='')
     external_id = models.CharField('External ID', max_length=255, blank=True, default='')
