@@ -67,7 +67,9 @@ environment:
   GF_AUTH_JWT_AUTO_SIGN_UP: "true"
 ```
 
-修改配置后需重启 Grafana 生效。
+修改配置后需重启 Grafana 生效（容器部署需 `docker compose up -d` **重建**容器，环境变量才会重新注入）。
+
+> ⚠ **compose 引号陷阱**：环境变量请使用映射写法（`KEY: "value"`，YAML 会正确剥掉引号）。列表写法 `- KEY="value"` 会把引号当作值的一部分传入容器——例如匿名组织名会变成带字面引号的 `"Main Org."`，匿名登录报 `organization not found`（接口 404）、iframe 始终跳登录页。症状排查：匿名请求 `GET /api/org` 返回 404 即为此问题。
 
 ---
 
@@ -138,7 +140,7 @@ location /grafana/ {
 | 现象 | 处理 |
 |------|------|
 | iframe 一片空白 | ① `allow_embedding = true` 是否生效（改后重启 Grafana）② 浏览器控制台 CSP 报错 |
-| iframe 跳转登录页 | 匿名访问未开启或 JWT secret 不一致；用平台「测试连接」的嵌入就绪探测确认 |
+| iframe 跳转登录页 | 按顺序排查：① 匿名访问未开启（匿名 `GET /api/org` 返回 401）；② 匿名组织名错误（compose 列表写法引号陷阱 → 返回 404 `organization not found`）；③ 平台 URL 为 HTTP 而 Grafana 配置了 `cookie_secure=true`（Secure Cookie 在 HTTP 下不保存，改平台 https 地址并关闭 TLS 验证，或 `cookie_secure=false`）。平台「测试连接」的嵌入就绪探测可辅助确认 ① |
 | 从 Grafana 同步为空列表 | Service Account Token 角色权限不足（需 Viewer）或所属 Org 不对 |
 | 同步列表看板不全 | 看板所在文件夹未授权给 Service Account（Grafana 10+ 新文件夹默认不含 Viewer）；在文件夹 Permissions 中为 Service Account 添加 Viewer |
 | 同步列表看板不全（仅部分可见） | **General 目录权限被清空**：目录内无显式权限的看板继承该限制、仅管理员可见，而带显式看板级授权的看板仍可见，造成"部分可见"现象；在 General 目录 Settings → Permissions 中加回 **Viewer** 角色 |
