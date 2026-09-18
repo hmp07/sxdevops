@@ -61,6 +61,14 @@ def ensure_builtin_rbac():
 
 @transaction.atomic
 def ensure_default_superuser():
+    """开发环境兜底创建默认超管；生产环境（DEBUG=0）禁止自动创建。
+
+    生产超管初始化必须走 manage.py ensure_admin（SXDEVOPS_ADMIN_PASSWORD）。
+    """
+    from django.conf import settings
+
+    if not settings.DEBUG:
+        return
     if User.objects.filter(is_superuser=True).exists():
         return
 
@@ -74,9 +82,26 @@ def ensure_default_superuser():
         role.users.add(user)
 
 
+def _demo_account_enabled():
+    """演示账号机制总开关：SXDEVOPS_ENABLE_DEMO_ACCOUNT 显式设置优先，
+    未设置时仅在 DEBUG 环境或测试运行器中启用（生产环境默认关闭）。"""
+    import os
+    import sys
+
+    from django.conf import settings
+
+    value = os.environ.get('SXDEVOPS_ENABLE_DEMO_ACCOUNT', '').strip()
+    if value in ('1', 'true', 'True'):
+        return True
+    if value in ('0', 'false', 'False'):
+        return False
+    return bool(settings.DEBUG) or 'test' in sys.argv
+
+
 def is_demo_account(user):
     return bool(
-        getattr(user, 'is_authenticated', False)
+        _demo_account_enabled()
+        and getattr(user, 'is_authenticated', False)
         and getattr(user, 'username', '') == DEMO_ACCOUNT_USERNAME
     )
 

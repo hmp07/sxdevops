@@ -8,6 +8,22 @@ from .services import get_user_effective_permissions, is_demo_account
 
 User = get_user_model()
 
+# 提权敏感权限：持有任一权限即可管理用户/角色，属"准超级管理员"能力
+ESCALATION_GUARD_PERMISSIONS = ('rbac.user.manage', 'rbac.role.manage')
+
+
+def _pks(values):
+    """归一化为主键列表（pk__in 不会自动解包模型实例）。"""
+    return [getattr(value, 'pk', value) for value in (values or [])]
+
+
+def user_has_escalation_privileges(target_user):
+    """目标用户是否通过角色/分组持有提权敏感权限（用户/角色管理）。"""
+    return (
+        Role.objects.filter(users=target_user, permissions__code__in=ESCALATION_GUARD_PERMISSIONS).exists()
+        or Role.objects.filter(user_groups__users=target_user, permissions__code__in=ESCALATION_GUARD_PERMISSIONS).exists()
+    )
+
 
 class PermissionDefinitionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -61,6 +77,19 @@ class RoleSerializer(serializers.ModelSerializer):
     def get_group_count(self, obj):
         return obj.user_groups.count()
 
+    def validate(self, attrs):
+        request = self.context.get('request')
+        requester = getattr(request, 'user', None) if request else None
+        if not (requester and requester.is_authenticated and requester.is_superuser):
+            permission_ids = attrs.get('permission_ids')
+            if permission_ids:
+                escalating = PermissionDefinition.objects.filter(
+                    pk__in=_pks(permission_ids), code__in=ESCALATION_GUARD_PERMISSIONS
+                ).exists()
+                if escalating:
+                    raise serializers.ValidationError({'permission_ids': '仅超级管理员可以给角色分配用户/角色管理权限。'})
+        return attrs
+
     def create(self, validated_data):
         permission_ids = validated_data.pop('permission_ids', [])
         instance = super().create(validated_data)
@@ -89,6 +118,19 @@ class UserGroupSerializer(serializers.ModelSerializer):
             'role_ids', 'user_ids', 'roles', 'users',
         ]
         read_only_fields = ['is_builtin', 'created_at', 'updated_at']
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        requester = getattr(request, 'user', None) if request else None
+        if not (requester and requester.is_authenticated and requester.is_superuser):
+            role_ids = attrs.get('role_ids')
+            if role_ids:
+                escalating = Role.objects.filter(
+                    pk__in=_pks(role_ids), permissions__code__in=ESCALATION_GUARD_PERMISSIONS
+                ).exists()
+                if escalating:
+                    raise serializers.ValidationError({'role_ids': '仅超级管理员可以给用户组分配包含用户/角色管理权限的角色。'})
+        return attrs
 
     def create(self, validated_data):
         role_ids = validated_data.pop('role_ids', [])
@@ -141,6 +183,24 @@ class UserSerializer(serializers.ModelSerializer):
     def validate_password(self, value):
         validate_password(value)
         return value
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        requester = getattr(request, 'user', None) if request else None
+        is_super = bool(requester and requester.is_authenticated and requester.is_superuser)
+        if not is_super:
+            # 垂直提权防护：仅超级管理员可修改管理员标记
+            for field in ('is_superuser', 'is_staff'):
+                if field in attrs:
+                    raise serializers.ValidationError({field: '仅超级管理员可以修改该字段。'})
+            # 角色提权防护：非超管不得给用户分配含用户/角色管理权限的角色或分组
+            role_ids = attrs.get('role_ids')
+            if role_ids and Role.objects.filter(pk__in=_pks(role_ids), permissions__code__in=ESCALATION_GUARD_PERMISSIONS).exists():
+                raise serializers.ValidationError({'role_ids': '仅超级管理员可以分配包含用户/角色管理权限的角色。'})
+            group_ids = attrs.get('group_ids')
+            if group_ids and UserGroup.objects.filter(pk__in=_pks(group_ids), roles__permissions__code__in=ESCALATION_GUARD_PERMISSIONS).exists():
+                raise serializers.ValidationError({'group_ids': '仅超级管理员可以分配包含用户/角色管理权限的用户组。'})
+        return attrs
 
     def create(self, validated_data):
         password = validated_data.pop('password', None)

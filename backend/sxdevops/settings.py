@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 import json
 import os
+import sys
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -343,18 +344,24 @@ def _build_cache_config():
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv(
-    'SECRET_KEY',
-    'django-insecure-ag#xxnjm^46$=ye()w$yma8r8oy3&wfq!8_=bm!kwe0e((&y3-',
-)
-
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = _bool_value(os.getenv('DEBUG'), True)
+DEBUG = _bool_value(os.getenv('DEBUG'), False)
+
+# SECURITY WARNING: keep the secret key used in production secret!
+_SECRET_KEY_FALLBACK = 'django-insecure-ag#xxnjm^46$=ye()w$yma8r8oy3&wfq!8_=bm!kwe0e((&y3-'
+_IS_TEST_RUN = 'test' in sys.argv
+SECRET_KEY = os.getenv('SECRET_KEY', '')
+if not SECRET_KEY:
+    # 开发环境（DEBUG=1）与测试运行器允许回退固定密钥；
+    # 生产环境（DEBUG=0）缺失 SECRET_KEY 直接拒绝启动
+    if DEBUG or _IS_TEST_RUN:
+        SECRET_KEY = _SECRET_KEY_FALLBACK
+    else:
+        raise RuntimeError('SECRET_KEY 未配置：生产环境必须通过环境变量注入随机密钥')
 
 ALLOWED_HOSTS = [
     host.strip()
-    for host in os.getenv('ALLOWED_HOSTS', '*').split(',')
+    for host in os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
     if host.strip()
 ]
 
@@ -470,7 +477,11 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS
-CORS_ALLOW_ALL_ORIGINS = _bool_value(os.getenv('CORS_ALLOW_ALL_ORIGINS'), True)
+CORS_ALLOW_ALL_ORIGINS = _bool_value(os.getenv('CORS_ALLOW_ALL_ORIGINS'), False)
+
+# Cookie 安全：生产（DEBUG=0）默认仅 HTTPS 下发；开发环境默认关闭以支持 http
+SESSION_COOKIE_SECURE = _bool_value(os.getenv('SESSION_COOKIE_SECURE'), not DEBUG)
+CSRF_COOKIE_SECURE = _bool_value(os.getenv('CSRF_COOKIE_SECURE'), not DEBUG)
 
 # DRF
 REST_FRAMEWORK = {

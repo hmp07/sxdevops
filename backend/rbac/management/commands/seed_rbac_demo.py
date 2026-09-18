@@ -16,7 +16,7 @@ DEMO_USERS = [
         'last_name': 'Demo',
         'roles': ['ops-admin'],
         'groups': ['ops-team'],
-        'is_staff': True,
+        'is_staff': False,
     },
     {
         'username': 'dev_demo',
@@ -53,7 +53,7 @@ DEMO_USERS = [
         'password': 'Demo#123',
         'roles': ['platform-admin'],
         'groups': ['visitors'],
-        'is_staff': True,
+        'is_staff': False,
     },
 ]
 

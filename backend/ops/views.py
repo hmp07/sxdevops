@@ -2145,8 +2145,6 @@ class LogEntryViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     }
 
 
-@api_view(['GET'])
-@permission_classes([IsAuthenticated, build_rbac_permission('ops.dashboard.view')])
 def _zabbix_host_online(host):
     """Zabbix 主机在线判断：通过主接口 available 字段"""
     ifaces = host.get('interfaces', []) or []
@@ -2177,6 +2175,8 @@ def _get_zabbix_dashboard_stats():
         return {'datasources': 0, 'hosts_total': 0, 'hosts_online': 0, 'problems_total': 0, 'alerts_total': 0, 'alerts_critical': 0}
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.dashboard.view')])
 def dashboard_stats(request):
     host_total = Host.objects.count()
     host_status = dict(Host.objects.values_list('status').annotate(count=Count('id')).values_list('status', 'count'))

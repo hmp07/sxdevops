@@ -1,11 +1,13 @@
 ﻿from django.contrib.auth import authenticate, get_user_model
+from django.core.cache import cache
 from rest_framework import filters, status, viewsets
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.authtoken.models import Token
-from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 
 from eventwall.mixins import EventWallModelViewSetMixin
 from eventwall.models import EventRecord
@@ -19,6 +21,7 @@ from .serializers import (
     RoleSerializer,
     UserGroupSerializer,
     UserSerializer,
+    user_has_escalation_privileges,
 )
 from .services import (
     DEMO_ACCOUNT_MUTATION_MESSAGE,
@@ -57,6 +60,12 @@ class UserViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mode
     @action(detail=True, methods=['post'])
     def reset_password(self, request, pk=None):
         user = self.get_object()
+        # 垂直提权防护：非超管不得重置超级管理员或特权用户（持有用户/角色管理权限）的密码
+        if not request.user.is_superuser and (user.is_superuser or user_has_escalation_privileges(user)):
+            return Response(
+                {'detail': '仅超级管理员可以重置超级管理员或特权用户的密码。'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         password = request.data.get('password', '').strip()
         if not password:
             return Response({'detail': '新密码不能为空。'}, status=status.HTTP_400_BAD_REQUEST)
@@ -202,19 +211,50 @@ def system_module_settings_view(request):
     return Response({'success': True, 'data': get_system_module_settings()})
 
 
+class LoginAnonRateThrottle(AnonRateThrottle):
+    scope = 'login_anon'
+    rate = '10/min'
+
+
+class LoginUserRateThrottle(UserRateThrottle):
+    scope = 'login_user'
+    rate = '30/min'
+
+
+LOGIN_MAX_FAILURES = 10
+LOGIN_LOCK_SECONDS = 600
+
+
+def _login_lock_key(request, username):
+    return f'login-fail:{username}:{request.META.get("REMOTE_ADDR", "")}'
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([LoginAnonRateThrottle, LoginUserRateThrottle])
 def login_view(request):
     ensure_builtin_rbac()
-    ensure_default_superuser()
     serializer = LoginSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
+    username = serializer.validated_data['username']
+
+    # 连续失败锁定：按用户名+来源 IP 计数，10 次失败锁定 10 分钟（窗口随失败续期）
+    lock_key = _login_lock_key(request, username)
+    failures = cache.get(lock_key, 0)
+    if failures >= LOGIN_MAX_FAILURES:
+        return Response(
+            {'detail': '失败次数过多，账号已临时锁定，请 10 分钟后再试。'},
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
     user = authenticate(
-        username=serializer.validated_data['username'],
+        username=username,
         password=serializer.validated_data['password'],
     )
     if not user:
+        cache.set(lock_key, failures + 1, LOGIN_LOCK_SECONDS)
         return Response({'detail': '用户名或密码错误。'}, status=status.HTTP_400_BAD_REQUEST)
+    cache.delete(lock_key)
     if not user.is_active:
         return Response({'detail': '用户已被禁用。'}, status=status.HTTP_403_FORBIDDEN)
     token, _ = Token.objects.get_or_create(user=user)

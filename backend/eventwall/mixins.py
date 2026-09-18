@@ -71,7 +71,7 @@ class EventWallModelViewSetMixin:
         return response
 
     def partial_update(self, request, *args, **kwargs):
-        return self.update(request, *args, **kwargs)
+        return self.update(request, *args, partial=True, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()

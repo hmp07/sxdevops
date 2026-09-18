@@ -20,13 +20,16 @@ services:
       MYSQL_PASSWORD: sxdevops_password
       REDIS_URL: redis://redis:6379/0
       CHANNEL_REDIS_URL: redis://redis:6379/1
-      SECRET_KEY: sxdevops-change-me-in-production
+      # 生产部署必填：docker compose 时通过 .env 或 -e 注入随机值，缺失则容器启动即报错
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required - generate with "openssl rand -base64 48"}
       DEBUG: "0"
-      CORS_ALLOW_ALL_ORIGINS: "1"
+      CORS_ALLOW_ALL_ORIGINS: "0"
       SXDEVOPS_WAIT_FOR_DB: "1"
       SXDEVOPS_MIGRATE: "1"
-      SXDEVOPS_SEED_DATA: "1"
-      SXDEVOPS_SEED_TEMPLATES: "1"
+      # 演示种子默认关闭；需要演示数据时显式置 1（含演示账号与示例数据源）
+      SXDEVOPS_SEED_DATA: ${SXDEVOPS_SEED_DATA:-0}
+      # 智能体/任务模板是平台功能数据（非演示数据），保留默认开启
+      SXDEVOPS_SEED_TEMPLATES: ${SXDEVOPS_SEED_TEMPLATES:-1}
     ports:
       - "8000:8000"
 
