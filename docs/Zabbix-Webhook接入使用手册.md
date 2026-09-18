@@ -310,7 +310,7 @@ Zabbix 通过 Webhook 发送的 JSON 负载：
 | 状态 | 活跃 |
 | 来源 | Zabbix |
 | 主机 | db-prod-01 |
-| 指纹 | zabbix:28731 |
+| 指纹 | `sha256('zabbix:28731')` 的 64 位十六进制哈希（以 triggerid 为稳定键；轮询兜底路径与推送路径共用同一算法，同一告警双路径不重复） |
 | 环境 | prod |
 | 集群 | prod-cluster |
 | 服务 | order-db |

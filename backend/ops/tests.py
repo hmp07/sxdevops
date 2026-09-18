@@ -3564,12 +3564,22 @@ class AlertWebhookIngestTests(TestCase):
         response = self.client.post('/api/alerts/webhooks/prometheus/', {'alerts': []}, format='json')
         self.assertEqual(response.status_code, 403)
 
-    def test_generic_webhook_allows_tokenless_ingest(self):
+    def test_generic_webhook_requires_configured_token(self):
+        """generic 接入必须配置并携带 SXDEVOPS_GENERIC_WEBHOOK_TOKEN（安全整改后行为）。"""
         response = self.client.post(
             '/api/alerts/webhooks/generic/',
             {'title': 'Generic alert', 'level': 'warning', 'resource': 'demo-resource'},
             format='json',
         )
+        self.assertEqual(response.status_code, 403)
+
+    def test_generic_webhook_accepts_configured_token(self):
+        with override_settings(GENERIC_WEBHOOK_TOKEN='shared-secret'):
+            response = self.client.post(
+                '/api/alerts/webhooks/generic/?token=shared-secret',
+                {'title': 'Generic alert', 'level': 'warning', 'resource': 'demo-resource'},
+                format='json',
+            )
         self.assertEqual(response.status_code, 202)
         self.assertTrue(Alert.objects.filter(title='Generic alert', source_type='generic').exists())
 
@@ -4210,3 +4220,269 @@ class CredentialEncryptionTests(TestCase):
         call_command('encrypt_legacy_credentials', '--apply', stdout=out)
         raw_again = self._raw_value(host, host.id, 'ssh_password')
         self.assertEqual(raw, raw_again)
+
+
+
+class ZabbixHybridIngestTests(TestCase):
+    """混合接入：webhook 推送与轮询拉取双路径指纹统一、恢复事件兜底。"""
+
+    def setUp(self):
+        from rbac.services import ensure_builtin_rbac
+
+        ensure_builtin_rbac()
+
+    def _webhook_payload(self, triggerid, eventid='1001', event_value='1', severity='4'):
+        return {
+            'alerts': [{
+                'triggerid': triggerid,
+                'eventid': eventid,
+                'trigger_name': '高 CPU 使用率',
+                'host': 'prod-web-01',
+                'severity': severity,
+                'event_value': event_value,
+                'clock': '1726617600',
+            }]
+        }
+
+    def test_webhook_payload_normalizes_fingerprint_and_severity(self):
+        from ops import alerting
+
+        normalized = alerting.normalize_alert_payload('zabbix', self._webhook_payload('T100'))
+        self.assertEqual(len(normalized), 1)
+        item = normalized[0]
+        self.assertEqual(item['level'], 'critical')
+        self.assertEqual(item['status'], 'active')
+        self.assertEqual(item['source_type'], 'zabbix')
+        import hashlib
+        self.assertEqual(item['fingerprint'], hashlib.sha256('zabbix:T100'.encode()).hexdigest())
+
+    def test_webhook_then_poll_shares_one_alert(self):
+        from ops import alerting
+        from ops.zabbix_alert_bridge import upsert_alert_from_zabbix_problem
+        from ops.models import Alert
+
+        alerting.ingest_webhook('zabbix', self._webhook_payload('T200'))
+        self.assertEqual(Alert.objects.filter(source_type='zabbix').count(), 1)
+
+        problem = {'eventid': '2001', 'objectid': 'T200', 'name': '高 CPU 使用率', 'severity': '4',
+                   'clock': '1726617600', 'r_eventid': '0'}
+        alert, created = upsert_alert_from_zabbix_problem(problem, host_name='prod-web-01', host_id='10084')
+        self.assertFalse(created, '同一 triggerid 的轮询拉取不应新建告警')
+        self.assertEqual(Alert.objects.filter(source_type='zabbix').count(), 1)
+
+    def test_poll_then_webhook_shares_one_alert(self):
+        from ops import alerting
+        from ops.zabbix_alert_bridge import upsert_alert_from_zabbix_problem
+        from ops.models import Alert
+
+        problem = {'eventid': '2002', 'objectid': 'T300', 'name': '磁盘满', 'severity': '4',
+                   'clock': '1726617600', 'r_eventid': '0'}
+        upsert_alert_from_zabbix_problem(problem, host_name='prod-web-02', host_id='10085')
+        self.assertEqual(Alert.objects.filter(source_type='zabbix').count(), 1)
+
+        alerting.ingest_webhook('zabbix', self._webhook_payload('T300', eventid='2002'))
+        self.assertEqual(Alert.objects.filter(source_type='zabbix').count(), 1)
+
+    def test_poll_recovery_event_resolves_alert(self):
+        from ops.zabbix_alert_bridge import upsert_alert_from_zabbix_problem
+        from ops.models import Alert
+
+        problem = {'eventid': '2003', 'objectid': 'T400', 'name': '内存不足', 'severity': '4',
+                   'clock': '1726617600', 'r_eventid': '0'}
+        alert, created = upsert_alert_from_zabbix_problem(problem, host_name='prod-web-03', host_id='10086')
+        self.assertTrue(created)
+        self.assertEqual(alert.status, 'active')
+
+        recovered = {'eventid': '2003', 'objectid': 'T400', 'name': '内存不足', 'severity': '4',
+                     'clock': '1726617600', 'r_eventid': '3003', 'r_clock': '1726620000'}
+        alert2, created2 = upsert_alert_from_zabbix_problem(recovered, host_name='prod-web-03', host_id='10086')
+        self.assertFalse(created2)
+        self.assertEqual(alert2.status, 'resolved')
+        self.assertEqual(Alert.objects.filter(source_type='zabbix', status='active').count(), 0)
+
+
+class BackfillZabbixAlertFingerprintTests(TestCase):
+    """存量指纹回填：dry-run 不写、重算、孤儿 resolved、幂等。"""
+
+    def setUp(self):
+        from rbac.services import ensure_builtin_rbac
+
+        ensure_builtin_rbac()
+
+    def test_dry_run_does_not_write_and_apply_recomputes(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+        from ops.alerting import _fingerprint
+        from ops.models import Alert
+
+        alert = Alert.objects.create(
+            title='存量告警', level='critical', status='active', source='zabbix_api',
+            source_type='zabbix', external_id='5001', fingerprint='zabbix:5001',
+            raw_payload={'objectid': 'T500', 'eventid': '5001'},
+        )
+        out = StringIO()
+        call_command('backfill_zabbix_alert_fingerprints', stdout=out)
+        alert.refresh_from_db()
+        self.assertEqual(alert.fingerprint, 'zabbix:5001', 'dry-run 不得写入')
+
+        call_command('backfill_zabbix_alert_fingerprints', '--apply', stdout=out)
+        alert.refresh_from_db()
+        expected = _fingerprint('zabbix', {'fingerprint': 'T500', 'external_id': '5001'})
+        self.assertEqual(alert.fingerprint, expected)
+
+        # 幂等：再次执行不改变
+        call_command('backfill_zabbix_alert_fingerprints', '--apply', stdout=out)
+        alert.refresh_from_db()
+        self.assertEqual(alert.fingerprint, expected)
+        self.assertEqual(alert.status, 'active')
+
+    def test_unmatchable_legacy_alert_resolved(self):
+        from django.core.management import call_command
+        from ops.models import Alert
+
+        alert = Alert.objects.create(
+            title='无载荷存量告警', level='critical', status='active', source='zabbix_api',
+            source_type='zabbix', external_id='5002', fingerprint='zabbix:5002', raw_payload={},
+        )
+        call_command('backfill_zabbix_alert_fingerprints', '--apply')
+        alert.refresh_from_db()
+        self.assertEqual(alert.status, 'resolved')
+
+
+class AlertAIAnalysisTests(TestCase):
+    """告警自动 AI 分析：触发条件、防重、冷却、单条分析、关联分析、兜底重扫。"""
+
+    def setUp(self):
+        from django.core.cache import cache
+        from unittest.mock import patch
+
+        from rbac.services import ensure_builtin_rbac
+
+        ensure_builtin_rbac()
+        cache.clear()
+        self.worker_patch = patch('ops.alert_ai_analysis.start_alert_analysis_worker')
+        self.worker_patch.start()
+        self.addCleanup(self.worker_patch.stop)
+
+    def tearDown(self):
+        # 排空测试期间入队的任务，避免串扰其他用例
+        from ops import alert_ai_analysis
+
+        while not alert_ai_analysis._analysis_queue.empty():
+            try:
+                alert_ai_analysis._analysis_queue.get_nowait()
+            except Exception:
+                break
+
+    def _make_alert(self, level='critical', fingerprint='fp-1', status='active', source_type='zabbix',
+                    integration=None, raw_payload=None):
+        from ops.models import Alert
+
+        return Alert.objects.create(
+            title='测试告警', level=level, status=status, source='zabbix', source_type=source_type,
+            external_id='e1', fingerprint=fingerprint, integration=integration,
+            raw_payload=raw_payload or {'objectid': fingerprint},
+        )
+
+    def _ensure_bot_user(self):
+        from ops.alert_ai_analysis import _get_bot_user
+
+        return _get_bot_user()
+
+    def test_enqueue_only_critical_created_alerts(self):
+        from ops.alert_ai_analysis import enqueue_alert_analysis
+
+        warning = self._make_alert(level='warning', fingerprint='fp-warn')
+        self.assertFalse(enqueue_alert_analysis(warning), '低于 critical 不触发')
+
+        critical = self._make_alert(level='critical', fingerprint='fp-crit')
+        self.assertTrue(enqueue_alert_analysis(critical))
+
+    def test_duplicate_enqueue_blocked_and_failure_retry_once(self):
+        from ops.alert_ai_analysis import enqueue_alert_analysis
+        from ops.models import AlertAction
+
+        alert = self._make_alert(fingerprint='fp-dup')
+        self.assertTrue(enqueue_alert_analysis(alert))
+        self.assertFalse(enqueue_alert_analysis(alert, ignore_cooldown=True), '排队中/完成中不重复入队')
+
+        # 标记失败后可重试一次
+        AlertAction.objects.filter(alert=alert, action='aiops_analysis').update(
+            metadata={'status': 'failed', 'attempts': 1})
+        self.assertTrue(enqueue_alert_analysis(alert, ignore_cooldown=True))
+        AlertAction.objects.filter(alert=alert, action='aiops_analysis').update(
+            metadata={'status': 'failed', 'attempts': 2})
+        self.assertFalse(enqueue_alert_analysis(alert, ignore_cooldown=True), '超过重试次数不再入队')
+
+    def test_single_analysis_produces_result(self):
+        from unittest.mock import patch
+
+        from aiops.models import AIOpsChatMessage, AIOpsChatSession
+        from ops.alert_ai_analysis import _process_batch
+        from ops.models import AlertAction
+
+        alert = self._make_alert(fingerprint='fp-single')
+        bot = AIOpsChatSession.objects.create(user=self._ensure_bot_user(), title='t', context={})
+        assistant = AIOpsChatMessage.objects.create(session=bot, role='assistant', content='建议：检查 CPU 限流。')
+
+        with patch('ops.alert_ai_analysis._create_session_and_ask', return_value=(bot, assistant)):
+            _process_batch([alert.id])
+
+        action = AlertAction.objects.filter(alert=alert, action='aiops_analysis').last()
+        self.assertEqual(action.metadata.get('status'), 'completed')
+        self.assertIn('检查 CPU 限流', action.metadata.get('summary', ''))
+        alert.refresh_from_db()
+        self.assertIn('aiops_suggestion', alert.annotations)
+
+    def test_correlation_analysis_groups_same_source_alerts(self):
+        from unittest.mock import patch
+
+        from aiops.models import AIOpsChatMessage, AIOpsChatSession
+        from eventwall.models import EventRecord
+        from ops.alert_ai_analysis import _process_batch
+        from ops.models import AlertAction, AlertIntegration
+
+        integration = AlertIntegration.objects.create(name='zabbix-源', provider='zabbix', token='tok-1')
+        a1 = self._make_alert(fingerprint='fp-c1', integration=integration)
+        a2 = self._make_alert(fingerprint='fp-c2', integration=integration)
+
+        bot = AIOpsChatSession.objects.create(user=self._ensure_bot_user(), title='t', context={})
+        assistant = AIOpsChatMessage.objects.create(
+            session=bot, role='assistant', content='根因：共享存储故障。'
+        )
+        calls = []
+
+        def fake_session_ask(question, title):
+            calls.append(question)
+            return bot, assistant
+
+        with patch('ops.alert_ai_analysis._create_session_and_ask', side_effect=fake_session_ask):
+            _process_batch([a1.id, a2.id])
+
+        self.assertEqual(len(calls), 1, '同源两条告警应合并为一次关联分析')
+        self.assertIn('关联分析', calls[0])
+        for alert in (a1, a2):
+            action = AlertAction.objects.filter(alert=alert, action='aiops_analysis').last()
+            self.assertEqual(action.metadata.get('status'), 'completed')
+            self.assertIn('corr-', action.metadata.get('correlation_group', ''))
+            alert.refresh_from_db()
+            self.assertIn('aiops_root_cause', alert.annotations)
+        self.assertTrue(EventRecord.objects.filter(action='alert_correlation').exists())
+
+    def test_requeue_unanalyzed_alerts(self):
+        from ops import alert_ai_analysis
+        from ops.alert_ai_analysis import requeue_unanalyzed_alerts
+        from ops.models import AlertAction
+
+        analyzed = self._make_alert(fingerprint='fp-done')
+        AlertAction.objects.create(alert=analyzed, action='aiops_analysis', actor='aiops-bot',
+                                   metadata={'status': 'completed'})
+        unanalyzed = self._make_alert(fingerprint='fp-pending')
+
+        enqueued = requeue_unanalyzed_alerts()
+        self.assertEqual(enqueued, 1, '仅未分析的 critical 告警入队')
+        queued_ids = []
+        while not alert_ai_analysis._analysis_queue.empty():
+            queued_ids.append(alert_ai_analysis._analysis_queue.get_nowait())
+        self.assertEqual(queued_ids, [unanalyzed.id])

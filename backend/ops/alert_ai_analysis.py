@@ -1,0 +1,282 @@
+"""Zabbix 重要告警自动 AI 分析与关联分析。
+
+链路：webhook 收到 zabbix 告警（新创建、达到最低级别）→ 入队 →
+单 worker 串行消费（聚合窗口内同事件源多条告警合并为一次关联分析，
+定位最可能根因；单条走单告警分析）→ dispatch_chat(analysis_only=True)
+仅输出建议 → 结果回挂 AlertAction 打点 + Alert.annotations 摘要。
+
+防重与节流：
+- 每个告警仅分析一次（AlertAction action='aiops_analysis' 打点，失败最多重试 1 次）；
+- 按 fingerprint 冷却（SXDEVOPS_ALERT_ANALYSIS_COOLDOWN_MINUTES，默认 60 分钟），
+  抖动告警不反复烧模型；
+- 小时级调度器兜底重扫未分析的 critical 活跃告警（进程重启/漏触发自愈）。
+
+环境变量：
+- SXDEVOPS_ALERT_ANALYSIS_MIN_SEVERITY: 触发分析的最低级别（info|warning|critical，默认 critical）
+- SXDEVOPS_ALERT_ANALYSIS_COOLDOWN_MINUTES: fingerprint 冷却（默认 60）
+- SXDEVOPS_ALERT_AGGREGATION_WINDOW_SECONDS: 关联分析聚合窗口（默认 60，0=关闭聚合）
+- SXDEVOPS_ALERT_ANALYSIS_MAX_BATCH: 单批最大告警数（默认 10）
+"""
+import logging
+import os
+import queue
+import threading
+import time
+import uuid
+
+from django.core.cache import cache
+
+logger = logging.getLogger(__name__)
+
+ACTION_NAME = 'aiops_analysis'
+BOT_USERNAME = 'aiops-bot'
+BOT_PERMISSION_CODES = ['ops.zabbix.view', 'ops.alert.view', 'ops.host.view', 'ops.metric.query', 'ops.log.query']
+
+LEVEL_RANK = {'info': 0, 'warning': 1, 'critical': 2}
+ALERT_ANALYSIS_MIN_LEVEL = os.environ.get('SXDEVOPS_ALERT_ANALYSIS_MIN_SEVERITY', 'critical').strip() or 'critical'
+ALERT_ANALYSIS_COOLDOWN_MINUTES = int(os.environ.get('SXDEVOPS_ALERT_ANALYSIS_COOLDOWN_MINUTES', '60') or 60)
+AGGREGATION_WINDOW_SECONDS = int(os.environ.get('SXDEVOPS_ALERT_AGGREGATION_WINDOW_SECONDS', '60') or 0)
+MAX_BATCH_SIZE = max(int(os.environ.get('SXDEVOPS_ALERT_ANALYSIS_MAX_BATCH', '10') or 10), 1)
+
+_analysis_queue = queue.Queue()
+_worker_started = False
+_worker_lock = threading.Lock()
+
+
+def _get_bot_user():
+    """幂等创建/获取自动分析机器人账号（最小 RBAC，非 superuser）。"""
+    from django.contrib.auth import get_user_model
+
+    from rbac.models import PermissionDefinition, Role
+
+    User = get_user_model()
+    user = User.objects.filter(username=BOT_USERNAME).first()
+    if user:
+        return user
+    user = User.objects.create_user(
+        username=BOT_USERNAME,
+        email='aiops-bot@local',
+        first_name='AIOps',
+        last_name='Bot',
+    )
+    role, _ = Role.objects.get_or_create(
+        code='aiops-bot-role',
+        defaults={'name': 'AIOps 自动分析', 'description': '告警自动分析机器人最小权限集合'},
+    )
+    role.permissions.set(PermissionDefinition.objects.filter(code__in=BOT_PERMISSION_CODES))
+    role.users.add(user)
+    return user
+
+
+def _latest_action(alert):
+    from ops.models import AlertAction
+
+    return AlertAction.objects.filter(alert=alert, action=ACTION_NAME).order_by('-id').first()
+
+
+def enqueue_alert_analysis(alert, ignore_cooldown=False):
+    """告警入队自动分析；返回是否入队。防重：已完成/排队中跳过，失败允许重试一次。"""
+    from ops.models import AlertAction
+
+    if not alert or alert.status != 'active':
+        return False
+    if LEVEL_RANK.get(alert.level or 'info', 0) < LEVEL_RANK.get(ALERT_ANALYSIS_MIN_LEVEL, 2):
+        return False
+
+    latest = _latest_action(alert)
+    if latest:
+        meta = latest.metadata or {}
+        if meta.get('status') != 'failed':
+            return False
+        if int(meta.get('attempts') or 1) >= 2:
+            return False
+
+    if not ignore_cooldown:
+        cooldown_key = f'aiops-analysis-cooldown:{alert.fingerprint}'
+        if cache.get(cooldown_key):
+            return False
+        cache.set(cooldown_key, 1, max(ALERT_ANALYSIS_COOLDOWN_MINUTES, 1) * 60)
+
+    attempts = int((latest.metadata or {}).get('attempts') or 0) + 1 if latest else 1
+    AlertAction.objects.create(
+        alert=alert,
+        action=ACTION_NAME,
+        actor=BOT_USERNAME,
+        note='已进入 AI 自动分析队列',
+        metadata={'status': 'pending', 'attempts': attempts, 'queued_at': time.time()},
+    )
+    _analysis_queue.put(alert.id)
+    start_alert_analysis_worker()
+    return True
+
+
+def start_alert_analysis_worker():
+    global _worker_started
+    if _worker_started:
+        return
+    with _worker_lock:
+        if _worker_started:
+            return
+        _worker_started = True
+        threading.Thread(target=_run_worker_loop, name='alert-ai-analysis', daemon=True).start()
+        logger.info('alert ai analysis worker started')
+
+
+def _run_worker_loop():
+    while True:
+        try:
+            alert_ids = _collect_batch()
+            _process_batch(alert_ids)
+        except Exception:
+            logger.exception('alert ai analysis worker iteration failed')
+
+
+def _collect_batch():
+    first = _analysis_queue.get()
+    batch = [first]
+    window = max(int(AGGREGATION_WINDOW_SECONDS), 0)
+    if window <= 0:
+        return batch
+    deadline = time.time() + window
+    while len(batch) < MAX_BATCH_SIZE:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        try:
+            batch.append(_analysis_queue.get(timeout=remaining))
+        except queue.Empty:
+            break
+    return batch
+
+
+def _process_batch(alert_ids):
+    from ops.models import Alert
+
+    alerts = []
+    for alert_id in alert_ids:
+        alert = Alert.objects.filter(id=alert_id, status='active').first()
+        if alert:
+            alerts.append(alert)
+    if not alerts:
+        return
+
+    groups = {}
+    for alert in alerts:
+        groups.setdefault(alert.integration_id, []).append(alert)
+    for group in groups.values():
+        if len(group) >= 2:
+            _run_correlation_analysis(group)
+        else:
+            for alert in group:
+                _run_single_analysis(alert)
+
+
+def _create_session_and_ask(question, title):
+    from aiops.models import AIOpsChatMessage, AIOpsChatSession
+
+    user = _get_bot_user()
+    session = AIOpsChatSession.objects.create(user=user, title=title[:100] or '告警自动分析')
+    user_message = AIOpsChatMessage.objects.create(session=session, role='user', content=question)
+    from aiops.services import dispatch_chat
+
+    assistant_message, _ = dispatch_chat(session, user_message, user, question, analysis_only=True)
+    return session, assistant_message
+
+
+def _run_single_analysis(alert):
+    from ops.alerting import apply_alert_action
+
+    try:
+        question = f'分析告警 ID {alert.id} 的根因，并给出处置建议。'
+        session, assistant_message = _create_session_and_ask(question, f'自动分析: {alert.title[:80]}')
+        summary = (assistant_message.content or '')[:500] if assistant_message else ''
+        apply_alert_action(
+            alert, ACTION_NAME, actor=BOT_USERNAME, note='AI 自动分析完成',
+            metadata={'status': 'completed', 'session_id': session.id,
+                      'message_id': getattr(assistant_message, 'id', None), 'summary': summary},
+        )
+        annotations = dict(alert.annotations or {})
+        annotations['aiops_suggestion'] = summary
+        alert.annotations = annotations
+        alert.save(update_fields=['annotations'])
+        logger.info('alert ai analysis done: Alert#%s session=%s', alert.id, session.id)
+    except Exception as exc:
+        logger.exception('alert ai analysis failed: Alert#%s', alert.id)
+        apply_alert_action(
+            alert, ACTION_NAME, actor=BOT_USERNAME, note='AI 自动分析失败',
+            metadata={'status': 'failed', 'error': str(exc)[:300]},
+        )
+
+
+def _run_correlation_analysis(alerts):
+    from eventwall.services import record_event
+    from ops.alerting import apply_alert_action
+
+    group_id = f'corr-{uuid.uuid4().hex[:12]}'
+    lines = []
+    for alert in sorted(alerts, key=lambda item: item.starts_at or item.created_at):
+        lines.append(
+            f'- ID {alert.id}：{alert.title}（级别 {alert.level}，主机 {alert.resource or "-"}，'
+            f'开始 {alert.starts_at or "-"}）'
+        )
+    question = (
+        '以下告警在短时间内来自同一事件源，请做关联分析，'
+        '定位最可能的根因，并逐条给出处置建议：\n' + '\n'.join(lines)
+    )
+    try:
+        session, assistant_message = _create_session_and_ask(question, f'告警关联分析: {group_id}')
+        summary = (assistant_message.content or '')[:500] if assistant_message else ''
+        record_event(
+            module='ops',
+            category='alert',
+            action='alert_correlation',
+            title='告警关联分析',
+            summary=f'最可能根因: {summary[:200]}',
+            severity='warning',
+            resource_type='zabbix_event',
+            resource_id=group_id,
+            resource_name=f'{len(alerts)} 条告警关联分析',
+            actor_type='system',
+            source_type='system',
+            metadata={'correlation_group': group_id, 'alert_ids': [a.id for a in alerts],
+                      'session_id': session.id},
+        )
+        for alert in alerts:
+            apply_alert_action(
+                alert, ACTION_NAME, actor=BOT_USERNAME, note='关联分析完成',
+                metadata={'status': 'completed', 'correlation_group': group_id,
+                          'session_id': session.id, 'root_cause': summary},
+            )
+            annotations = dict(alert.annotations or {})
+            annotations['aiops_root_cause'] = summary
+            alert.annotations = annotations
+            alert.save(update_fields=['annotations'])
+        logger.info('alert correlation analysis done: group=%s alerts=%s', group_id, [a.id for a in alerts])
+    except Exception as exc:
+        logger.exception('alert correlation analysis failed: group=%s', group_id)
+        for alert in alerts:
+            apply_alert_action(
+                alert, ACTION_NAME, actor=BOT_USERNAME, note='关联分析失败',
+                metadata={'status': 'failed', 'correlation_group': group_id, 'error': str(exc)[:300]},
+            )
+
+
+def requeue_unanalyzed_alerts(limit=50):
+    """兜底重扫：critical 活跃 zabbix 告警中尚无完成打点的项重新入队（忽略冷却）。"""
+    from ops.models import Alert, AlertAction
+
+    analyzed_ids = set(
+        AlertAction.objects.filter(action=ACTION_NAME).values_list('alert_id', flat=True)
+    )
+    queryset = (
+        Alert.objects.filter(source_type='zabbix', status='active', level='critical')
+        .exclude(id__in=analyzed_ids)
+        .order_by('-created_at')[:limit]
+    )
+    enqueued = 0
+    for alert in queryset:
+        if enqueue_alert_analysis(alert, ignore_cooldown=True):
+            enqueued += 1
+    if enqueued:
+        logger.info('requeued %s unanalyzed critical zabbix alerts', enqueued)
+    return enqueued

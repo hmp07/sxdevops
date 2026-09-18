@@ -1030,6 +1030,7 @@ def ingest_webhook(provider, payload, integration=None, request=None):
     created_count = 0
     updated_count = 0
     alerts = []
+    created_alerts = []
     notification_actions = []
     with transaction.atomic():
         if integration:
@@ -1041,12 +1042,15 @@ def ingest_webhook(provider, payload, integration=None, request=None):
             apply_escalation_policy(alert, request=request)
             action = 'resolved' if alert.status == Alert.STATUS_RESOLVED else 'fire'
             notification_actions.append((alert, action))
-            created_count += 1 if created else 0
-            updated_count += 0 if created else 1
+            if created:
+                created_count += 1
+                created_alerts.append(alert)
+            else:
+                updated_count += 1
             alerts.append(alert)
     for alert, action in notification_actions:
         dispatch_alert_notifications(alert, action=action, request=request)
-    return {'created': created_count, 'updated': updated_count, 'alerts': alerts}
+    return {'created': created_count, 'updated': updated_count, 'alerts': alerts, 'created_alerts': created_alerts}
 
 
 def apply_alert_action(alert, action, actor='', note='', metadata=None, request=None, mute_minutes=60):

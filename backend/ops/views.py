@@ -2172,6 +2172,12 @@ def alert_webhook(request, provider, token=''):
     if supplied_token and not integration and provider != Alert.SOURCE_GENERIC:
         return Response({'detail': '告警接入源令牌无效或已禁用。'}, status=status.HTTP_403_FORBIDDEN)
     result = ingest_webhook(provider, request.data, integration=integration, request=request)
+    # Zabbix 重要告警自动 AI 分析：仅新创建的告警触发（重复推送为 updated 不触发）
+    if provider == Alert.SOURCE_ZABBIX:
+        from ops.alert_ai_analysis import enqueue_alert_analysis
+
+        for alert in result.get('created_alerts', []):
+            enqueue_alert_analysis(alert)
     return Response({
         'success': True,
         'provider': provider,

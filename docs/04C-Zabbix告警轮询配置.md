@@ -2,16 +2,20 @@
 
 ## 一、概述
 
-Zabbix 告警轮询是**无需修改 Zabbix Server 配置**的告警接入方式。平台通过 Django management command 定时从 Zabbix API 拉取活跃问题，导入告警中心并走完整告警流水线。
+Zabbix 告警接入采用**混合方案**：重要告警由 Zabbix 按发送规则经 **Webhook 主动推送**（秒级实时，见 [Zabbix-Webhook接入使用手册](Zabbix-Webhook接入使用手册.md)），内置轮询作为**小时级兜底**——从 Zabbix API 拉取最近 24 小时窗口内的问题（含已恢复问题），保证推送漏报时 1 小时内仍能感知告警与恢复。
 
 **与 Webhook 方式对比：**
 
 | 维度 | 轮询（本文档） | Webhook |
 |------|--------------|---------|
-| 实时性 | 分钟级（取决于 cron 频率） | 秒级实时 |
+| 实时性 | 小时级兜底 | 秒级实时 |
 | Zabbix 端配置 | 无需 | 需配置 Action + Media Type |
 | 网络要求 | 平台需能访问 Zabbix API | Zabbix 需能访问平台 |
-| 推荐场景 | 快速接入、备份兜底 | 生产推荐 |
+| 推荐场景 | 备份兜底、恢复事件补收 | 重要告警主通道 |
+
+**双路径去重**：两条路径共用同一指纹算法（以 triggerid 为稳定键的 sha256），同一告警无论先推送还是先轮询，告警中心仅保留一条记录。
+
+**重要告警自动 AI 分析**：webhook 推送的新建 critical 告警会自动触发智能助手分析（异步队列，同一事件源短时多条告警自动做关联分析定位最可能根因），结论回挂告警动作流水；配置见 [00C-配置说明与环境变量](00C-配置说明与环境变量.md) 的 `SXDEVOPS_ALERT_*` 变量。
 
 **前置条件：**
 - 已配置至少一个启用的 [Zabbix 数据源](04A-Zabbix数据源配置与管理.md)
@@ -43,11 +47,12 @@ python manage.py poll_zabbix_alerts --dry-run
 
 ### 3.1 内置调度（推荐）
 
-平台内置调度器已随后端进程自动运行，**默认每 5 分钟**轮询一次所有启用的 Zabbix 数据源，无需再配置外部 cron / Task Scheduler。
+平台内置调度器已随后端进程自动运行，**默认每小时（3600s，整点对齐）**轮询一次所有启用的 Zabbix 数据源（混合方案下为 webhook 推送的小时级兜底），无需再配置外部 cron / Task Scheduler。
 
 | 环境变量 | 默认值 | 说明 |
 | ---- | ---- | ---- |
-| `SXDEVOPS_ZABBIX_POLL_INTERVAL` | 300 | 轮询间隔（秒） |
+| `SXDEVOPS_ZABBIX_POLL_INTERVAL` | 3600 | 轮询间隔（秒，默认小时级兜底） |
+| `SXDEVOPS_ZABBIX_POLL_WINDOW_HOURS` | 24 | 兜底拉取窗口（小时，含已恢复问题） |
 | `SXDEVOPS_DISABLE_ZABBIX_POLL` | 未设置 | 设为 `1` 关闭内置调度 |
 | `SXDEVOPS_EVENT_RETENTION_DAYS` | 7 | 事件墙非外部接入事件保留天数（0 = 不清理） |
 
@@ -63,8 +68,8 @@ python manage.py poll_zabbix_alerts --dry-run
 # 编辑 crontab
 crontab -e
 
-# 每 5 分钟执行一次
-*/5 * * * * cd /app/backend && python manage.py poll_zabbix_alerts >> /var/log/zabbix_poll.log 2>&1
+# 每小时执行一次
+0 * * * * cd /app/backend && python manage.py poll_zabbix_alerts >> /var/log/zabbix_poll.log 2>&1
 ```
 
 #### Docker 环境
@@ -78,12 +83,12 @@ docker exec sxdevops-app python manage.py poll_zabbix_alerts
 在宿主机设置 cron：
 
 ```bash
-*/5 * * * * docker exec sxdevops-app python manage.py poll_zabbix_alerts >> /var/log/zabbix_poll.log 2>&1
+0 * * * * docker exec sxdevops-app python manage.py poll_zabbix_alerts >> /var/log/zabbix_poll.log 2>&1
 ```
 
 #### Windows Task Scheduler
 
-1. 创建基本任务 → 触发器：每天，重复间隔 5 分钟
+1. 创建基本任务 → 触发器：每天，重复间隔 1 小时
 2. 操作：启动程序 → `python` → 参数 `manage.py poll_zabbix_alerts` → 起始于 `C:\path\to\backend`
 
 ## 四、告警导入流程
