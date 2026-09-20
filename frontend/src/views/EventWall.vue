@@ -214,6 +214,9 @@
         <el-input v-else-if="activeCategoryTab === 'ops_transaction'" v-model="categoryFilters.ops_transaction.keyword" size="small" placeholder="事务类型 / 资源对象关键字" clearable>
           <template #prefix><el-icon><Search /></el-icon></template>
         </el-input>
+        <el-input v-else-if="activeCategoryTab === 'alert'" v-model="categoryFilters.alert.keyword" size="small" placeholder="告警 / AI 分析 / 根因关键字" clearable>
+          <template #prefix><el-icon><Search /></el-icon></template>
+        </el-input>
         <el-input v-else v-model="categoryFilters.task_center.keyword" size="small" placeholder="任务名称 / 目标资源 / 执行人关键字" clearable>
           <template #prefix><el-icon><Search /></el-icon></template>
         </el-input>
@@ -307,6 +310,7 @@ const eventCategoryOptions = [
   { key: 'config_change', label: '配置变更' },
   { key: 'ops_transaction', label: '运维事务' },
   { key: 'task_center', label: '任务调度' },
+  { key: 'alert', label: '告警事件' },
 ]
 const categoryFilters = reactive({
   application_release: { service: '', action: '', version: '' },
@@ -314,6 +318,7 @@ const categoryFilters = reactive({
   config_change: { keyword: '' },
   ops_transaction: { keyword: '' },
   task_center: { keyword: '' },
+  alert: { keyword: '' },
 })
 const analysisRange = ref(defaultAnalysisRange())
 const activeCategoryTab = ref('application_release')
@@ -1236,7 +1241,7 @@ onUnmounted(cleanupTimelineSelection)
   border-radius: 12px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.9));
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 4px;
 }
 

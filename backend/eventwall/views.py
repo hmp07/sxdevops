@@ -569,7 +569,7 @@ def _event_suspicion(event, fault_at=None):
     elif event.severity == EventRecord.SEVERITY_WARNING:
         score += 14
         reasons.append('需要关注')
-    if event.category in {'execution', 'resource_change', 'external_event', 'workflow'}:
+    if event.category in {'execution', 'resource_change', 'external_event', 'workflow', 'alert'}:
         score += 16
         reasons.append('变更或执行类事件')
     if event.action in {'deploy', 'rollback', 'run_schedule', 'create_task', 'rerun_task', 'config_resource_update', 'sync', 'build'}:
@@ -758,7 +758,11 @@ class EventRecordViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
         for key, field in mapping.items():
             value = params.get(key, '').strip()
             if value:
-                queryset = queryset.filter(**{field: value})
+                if key == 'environment':
+                    # 未标注环境的事件在任何环境视图均可见（如告警 AI 分析/关联分析事件）
+                    queryset = queryset.filter(Q(**{f'{field}': value}) | Q(**{f'{field}': ''}))
+                else:
+                    queryset = queryset.filter(**{field: value})
         system_name = params.get('system_name', '').strip() or params.get('business_line', '').strip()
         if system_name:
             queryset = queryset.filter(business_line=system_name)

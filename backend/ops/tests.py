@@ -4437,6 +4437,11 @@ class AlertAIAnalysisTests(TestCase):
         self.assertIn('检查 CPU 限流', action.metadata.get('summary', ''))
         alert.refresh_from_db()
         self.assertIn('aiops_suggestion', alert.annotations)
+        # 单条分析完成应写事件墙
+        from eventwall.models import EventRecord
+        wall_event = EventRecord.objects.filter(action='alert_analysis', metadata__alert_id=alert.id).first()
+        self.assertIsNotNone(wall_event, '单条分析完成应写入事件墙')
+        self.assertEqual(wall_event.metadata.get('analysis_kind'), 'single')
 
     def test_correlation_analysis_groups_same_source_alerts(self):
         from unittest.mock import patch
@@ -4472,6 +4477,9 @@ class AlertAIAnalysisTests(TestCase):
             alert.refresh_from_db()
             self.assertIn('aiops_root_cause', alert.annotations)
         self.assertTrue(EventRecord.objects.filter(action='alert_correlation').exists())
+        corr_event = EventRecord.objects.filter(action='alert_correlation').latest('id')
+        self.assertTrue(corr_event.correlation_id.startswith('alert_correlation:'))
+        self.assertEqual(corr_event.metadata.get('event_category'), 'alert')
 
     def test_requeue_unanalyzed_alerts(self):
         from ops import alert_ai_analysis

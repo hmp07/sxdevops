@@ -544,3 +544,65 @@ class EventRetentionTests(TestCase):
         self.assertTrue(EventRecord.objects.filter(title='old-ext').exists())
         self.assertTrue(EventRecord.objects.filter(title='fresh').exists())
         self.assertTrue(EventRecord.objects.filter(action='prune_operation_audit').exists())
+
+
+
+class ZabbixAlertAnalysisWallTests(TestCase):
+    """事件墙展示 AI 分析内容：接口级环境过滤回归 + alert 分类断言。"""
+
+    def setUp(self):
+        from rbac.services import ensure_builtin_rbac
+
+        ensure_builtin_rbac()
+        self.client = APIClient()
+        self.user = get_user_model().objects.create_superuser(username='wall-admin', password='Admin@123456')
+        self.client.force_authenticate(user=self.user)
+
+    def _record(self, action, environment=''):
+        from eventwall.services import record_event
+
+        return record_event(
+            module='ops',
+            category='alert',
+            action=action,
+            title='测试告警事件',
+            summary='测试摘要',
+            severity='warning',
+            resource_type='zabbix_event',
+            resource_id='e-wall-1',
+            actor_type='system',
+            source_type='system',
+            environment=environment,
+            metadata={'event_category': 'alert'},
+        )
+
+    def test_empty_environment_event_visible_in_any_environment_view(self):
+        self._record('alert_analysis', environment='')
+
+        response = self.client.get('/api/events/analysis_wall/?environment=生产环境')
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        records = payload.get('events', [])
+        self.assertTrue(any(item.get('action') == 'alert_analysis' for item in records),
+                        '未标注环境的事件应在任意环境视图可见')
+
+    def test_alert_event_classified_as_alert_category(self):
+        self._record('alert_correlation', environment='生产环境')
+
+        response = self.client.get('/api/events/analysis_wall/?environment=生产环境')
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        records = payload.get('events', [])
+        item = next(item for item in records if item.get('action') == 'alert_correlation')
+        category = item.get('event_category') or {}
+        self.assertEqual(category.get('key'), 'alert', '告警事件应归类为 alert 而非 ops_transaction')
+
+    def test_environment_filter_still_excludes_other_environments(self):
+        self._record('alert_analysis', environment='测试环境')
+
+        response = self.client.get('/api/events/analysis_wall/?environment=生产环境')
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        records = payload.get('events', [])
+        self.assertFalse(any(item.get('action') == 'alert_analysis' and (item.get('environment') == '测试环境') for item in records),
+                         '其他环境的记录不应出现在当前环境视图')

@@ -257,6 +257,8 @@ def _create_session_and_ask(question, title):
 def _run_single_analysis(alert):
     from ops.alerting import apply_alert_action
 
+    from eventwall.services import record_event
+
     try:
         question = f'分析告警 ID {alert.id} 的根因，并给出处置建议。'
         session, assistant_message = _create_session_and_ask(
@@ -273,6 +275,24 @@ def _run_single_analysis(alert):
         alert.annotations = annotations
         alert.save(update_fields=['annotations'])
         logger.info('alert ai analysis done: Alert#%s session=%s', alert.id, session.id)
+        # 事件墙：单条分析完成事件（含建议摘要与会话关联）
+        record_event(
+            module='ops',
+            category='alert',
+            action='alert_analysis',
+            title=f'告警 AI 分析完成: {_safe_text(alert.title, 120)}',
+            summary=_safe_text(summary, 200) or '已生成处置建议',
+            severity='critical' if alert.level == 'critical' else 'warning',
+            resource_type='zabbix_event',
+            resource_id=alert.external_id or str(alert.id),
+            resource_name=_safe_text(alert.title, 200),
+            actor_type='system',
+            source_type='system',
+            environment=alert.environment or '',
+            metadata={'alert_id': alert.id, 'session_id': session.id,
+                      'message_id': getattr(assistant_message, 'id', None),
+                      'analysis_kind': 'single', 'event_category': 'alert'},
+        )
         push_alert_analysis_notification(alert)
         # 按告警通知规则（notify_on_aiops_analysis）经配置渠道通知指定接收对象
         from ops.alerting import dispatch_alert_notifications
@@ -286,6 +306,21 @@ def _run_single_analysis(alert):
         apply_alert_action(
             alert, ACTION_NAME, actor=BOT_USERNAME, note='AI 自动分析失败',
             metadata={'status': 'failed', 'error': str(exc)[:300]},
+        )
+        record_event(
+            module='ops',
+            category='alert',
+            action='alert_analysis',
+            title=f'告警 AI 分析失败: {_safe_text(alert.title, 120)}',
+            summary=_safe_text(str(exc), 200),
+            severity='warning',
+            result='failed',
+            resource_type='zabbix_event',
+            resource_id=alert.external_id or str(alert.id),
+            actor_type='system',
+            source_type='system',
+            environment=alert.environment or '',
+            metadata={'alert_id': alert.id, 'analysis_kind': 'single', 'event_category': 'alert'},
         )
 
 
@@ -312,7 +347,7 @@ def _run_correlation_analysis(alerts):
             module='ops',
             category='alert',
             action='alert_correlation',
-            title='告警关联分析',
+            title=f'告警关联分析: {_safe_text(alerts[0].title, 100)} 等 {len(alerts)} 条',
             summary=f'最可能根因: {summary[:200]}',
             severity='warning',
             resource_type='zabbix_event',
@@ -320,8 +355,12 @@ def _run_correlation_analysis(alerts):
             resource_name=f'{len(alerts)} 条告警关联分析',
             actor_type='system',
             source_type='system',
+            environment=alerts[0].environment or '',
+            business_line=alerts[0].business_line or '',
+            correlation_id=f'alert_correlation:{group_id}',
+            tags=['aiops', 'alert'],
             metadata={'correlation_group': group_id, 'alert_ids': [a.id for a in alerts],
-                      'session_id': session.id},
+                      'session_id': session.id, 'event_category': 'alert'},
         )
         for alert in alerts:
             apply_alert_action(
