@@ -260,6 +260,14 @@ def _fingerprint(provider, fields):
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
 
+def _safe_runbook_url(value):
+    """Runbook 链接白名单：仅允许 http/https，拒绝 javascript:/data: 等伪协议（防点击型 XSS）。"""
+    text = _text(value)
+    if text and re.match(r'^https?://', text, re.I):
+        return text
+    return ''
+
+
 def alert_dimension_value(alert, key):
     key = str(key or '').strip()
     if not key:
@@ -562,7 +570,7 @@ def upsert_alert(normalized, integration=None, actor='webhook', audit_update=Tru
         'resource_type': normalized.get('resource_type') or '',
         'resource': normalized.get('resource') or '',
         'metric_name': normalized.get('metric_name') or '',
-        'runbook_url': normalized.get('runbook_url') or '',
+        'runbook_url': _safe_runbook_url(normalized.get('runbook_url')),
         'labels': normalized.get('labels') or {},
         'annotations': normalized.get('annotations') or {},
         'raw_payload': normalized.get('raw_payload') or {},

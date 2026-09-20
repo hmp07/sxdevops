@@ -463,8 +463,8 @@
               <el-descriptions-item v-if="selectedAlert.external_id" label="&#x5916;&#x90E8; ID;">
                 <span class="detail-external-id">{{ selectedAlert.external_id }}</span>
               </el-descriptions-item>
-              <el-descriptions-item v-if="selectedAlert.runbook_url" label="Runbook;">
-                <el-link :href="selectedAlert.runbook_url" target="_blank" type="primary">{{ selectedAlert.runbook_url }}</el-link>
+              <el-descriptions-item v-if="safeRunbookUrl" label="Runbook;">
+                <el-link :href="safeRunbookUrl" target="_blank" rel="noopener noreferrer" type="primary">{{ safeRunbookUrl }}</el-link>
               </el-descriptions-item>
               <el-descriptions-item label="&#x63CF;&#x8FF0;">{{ selectedAlert.message }}</el-descriptions-item>
             </el-descriptions>
@@ -998,6 +998,12 @@ const canManageAlerts = computed(() => authStore.hasPermission('ops.alert.manage
 const canNotifyAlerts = computed(() => authStore.hasPermission('ops.alert.notify'))
 const canViewConfig = computed(() => authStore.hasPermission('ops.alert.config.view'))
 const canManageConfig = computed(() => authStore.hasPermission('ops.alert.config.manage'))
+
+// Runbook 链接白名单：仅 http/https 渲染为可点击链接（防 javascript:/data: 伪协议）
+const safeRunbookUrl = computed(() => {
+  const url = String(selectedAlert.value?.runbook_url || '').trim()
+  return /^https?:\/\//i.test(url) ? url : ''
+})
 
 const statCards = computed(() => [
   { key: 'all', label: '\u5168\u90E8\u544A\u8B66', value: summary.value.total || 0, tone: 'base-card', filter: { status: '', level: '', claimed: '' } },

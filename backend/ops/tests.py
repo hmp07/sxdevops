@@ -4628,3 +4628,31 @@ class ZabbixMacroAuditTests(TestCase):
 
         self.assertIsNone(_ts_to_datetime(None))
         self.assertIsNone(_ts_to_datetime(''))
+
+
+class RunbookUrlSafetyTests(TestCase):
+    """runbook_url 白名单：拒绝 javascript:/data: 伪协议。"""
+
+    def test_javascript_url_rejected(self):
+        from ops import alerting
+        from ops.models import Alert
+
+        alerting.ingest_webhook('zabbix', {'alerts': [{
+            'triggerid': 'rb-1', 'eventid': 'rb-e1', 'trigger_name': 'x',
+            'severity': '4', 'event_value': '1',
+            'url': 'javascript:alert(1)',
+        }]})
+        alert = Alert.objects.filter(source_type='zabbix').latest('id')
+        self.assertEqual(alert.runbook_url, '')
+
+    def test_http_url_kept(self):
+        from ops import alerting
+        from ops.models import Alert
+
+        alerting.ingest_webhook('zabbix', {'alerts': [{
+            'triggerid': 'rb-2', 'eventid': 'rb-e2', 'trigger_name': 'x',
+            'severity': '4', 'event_value': '1',
+            'url': 'https://wiki.example.com/runbooks/disk-full',
+        }]})
+        alert = Alert.objects.filter(source_type='zabbix').latest('id')
+        self.assertEqual(alert.runbook_url, 'https://wiki.example.com/runbooks/disk-full')
