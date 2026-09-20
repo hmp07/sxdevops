@@ -21,7 +21,15 @@ BROADCAST_GROUP = 'alert-analysis-broadcast'
 
 class NotificationConsumer(WebsocketConsumer):
     def connect(self):
-        token_key = parse_qs(self.scope.get('query_string', b'').decode('utf-8')).get('token', [''])[0]
+        # 优先从 Sec-WebSocket-Protocol 子协议取 token（避免凭据进入 URL/访问日志），
+        # 兼容旧式 query token（与 ssh/k8s consumer 同款）
+        token_key = ''
+        for proto in (self.scope.get('subprotocols') or []):
+            if str(proto).startswith('bearer.'):
+                token_key = str(proto)[len('bearer.'):]
+                break
+        if not token_key:
+            token_key = parse_qs(self.scope.get('query_string', b'').decode('utf-8')).get('token', [''])[0]
         token = Token.objects.filter(key=token_key).select_related('user').first()
         if not token or not token.user.is_active:
             self.close(code=4401)
@@ -31,7 +39,7 @@ class NotificationConsumer(WebsocketConsumer):
             return
 
         self.user = token.user
-        self.accept()
+        self.accept(subprotocol=f'bearer.{token_key}')
         try:
             from asgiref.sync import async_to_sync
 

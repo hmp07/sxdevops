@@ -704,8 +704,9 @@ function connectNotificationSocket() {
   const token = authStore.token
   if (!token) return
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const url = `${protocol}//${window.location.host}/ws/notifications/?token=${encodeURIComponent(token)}`
-  const socket = new WebSocket(url)
+  const url = `${protocol}//${window.location.host}/ws/notifications/`
+  // token 经 Sec-WebSocket-Protocol 子协议传输（不进 URL/访问日志）
+  const socket = new WebSocket(url, [`bearer.${token}`])
   notificationSocket = socket
   socket.onmessage = (event) => {
     try {
