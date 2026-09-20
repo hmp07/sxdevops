@@ -132,6 +132,9 @@
             </template>
           </el-table-column>
           <el-table-column prop="occurrence_count" label="&#x6B21;&#x6570;" width="60" />
+          <el-table-column prop="starts_at" label="&#x53D1;&#x751F;&#x65F6;&#x95F4;" width="180">
+            <template #default="{ row }">{{ formatTime(row.starts_at || row.created_at) }}</template>
+          </el-table-column>
           <el-table-column prop="last_received_at" label="&#x6700;&#x8FD1;&#x63A5;&#x6536;" width="180">
             <template #default="{ row }">{{ formatTime(row.last_received_at || row.created_at) }}</template>
           </el-table-column>
@@ -455,6 +458,14 @@
                 <span v-else>-</span>
               </el-descriptions-item>
               <el-descriptions-item label="&#x805A;&#x5408;&#x952E;">{{ selectedAlert.group_key || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="&#x53D1;&#x751F;&#x65F6;&#x95F4;">{{ formatTime(selectedAlert.starts_at) || '-' }}</el-descriptions-item>
+              <el-descriptions-item v-if="selectedAlert.ends_at" label="&#x6062;&#x590D;&#x65F6;&#x95F4;">{{ formatTime(selectedAlert.ends_at) }}</el-descriptions-item>
+              <el-descriptions-item v-if="selectedAlert.external_id" label="&#x5916;&#x90E8; ID;">
+                <span class="detail-external-id">{{ selectedAlert.external_id }}</span>
+              </el-descriptions-item>
+              <el-descriptions-item v-if="selectedAlert.runbook_url" label="Runbook;">
+                <el-link :href="selectedAlert.runbook_url" target="_blank" type="primary">{{ selectedAlert.runbook_url }}</el-link>
+              </el-descriptions-item>
               <el-descriptions-item label="&#x63CF;&#x8FF0;">{{ selectedAlert.message }}</el-descriptions-item>
             </el-descriptions>
           </section>
@@ -473,6 +484,16 @@
             <div class="kv-list">
               <el-tag v-for="(value, key) in selectedAlert.labels" :key="key" size="small">{{ key }}={{ value }}</el-tag>
               <span v-if="!Object.keys(selectedAlert.labels || {}).length" class="detail-empty">暂无标签</span>
+            </div>
+          </section>
+          <section class="alert-detail-card">
+            <div class="detail-section-title">
+              <h4>&#x6CE8;&#x89E3;</h4>
+              <span>{{ Object.keys(selectedAlert.annotations || {}).length }} 项</span>
+            </div>
+            <div class="kv-list">
+              <el-tag v-for="(value, key) in selectedAlert.annotations" :key="key" size="small">{{ key }}={{ value }}</el-tag>
+              <span v-if="!Object.keys(selectedAlert.annotations || {}).length" class="detail-empty">暂无注解</span>
             </div>
           </section>
           <section class="alert-detail-card">

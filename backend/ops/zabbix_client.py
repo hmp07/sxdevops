@@ -303,7 +303,7 @@ class ZabbixClient:
         """
         params = {
             'output': ['eventid', 'name', 'severity', 'clock', 'source', 'objectid',
-                       'acknowledged', 'r_eventid'],
+                       'acknowledged', 'r_eventid', 'r_clock', 'opdata'],
             'recent': recent,
         }
         if host_ids:

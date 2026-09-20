@@ -96,18 +96,19 @@ Zabbix 端需要两步配置：**告警媒介类型（Media Type）** 和 **动�
 |------|------|
 | `alert_subject` | 告警标题 |
 | `alert_message` | 告警详情 |
-| `alert_severity` | 严重级别（数字 0-5） |
+| `alert_severity` | 严重级别（数字 0-5，`{EVENT.NSEVERITY}`） |
 | `alert_status` | 告警状态（PROBLEM / OK） |
 | `trigger_id` | 触发器 ID |
 | `event_id` | 事件 ID |
 | `host_name` | 主机名 |
 | `host_ip` | 主机 IP |
+| `hostid` | 主机 ID（`{HOST.ID}`，用于平台主机关联） |
 | `trigger_name` | 触发器名称 |
 | `trigger_description` | 触发器描述 |
-| `event_time` | 事件时间（Unix 时间戳） |
-| `event_recovery_time` | 恢复时间 |
-| `host_group` | 主机组 |
-| `event_tags` | 事件标签 |
+| `event_time` | 事件时间（点分格式 `YYYY.MM.DD hh:mm:ss`，平台自动解析） |
+| `event_recovery_time` | 恢复时间（同上格式） |
+| `host_group` | 主机组名称（`{TRIGGER.HOSTGROUP.NAME}`） |
+| `event_tags` | 事件标签（`name: value` 冒号格式，逗号分隔） |
 | `webhook_url` | SxDevOps Webhook URL |
 
 ### 3.2 Webhook JavaScript 脚本
@@ -134,6 +135,7 @@ try {
     problem.eventid = params.event_id;
     problem.host = params.host_name;
     problem.host_ip = params.host_ip;
+    problem.hostid = params.hostid;
     problem.hostgroup = params.host_group;
     problem.event_time = params.event_time;
     problem.recovery_time = params.event_recovery_time;
@@ -188,23 +190,31 @@ try {
 |------|-----|
 | `alert_subject` | `{ALERT.SUBJECT}` |
 | `alert_message` | `{ALERT.MESSAGE}` |
-| `alert_severity` | `{EVENT.SEVERITY}` |
+| `alert_severity` | `{EVENT.NSEVERITY}` |
 | `alert_status` | `{EVENT.STATUS}` |
 | `trigger_id` | `{TRIGGER.ID}` |
 | `event_id` | `{EVENT.ID}` |
 | `host_name` | `{HOST.NAME}` |
 | `host_ip` | `{HOST.IP}` |
+| `hostid` | `{HOST.ID}` |
 | `trigger_name` | `{TRIGGER.NAME}` |
 | `trigger_description` | `{TRIGGER.DESCRIPTION}` |
 | `event_time` | `{EVENT.TIME}` |
 | `event_recovery_time` | `{EVENT.RECOVERY.TIME}` |
-| `host_group` | `{HOSTGROUP.ID}` |
+| `host_group` | `{TRIGGER.HOSTGROUP.NAME}` |
 | `event_tags` | `{EVENT.TAGS}` |
 | `webhook_url` | `https://<你的平台>/api/alerts/webhooks/zabbix/<token>/` |
 
+> **宏选择说明**（对照 Zabbix 官方宏文档）：
+> - `{EVENT.NSEVERITY}` 输出**数字** 0-5（平台按数字映射级别）；`{EVENT.SEVERITY}` 输出本地化文本（中文环境如"一般严重"），不推荐。
+> - `{EVENT.TIME}`/`{EVENT.RECOVERY.TIME}` 输出点分格式时间（`YYYY.MM.DD hh:mm:ss`），**不是 Unix 时间戳**——平台已支持自动解析，无需转换。
+> - `{EVENT.TAGS}` 输出逗号分隔的 `name: value` 冒号格式，平台已兼容。
+> - `{TRIGGER.HOSTGROUP.NAME}` 输出主机组**名称**（`{HOSTGROUP.ID}` 是数字 ID，勿用）。
+> - webhook 媒体类型参数值需"单个宏填满整个字段"，本表均为单宏，符合要求。
+
 #### 3.3.3 恢复操作（Recovery operations）Tab
 
-点击 **Add**，配置与 Operations 相同，Zabbix 会自动将 `{EVENT.STATUS}` 设为 `OK`，`{EVENT.RECOVERY.TIME}` 填入恢复时间戳。平台识别 `status="OK"` 后会将告警标记为"已恢复"。
+点击 **Add**，配置与 Operations 相同，Zabbix 会自动将 `{EVENT.STATUS}` 设为 `OK`，`{EVENT.RECOVERY.TIME}` 填入恢复时间（点分格式）。平台识别 `status="OK"` 后会将告警标记为"已恢复"。
 
 ---
 
@@ -219,15 +229,15 @@ try {
 | `title` | `trigger_name` → `event_name` → `subject` → `name` |
 | `message` | `message` → `body` → `trigger_description` |
 | `source` | `source` → 默认 `Zabbix` |
-| `resource`（主机名）| `host` → `hostname` → `host_name` → `hosts[0].host` |
+| `resource`（主机名）| `host` → `hostname` → `host_name` → `hosts[0].host` → 兜底 `host_ip` |
 | `external_id` | `eventid` → `event_id` → `triggerid` |
 | `fingerprint` | `triggerid` → `trigger_id` → `eventid` |
 | `group_key` | `hostgroup` → `host_group` → `tags.group` |
 | `service` | `tags.app` → `tags.job_name` → `tags.service` → `application` |
 | `metric_name` | `metric` → `item_name` → `key` |
-| `starts_at` | `event_time` → `clock` → `time` |
-| `ends_at` | `recovery_time` → `r_clock` |
-| `labels` | `tags`（支持 `key=value,key2=value2` 或 JSON 对象格式）|
+| `starts_at` | `event_time` → `clock` → `time`（支持 Unix 时间戳 / ISO / 点分格式） |
+| `ends_at` | `recovery_time` → `r_clock`（同上） |
+| `labels` | `tags`（支持 `key=value` 与 `name: value` 冒号双格式、逗号分隔，或 JSON 对象）；`hostid` 自动写入 `zabbix_hostid` 用于主机关联 |
 
 ### 4.2 严重级别映射
 
@@ -291,9 +301,10 @@ Zabbix 通过 Webhook 发送的 JSON 负载：
       "eventid": "1058294",
       "host": "db-prod-01",
       "host_ip": "10.10.1.20",
+      "hostid": "10107",
       "hostgroup": "database-prod",
-      "event_time": 1778992200,
-      "tags": "app=order-db,env=prod,cluster=prod-cluster,team=dba",
+      "event_time": "2026.09.18 10:00:00",
+      "tags": "app: order-db, env: prod, cluster: prod-cluster, team: dba",
       "trigger_description": "当 /data 分区使用率超过 85% 时触发",
       "url": "https://wiki.example.com/runbooks/disk-full"
     }
@@ -331,16 +342,17 @@ Zabbix 通过 Webhook 发送的 JSON 负载：
       "triggerid": "28731",
       "eventid": "1058456",
       "host": "db-prod-01",
+      "hostid": "10107",
       "hostgroup": "database-prod",
-      "event_time": 1778992200,
-      "recovery_time": 1778995800,
-      "tags": "app=order-db,env=prod"
+      "event_time": "2026.09.18 10:00:00",
+      "recovery_time": "2026.09.18 11:00:00",
+      "tags": "app: order-db, env: prod"
     }
   ]
 }
 ```
 
-平台收到 `status=OK` → 告警状态变为"已恢复"，`ends_at` 自动填入恢复时间。
+平台收到 `status=OK` → 告警状态变为"已恢复"，`ends_at` 自动填入恢复时间（`recovery_time` 解析），且原 PROBLEM 的 `external_id` 保持不变（不会被恢复事件 ID 覆盖）。
 
 ---
 
@@ -425,3 +437,16 @@ curl -X POST \
 | 运维复杂度 | 需要维护 cron 任务 | 一次性配置 Zabbix |
 
 **推荐生产环境使用 Webhook 推送（路径 B）作为主要接入方式**，同时保留平台轮询（路径 A）作为备用兜底方案。
+
+## 九、升级说明（存量 Zabbix 配置迁移）
+
+若此前按旧版手册配置过 Media Type 与 Action，请更新以下参数（平台后端对旧格式保持兼容，新旧配置均可正常工作，但新配置才能获得完整字段）：
+
+| 参数 | 旧值 | 新值 | 原因 |
+|------|------|------|------|
+| `alert_severity` | `{EVENT.SEVERITY}` | `{EVENT.NSEVERITY}` | 旧宏输出本地化文本，中文环境"一般严重"会被平台误判为 info |
+| `host_group` | `{HOSTGROUP.ID}` | `{TRIGGER.HOSTGROUP.NAME}` | 旧宏输出数字 ID，平台按名字使用 |
+| `hostid` | 无 | `{HOST.ID}` | 新增：推送路径与轮询路径一致地按主机 ID 精确关联平台主机 |
+| `event_time`/`event_recovery_time` | 说明误写为 Unix 时间戳 | 点分格式（宏不变） | 平台已支持自动解析点分格式，无需处理 |
+
+另外：`{EVENT.TAGS}` 为 `name: value` 冒号格式，平台已兼容；`external_id` 在恢复事件到达时保留原 PROBLEM 事件 ID（外部回查 Zabbix 更准确）。

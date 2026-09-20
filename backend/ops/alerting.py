@@ -2,7 +2,7 @@ import hashlib
 import json
 import re
 from collections import Counter, defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import requests
 from django.conf import settings
@@ -137,6 +137,14 @@ def _parse_time(value):
             if timezone.is_naive(parsed):
                 parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
             return parsed
+        # Zabbix {EVENT.TIME}/{EVENT.RECOVERY.TIME} 宏输出点分格式：
+        # YYYY.MM.DD hh:mm:ss（如 2026.09.18 10:00:00）
+        for fmt in ('%Y.%m.%d %H:%M:%S', '%Y.%m.%d %H:%M'):
+            try:
+                parsed = datetime.strptime(stripped, fmt)
+                return timezone.make_aware(parsed, timezone.get_current_timezone())
+            except ValueError:
+                continue
     return None
 
 
@@ -145,16 +153,27 @@ def _parse_labels(value):
         return {str(key): _text(val) for key, val in value.items() if key is not None}
     labels = {}
     if isinstance(value, list):
-        parts = value
+        parts = [_text(item) for item in value]
     elif isinstance(value, str):
-        parts = re.split(r',,|,|\s+', value)
+        # Zabbix {EVENT.TAGS} 输出逗号分隔的 "name: value"；含逗号时仅按逗号切分
+        #（避免按空白切分截断含空格的值）；无逗号时保留空白切分兼容其他来源
+        if ',' in value:
+            parts = [part.strip() for part in value.split(',')]
+        else:
+            parts = re.split(r'\s+', value.strip())
     else:
         parts = []
     for item in parts:
         text = _text(item)
-        if not text or '=' not in text:
+        if not text:
             continue
-        key, val = text.split('=', 1)
+        # 双格式：key=value 与 Zabbix 冒号格式 name: value
+        if '=' in text:
+            key, val = text.split('=', 1)
+        elif ':' in text:
+            key, val = text.split(':', 1)
+        else:
+            continue
         if key.strip():
             labels[key.strip()] = val.strip()
     return labels
@@ -172,9 +191,9 @@ def _severity_to_level(value, provider=''):
         return 'critical'
     if text in {'3', '2'} and provider == Alert.SOURCE_ZABBIX:
         return 'warning'
-    if text in {'critical', 'crit', 'fatal', 'emergency', 'disaster', 'high', 'p0', 'p1', 'sev0', 'sev1', '严重'}:
+    if text in {'critical', 'crit', 'fatal', 'emergency', 'disaster', 'high', 'p0', 'p1', 'sev0', 'sev1', '严重', '灾难'}:
         return 'critical'
-    if text in {'warning', 'warn', 'average', 'medium', 'minor', 'p2', 'p3', 'sev2', 'sev3', '告警', '警告'}:
+    if text in {'warning', 'warn', 'average', 'medium', 'minor', 'p2', 'p3', 'sev2', 'sev3', '告警', '警告', '一般严重', '平均值', '一般'}:
         return 'warning'
     return 'info'
 
@@ -358,6 +377,12 @@ def _normalize_zabbix(payload, integration=None):
         host_value = _first(item.get('host'), item.get('hostname'), item.get('host_name'), item.get('host.name'))
         if isinstance(item.get('hosts'), list) and item.get('hosts'):
             host_value = _first(host_value, item['hosts'][0].get('host'), item['hosts'][0].get('name'))
+        # 主机 IP 兜底：host 名缺失时用 IP 作为资源标识
+        host_ip = _text(_first(item.get('host_ip'), item.get('host.ip'), item.get('ip')))
+        # 主机 ID 入 labels：与轮询路径 zabbix_hostid 一致，使 _host_for 可精确关联 Host
+        hostid = _text(_first(item.get('hostid'), item.get('host_id'), item.get('host.id')))
+        if hostid:
+            labels['zabbix_hostid'] = hostid
         title = _first(item.get('trigger_name'), item.get('event_name'), item.get('subject'), item.get('name'), 'Zabbix 告警')
         message = _first(item.get('message'), item.get('body'), item.get('trigger_description'), title)
         status_value = _first(item.get('status'), item.get('event_status'), item.get('event_value'), item.get('value'))
@@ -378,11 +403,15 @@ def _normalize_zabbix(payload, integration=None):
             'region': _text(labels.get('region')),
             'business_line': _text(_first(labels.get('business_line'), labels.get('team'), item.get('hostgroup'))),
             'resource_type': 'host',
-            'resource': _text(host_value),
+            'resource': _text(host_value) or host_ip,
             'metric_name': _text(_first(item.get('metric'), item.get('item_name'), item.get('key'))),
             'runbook_url': _text(item.get('url')),
             'labels': labels,
-            'annotations': {'opdata': _text(item.get('opdata')), 'recovery_message': _text(item.get('recovery_message'))},
+            'annotations': {
+                'opdata': _text(item.get('opdata')),
+                'recovery_message': _text(item.get('recovery_message')),
+                'acknowledged': _text(item.get('acknowledged')),
+            },
             'starts_at': _parse_time(_first(item.get('event_time'), item.get('clock'), item.get('time'))),
             'ends_at': _parse_time(_first(item.get('recovery_time'), item.get('r_clock'))),
             'raw_payload': item,
@@ -553,6 +582,10 @@ def upsert_alert(normalized, integration=None, actor='webhook', audit_update=Tru
         was_resolved = alert.status == Alert.STATUS_RESOLVED
         for field, value in defaults.items():
             if field == 'starts_at' and alert.starts_at:
+                continue
+            # 保留原 PROBLEM 事件的 external_id：恢复事件携带新 eventid 时
+            # 不应覆盖（外部按 external_id 回查 Zabbix 应指向原始问题事件）
+            if field == 'external_id' and alert.external_id:
                 continue
             setattr(alert, field, value)
         alert.occurrence_count = alert.occurrence_count + 1

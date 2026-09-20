@@ -103,7 +103,7 @@ def _build_normalized(problem, host_name='', host_id='', visible_name='', env_na
             'opdata': str(problem.get('opdata', '')),
         },
         'raw_payload': problem,
-        'starts_at': _ts_to_datetime(problem.get('clock')),
+        'starts_at': _ts_to_datetime(problem.get('clock')) or now(),
         'ends_at': _ts_to_datetime(problem.get('r_clock')) if not is_active else None,
         'last_received_at': now(),
     }
@@ -138,8 +138,11 @@ def upsert_alert_from_zabbix_problem(problem, host_name='', host_id='', visible_
 
 
 def _ts_to_datetime(ts):
-    """Unix 时间戳转 datetime"""
+    """Unix 时间戳转 datetime；缺失返回 None（ends_at 语义：无恢复时间即无值）。
+
+    starts_at 的兜底由调用方处理（_build_normalized 中 `or now()`）。
+    """
     if not ts:
-        return now()
+        return None
     from datetime import datetime, timezone as tz
     return datetime.fromtimestamp(int(ts), tz=tz.utc)

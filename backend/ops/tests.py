@@ -4486,3 +4486,145 @@ class AlertAIAnalysisTests(TestCase):
         while not alert_ai_analysis._analysis_queue.empty():
             queued_ids.append(alert_ai_analysis._analysis_queue.get_nowait())
         self.assertEqual(queued_ids, [unanalyzed.id])
+
+
+
+class ZabbixMacroAuditTests(TestCase):
+    """宏对照审计修复回归：severity 全映射、点分时间、冒号标签、字段配套、external_id 保留。"""
+
+    def setUp(self):
+        from rbac.services import ensure_builtin_rbac
+
+        ensure_builtin_rbac()
+
+    def test_severity_numeric_full_mapping(self):
+        from ops.alerting import _severity_to_level
+
+        self.assertEqual(_severity_to_level('5', 'zabbix'), 'critical')
+        self.assertEqual(_severity_to_level('4', 'zabbix'), 'critical')
+        self.assertEqual(_severity_to_level('3', 'zabbix'), 'warning')
+        self.assertEqual(_severity_to_level('2', 'zabbix'), 'warning')
+        self.assertEqual(_severity_to_level('1', 'zabbix'), 'info')
+        self.assertEqual(_severity_to_level('0', 'zabbix'), 'info')
+
+    def test_severity_chinese_text_mapping(self):
+        from ops.alerting import _severity_to_level
+
+        self.assertEqual(_severity_to_level('灾难', 'zabbix'), 'critical')
+        self.assertEqual(_severity_to_level('严重', 'zabbix'), 'critical')
+        self.assertEqual(_severity_to_level('一般严重', 'zabbix'), 'warning')
+        self.assertEqual(_severity_to_level('平均值', 'zabbix'), 'warning')
+        self.assertEqual(_severity_to_level('信息', 'zabbix'), 'info')
+
+    def test_parse_time_dotted_format(self):
+        from django.utils import timezone as dj_timezone
+        from ops.alerting import _parse_time
+
+        parsed = _parse_time('2026.09.18 10:00:00')
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.year, 2026)
+        self.assertEqual(parsed.month, 9)
+        self.assertEqual(parsed.day, 18)
+        self.assertEqual(parsed.hour, 10)
+
+    def test_parse_labels_zabbix_colon_format(self):
+        from ops.alerting import _parse_labels
+
+        labels = _parse_labels('app: order-db, env: prod, desc: disk full, team: dba')
+        self.assertEqual(labels.get('app'), 'order-db')
+        self.assertEqual(labels.get('env'), 'prod')
+        self.assertEqual(labels.get('desc'), 'disk full', '含空格的值不得被截断')
+        self.assertEqual(labels.get('team'), 'dba')
+
+    def test_parse_labels_keeps_equals_and_whitespace_compat(self):
+        from ops.alerting import _parse_labels
+
+        labels = _parse_labels('app=order-db,env=prod')
+        self.assertEqual(labels.get('app'), 'order-db')
+        self.assertEqual(labels.get('env'), 'prod')
+        # 无逗号的空白分隔 key=value 兼容旧行为
+        labels2 = _parse_labels('app=order-db env=prod')
+        self.assertEqual(labels2.get('app'), 'order-db')
+        self.assertEqual(labels2.get('env'), 'prod')
+
+    def test_webhook_hostid_and_host_ip_and_acknowledged(self):
+        from ops import alerting
+        from ops.models import Alert
+
+        payload = {'alerts': [{
+            'triggerid': 'T900', 'eventid': 'E900', 'trigger_name': '测试',
+            'severity': '4', 'event_value': '1',
+            'hostid': '10888', 'host_ip': '10.0.0.55', 'acknowledged': '1',
+        }]}
+        result = alerting.ingest_webhook('zabbix', payload)
+        alert = result['alerts'][0]
+        self.assertEqual(alert.labels.get('zabbix_hostid'), '10888')
+        self.assertEqual(alert.annotations.get('acknowledged'), '1')
+        # host 缺失时 resource 兜底 host_ip
+        self.assertEqual(alert.resource, '10.0.0.55')
+
+    def test_webhook_recovery_event_resolves_and_keeps_external_id(self):
+        from ops import alerting
+        from ops.models import Alert
+
+        problem = {'alerts': [{
+            'triggerid': 'T901', 'eventid': 'E901', 'trigger_name': '测试恢复',
+            'severity': '4', 'event_value': '1', 'host': 'web-01',
+        }]}
+        alerting.ingest_webhook('zabbix', problem)
+        alert = Alert.objects.get(fingerprint__isnull=False, labels__isnull=False)
+        # 恢复事件：新 eventid + event_value=0
+        recovery = {'alerts': [{
+            'triggerid': 'T901', 'eventid': 'E902', 'trigger_name': '测试恢复',
+            'severity': '0', 'event_value': '0', 'host': 'web-01',
+        }]}
+        result = alerting.ingest_webhook('zabbix', recovery)
+        updated = result['alerts'][0]
+        self.assertEqual(updated.status, 'resolved')
+        self.assertEqual(updated.external_id, 'E901', '恢复事件不得覆盖原 PROBLEM external_id')
+        self.assertEqual(Alert.objects.filter(source_type='zabbix').count(), 1, '恢复不得新建告警')
+
+    def test_poll_client_output_includes_rclock_and_opdata(self):
+        """经 client 层：get_problems 输出含 r_clock/opdata，恢复 ends_at=真实恢复时间。"""
+        from unittest.mock import patch
+
+        from ops.zabbix_alert_bridge import _build_normalized, _ts_to_datetime
+        from ops.zabbix_client import ZabbixClient
+
+        output_fields = None
+
+        def fake_ensure_auth(self):
+            return True
+
+        def fake_call(self, method, params):
+            nonlocal output_fields
+            output_fields = params.get('output')
+            return [{
+                'eventid': 'E903', 'objectid': 'T903', 'name': '测试',
+                'severity': '4', 'clock': '1726617600',
+                'r_eventid': 'R903', 'r_clock': '1726621200', 'opdata': '当前值 92%',
+            }]
+
+        with patch.object(ZabbixClient, '_ensure_auth', fake_ensure_auth), \
+             patch.object(ZabbixClient, '_call', fake_call):
+            client = ZabbixClient.__new__(ZabbixClient)
+            problems = client.get_problems(recent=False)
+
+        self.assertIn('r_clock', output_fields, 'client 必须拉取 r_clock')
+        self.assertIn('opdata', output_fields, 'client 必须拉取 opdata')
+        problem = problems[0]
+        normalized = _build_normalized(problem, host_name='web-01', host_id='10889')
+        self.assertEqual(normalized['status'], 'resolved')
+        self.assertIsNotNone(normalized['ends_at'])
+        self.assertEqual(
+            normalized['ends_at'],
+            _ts_to_datetime('1726621200'),
+            'ends_at 应为真实恢复时间而非轮询时间',
+        )
+        self.assertEqual(normalized['annotations'].get('opdata'), '当前值 92%')
+
+    def test_ts_to_datetime_missing_returns_none(self):
+        from ops.zabbix_alert_bridge import _ts_to_datetime
+
+        self.assertIsNone(_ts_to_datetime(None))
+        self.assertIsNone(_ts_to_datetime(''))
