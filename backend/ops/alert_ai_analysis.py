@@ -40,6 +40,20 @@ def _safe_text(value, limit=200):
     text = ' '.join(text.split())
     return text[:limit]
 
+
+# 多行文本控制字符（保留 \n 段落结构）：\x00-\x08、\x0b、\x0c、\x0e-\x1f、\x7f
+_MULTILINE_CONTROL_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+
+
+def _safe_multiline_text(value, limit=3000):
+    """清理不可信多行文本：剥离控制字符但保留换行段落、压缩行内空白、限长。"""
+    text = str(value or '')
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    text = _MULTILINE_CONTROL_RE.sub(' ', text)
+    lines = [' '.join(line.split()) for line in text.split('\n')]
+    text = '\n'.join(lines)
+    return text[:limit]
+
 ACTION_NAME = 'aiops_analysis'
 BOT_USERNAME = 'aiops-bot'
 # 分析工具链所需的全部只读权限（与 aiops/tools/registry.py 的工具权限一致，
@@ -275,13 +289,15 @@ def _run_single_analysis(alert):
         alert.annotations = annotations
         alert.save(update_fields=['annotations'])
         logger.info('alert ai analysis done: Alert#%s session=%s', alert.id, session.id)
-        # 事件墙：单条分析完成事件（含建议摘要与会话关联）
+        # 事件墙：单条分析完成事件（含建议摘要与会话关联；全文落 detail 保留换行）
+        full_text = (assistant_message.content or '') if assistant_message else ''
         record_event(
             module='ops',
             category='alert',
             action='alert_analysis',
             title=f'告警 AI 分析完成: {_safe_text(alert.title, 120)}',
             summary=_safe_text(summary, 200) or '已生成处置建议',
+            detail=_safe_multiline_text(full_text),
             severity='critical' if alert.level == 'critical' else 'warning',
             resource_type='zabbix_event',
             resource_id=alert.external_id or str(alert.id),
@@ -343,12 +359,17 @@ def _run_correlation_analysis(alerts):
     try:
         session, assistant_message = _create_session_and_ask(question, f'告警关联分析: {group_id}')
         summary = (assistant_message.content or '')[:500] if assistant_message else ''
+        full_text = (assistant_message.content or '') if assistant_message else ''
+        detail_text = _safe_multiline_text(
+            f'关联告警: {", ".join(str(a.id) for a in alerts)}\n\n{full_text}'
+        )
         record_event(
             module='ops',
             category='alert',
             action='alert_correlation',
             title=f'告警关联分析: {_safe_text(alerts[0].title, 100)} 等 {len(alerts)} 条',
-            summary=f'最可能根因: {summary[:200]}',
+            summary=f'最可能根因: {_safe_text(summary, 200)}',
+            detail=detail_text,
             severity='warning',
             resource_type='zabbix_event',
             resource_id=group_id,

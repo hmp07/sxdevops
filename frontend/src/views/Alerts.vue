@@ -779,6 +779,7 @@ import {
   getAlertNotificationRules,
   getAlertRecipientGroups,
   getAlertRecipients,
+  getAlert,
   getAlerts,
   getAlertSummary,
   getUsers,
@@ -1837,6 +1838,17 @@ onMounted(async () => {
   applyRouteFilters()
   users.value = listOf(await getUsers())
   await refreshAll()
+  // 事件墙等入口经 ?alert_id= 定位单条告警并自动打开详情
+  const alertId = Number(route.query.alert_id)
+  if (alertId) {
+    try {
+      const alert = await getAlert(alertId)
+      selectedAlert.value = alert
+      detailVisible.value = true
+    } catch {
+      /* 告警不存在时静默忽略 */
+    }
+  }
 })
 </script>
 

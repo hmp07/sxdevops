@@ -4427,7 +4427,10 @@ class AlertAIAnalysisTests(TestCase):
 
         alert = self._make_alert(fingerprint='fp-single')
         bot = AIOpsChatSession.objects.create(user=self._ensure_bot_user(), title='t', context={})
-        assistant = AIOpsChatMessage.objects.create(session=bot, role='assistant', content='建议：检查 CPU 限流。')
+        assistant = AIOpsChatMessage.objects.create(
+            session=bot, role='assistant',
+            content='建议：检查 CPU 限流。' + chr(10) + chr(10) + '补充：关注高峰时段并评估扩容。'
+        )
 
         with patch('ops.alert_ai_analysis._create_session_and_ask', return_value=(bot, assistant)):
             _process_batch([alert.id])
@@ -4442,6 +4445,8 @@ class AlertAIAnalysisTests(TestCase):
         wall_event = EventRecord.objects.filter(action='alert_analysis', metadata__alert_id=alert.id).first()
         self.assertIsNotNone(wall_event, '单条分析完成应写入事件墙')
         self.assertEqual(wall_event.metadata.get('analysis_kind'), 'single')
+        self.assertIn(chr(10), wall_event.detail or '', 'detail 应保留换行段落')
+        self.assertIn('评估扩容', wall_event.detail or '')
 
     def test_correlation_analysis_groups_same_source_alerts(self):
         from unittest.mock import patch
@@ -4829,3 +4834,23 @@ class _FakeChannelLayer:
 
     def group_discard(self, group, channel):
         pass
+
+
+
+class AiAnalysisDetailTextTests(TestCase):
+    """AI 分析全文清洗：保留换行、剥离控制字符、限长。"""
+
+    def test_safe_multiline_preserves_newlines(self):
+        from ops.alert_ai_analysis import _safe_multiline_text
+
+        text = '根因：' + chr(0) + '磁盘满\n\n建议：\r\n- 清理日志\r- 扩容'
+        result = _safe_multiline_text(text)
+        self.assertIn('磁盘满', result)
+        self.assertIn('\n', result)
+        self.assertNotIn(chr(0), result)
+        self.assertNotIn('\r', result)
+
+    def test_safe_multiline_limit(self):
+        from ops.alert_ai_analysis import _safe_multiline_text
+
+        self.assertLessEqual(len(_safe_multiline_text('x' * 5000, limit=100)), 100)

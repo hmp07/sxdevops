@@ -262,7 +262,14 @@
 
     <el-drawer v-model="drawerVisible" class="event-detail-drawer" title="事件详情" size="720px" append-to-body destroy-on-close>
       <div v-if="activeEvent" class="detail-stack">
-        <section class="detail-section detail-section--main">
+        <section v-if="isAiAnalysisEvent" class="detail-section detail-section--main">
+          <strong>{{ activeEvent.title }}</strong>
+          <div class="reason-tags">
+            <span class="analysis-kind-tag">{{ analysisKindLabel(activeEvent) }}</span>
+            <span v-for="reason in visibleSuspicionReasons(activeEvent)" :key="reason">{{ reason }}</span>
+          </div>
+        </section>
+        <section v-else class="detail-section detail-section--main">
           <strong>{{ activeEvent.title }}</strong>
           <p>{{ activeEvent.summary || activeEvent.detail || '-' }}</p>
           <div class="reason-tags">
@@ -279,7 +286,43 @@
           <div class="detail-row"><span>操作人</span><b>{{ actorLabel(activeEvent) }}</b></div>
           <div class="detail-row"><span>关联 ID</span><b>{{ activeEvent.correlation_id || '-' }}</b></div>
         </section>
-        <section class="detail-section">
+        <section v-if="isAiAnalysisEvent" class="detail-section detail-section--analysis">
+          <h4>分析内容</h4>
+          <div class="analysis-body" :class="{ 'is-collapsed': !analysisExpanded }">
+            <div class="analysis-text">{{ aiAnalysisText }}</div>
+          </div>
+          <div v-if="analysisTextLong" class="analysis-toggle">
+            <el-button link size="small" type="primary" @click="analysisExpanded = !analysisExpanded">
+              {{ analysisExpanded ? '收起全文' : '展开全文' }}
+            </el-button>
+          </div>
+          <div v-if="activeEvent.metadata?.alert_id" class="detail-row">
+            <span>告警</span>
+            <b><el-button link size="small" type="primary" @click="goAlert(activeEvent.metadata.alert_id)">告警 #{{ activeEvent.metadata.alert_id }}</el-button></b>
+          </div>
+          <div v-if="correlationAlertIds.length" class="detail-row">
+            <span>关联告警</span>
+            <b class="analysis-alert-links">
+              <el-button v-for="id in correlationAlertIds" :key="id" link size="small" type="primary" @click="goAlert(id)">#{{ id }}</el-button>
+            </b>
+          </div>
+          <div v-if="activeEvent.metadata?.correlation_group" class="detail-row">
+            <span>关联组</span><b>{{ activeEvent.metadata.correlation_group }}</b>
+          </div>
+          <div v-if="activeEvent.metadata?.session_id" class="detail-row">
+            <span>分析会话</span>
+            <b>
+              <el-button link size="small" type="primary" :loading="sessionLoading" @click="toggleSessionDetail">会话 #{{ activeEvent.metadata.session_id }}</el-button>
+            </b>
+          </div>
+          <div v-if="sessionMessages.length" class="session-panel">
+            <div v-for="(msg, index) in sessionMessages" :key="index" class="session-message" :class="`is-${msg.role}`">
+              <div class="session-role">{{ msg.role === 'assistant' ? 'AI 分析' : '输入' }}</div>
+              <div class="session-content">{{ msg.content }}</div>
+            </div>
+          </div>
+        </section>
+        <section v-else class="detail-section">
           <h4>元数据</h4>
           <pre>{{ prettyJson(activeEvent.metadata || {}) }}</pre>
         </section>
@@ -293,6 +336,7 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Aim, RefreshRight, Search } from '@element-plus/icons-vue'
 import { getEventSources, getEventWallAnalysis, getEventWallFilterOptions } from '@/api/modules/eventwall'
+import { getAIOpsMessages } from '@/api/modules/aiops'
 import EventWallTabs from '@/components/eventwall/EventWallTabs.vue'
 
 const route = useRoute()
@@ -301,6 +345,52 @@ const loading = ref(false)
 const drawerVisible = ref(false)
 const axisRailRef = ref(null)
 const activeEvent = ref(null)
+// AI 分析事件详情结构化展示
+const analysisExpanded = ref(false)
+const sessionLoading = ref(false)
+const sessionMessages = ref([])
+
+const isAiAnalysisEvent = computed(() =>
+  ['alert_analysis', 'alert_correlation'].includes(activeEvent.value?.action)
+)
+const analysisKindLabel = (event) => {
+  const kind = event?.metadata?.analysis_kind
+  if (kind === 'correlation') return '关联分析'
+  if (kind === 'single') return '单告警分析'
+  return event?.action === 'alert_correlation' ? '关联分析' : 'AI 分析'
+}
+const aiAnalysisText = computed(() => {
+  const event = activeEvent.value
+  if (!event) return ''
+  const detail = String(event.detail || '').trim()
+  return detail || event.summary || '-'
+})
+const analysisTextLong = computed(() => aiAnalysisText.value.length > 600)
+const correlationAlertIds = computed(() => {
+  const ids = activeEvent.value?.metadata?.alert_ids || []
+  return Array.isArray(ids) ? ids.filter(Boolean) : []
+})
+function goAlert(alertId) {
+  if (!alertId) return
+  router.push({ path: '/alerts', query: { alert_id: alertId } })
+}
+async function toggleSessionDetail() {
+  const sessionId = activeEvent.value?.metadata?.session_id
+  if (!sessionId) return
+  if (sessionMessages.value.length) {
+    sessionMessages.value = []
+    return
+  }
+  sessionLoading.value = true
+  try {
+    const messages = await getAIOpsMessages(sessionId)
+    sessionMessages.value = Array.isArray(messages) ? messages.slice(-8) : []
+  } catch {
+    sessionMessages.value = []
+  } finally {
+    sessionLoading.value = false
+  }
+}
 const wall = ref({ summary: {}, window: {}, lanes: [], suspects: [], events: [], source_breakdown: [], tips: [] })
 const filterOptions = ref({ system_names: [], environments: [], applications: [] })
 const sourceOptions = ref([])
@@ -613,6 +703,8 @@ function normalizeAnalysisRange() {
 
 function openDetail(row) {
   activeEvent.value = row
+  analysisExpanded.value = false
+  sessionMessages.value = []
   drawerVisible.value = true
 }
 
@@ -1967,5 +2059,78 @@ pre {
   .chain-event-row span {
     grid-column: 1;
   }
+}
+
+/* ── AI 分析事件详情结构化展示 ───────────────────────────────────── */
+.analysis-kind-tag {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: #ecf5ff;
+  color: #409eff;
+}
+
+.detail-section--analysis .analysis-body {
+  background: #f8fafc;
+  border: 1px solid #e5eaf0;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.analysis-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.8;
+  color: #334155;
+  font-size: 13px;
+}
+
+.analysis-body.is-collapsed .analysis-text {
+  max-height: 300px;
+  overflow: hidden;
+}
+
+.analysis-toggle {
+  margin-top: 6px;
+}
+
+.analysis-alert-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+}
+
+.session-panel {
+  margin-top: 10px;
+  border-top: 1px dashed #e5eaf0;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.session-message {
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #f1f5f9;
+}
+
+.session-message.is-assistant {
+  background: #ecf5ff;
+}
+
+.session-role {
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+.session-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.7;
+  font-size: 13px;
+  color: #1e293b;
 }
 </style>
