@@ -289,7 +289,7 @@
         <section v-if="isAiAnalysisEvent" class="detail-section detail-section--analysis">
           <h4>分析内容</h4>
           <div class="analysis-body" :class="{ 'is-collapsed': !analysisExpanded }">
-            <div class="analysis-text">{{ aiAnalysisText }}</div>
+            <div class="analysis-text markdown-body" v-html="renderedAnalysisText"></div>
           </div>
           <div v-if="analysisTextLong" class="analysis-toggle">
             <el-button link size="small" type="primary" @click="analysisExpanded = !analysisExpanded">
@@ -318,7 +318,7 @@
           <div v-if="sessionMessages.length" class="session-panel">
             <div v-for="(msg, index) in sessionMessages" :key="index" class="session-message" :class="`is-${msg.role}`">
               <div class="session-role">{{ msg.role === 'assistant' ? 'AI 分析' : '输入' }}</div>
-              <div class="session-content">{{ msg.content }}</div>
+              <div class="session-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
             </div>
           </div>
         </section>
@@ -338,6 +338,7 @@ import { Aim, RefreshRight, Search } from '@element-plus/icons-vue'
 import { getEventSources, getEventWallAnalysis, getEventWallFilterOptions } from '@/api/modules/eventwall'
 import { getAIOpsMessages } from '@/api/modules/aiops'
 import EventWallTabs from '@/components/eventwall/EventWallTabs.vue'
+import { renderMarkdown } from '@/utils/markdown'
 
 const route = useRoute()
 const router = useRouter()
@@ -366,6 +367,7 @@ const aiAnalysisText = computed(() => {
   return detail || event.summary || '-'
 })
 const analysisTextLong = computed(() => aiAnalysisText.value.length > 600)
+const renderedAnalysisText = computed(() => renderMarkdown(aiAnalysisText.value))
 const correlationAlertIds = computed(() => {
   const ids = activeEvent.value?.metadata?.alert_ids || []
   return Array.isArray(ids) ? ids.filter(Boolean) : []
@@ -2132,5 +2134,102 @@ pre {
   line-height: 1.7;
   font-size: 13px;
   color: #1e293b;
+}
+
+/* Markdown 排版（v-html 内容需 :deep） */
+:deep(.markdown-body) {
+  font-size: 13px;
+  line-height: 1.8;
+  color: #1e293b;
+}
+
+:deep(.markdown-body h1),
+:deep(.markdown-body h2),
+:deep(.markdown-body h3),
+:deep(.markdown-body h4) {
+  margin: 12px 0 6px;
+  font-weight: 600;
+  color: #0f172a;
+  line-height: 1.4;
+}
+
+:deep(.markdown-body h1) { font-size: 17px; }
+:deep(.markdown-body h2) { font-size: 15px; }
+:deep(.markdown-body h3) { font-size: 14px; }
+:deep(.markdown-body h4) { font-size: 13px; }
+
+:deep(.markdown-body p) {
+  margin: 6px 0;
+}
+
+:deep(.markdown-body ul),
+:deep(.markdown-body ol) {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+
+:deep(.markdown-body li) {
+  margin: 2px 0;
+}
+
+:deep(.markdown-body code) {
+  background: #f1f5f9;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+  color: #be3b5d;
+}
+
+:deep(.markdown-body pre) {
+  background: #f1f5f9;
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow: auto;
+  margin: 8px 0;
+}
+
+:deep(.markdown-body pre code) {
+  background: transparent;
+  padding: 0;
+  color: #334155;
+}
+
+:deep(.markdown-body table) {
+  border-collapse: collapse;
+  margin: 8px 0;
+  width: 100%;
+}
+
+:deep(.markdown-body th),
+:deep(.markdown-body td) {
+  border: 1px solid #e2e8f0;
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 12px;
+}
+
+:deep(.markdown-body th) {
+  background: #f8fafc;
+  font-weight: 600;
+}
+
+:deep(.markdown-body blockquote) {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid #cbd5e1;
+  color: #475569;
+  background: #f8fafc;
+}
+
+:deep(.markdown-body hr) {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 12px 0;
+}
+
+:deep(.markdown-body a) {
+  color: #409eff;
+  text-decoration: none;
 }
 </style>

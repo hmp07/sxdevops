@@ -63,3 +63,10 @@ backend/run/
 backend/runtime/
 frontend/run/
 tmp_deploy/
+
+# Playwright 快照与本地走查截图（含登录页默认账号提示等环境信息，不入库）
+.playwright-mcp/
+*.png
+login-page.html
+topology-response.json
+zabbix-page-snapshot.yml
