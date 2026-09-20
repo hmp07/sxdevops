@@ -59,7 +59,8 @@ BOT_PERMISSION_CODES = [
 ]
 
 LEVEL_RANK = {'info': 0, 'warning': 1, 'critical': 2}
-ALERT_ANALYSIS_MIN_LEVEL = os.environ.get('SXDEVOPS_ALERT_ANALYSIS_MIN_SEVERITY', 'critical').strip() or 'critical'
+# 全局默认阈值（接入源级 ai_analysis_min_level 优先于本值；接入源为空的告警回退本值）
+ALERT_ANALYSIS_MIN_LEVEL = os.environ.get('SXDEVOPS_ALERT_ANALYSIS_MIN_SEVERITY', 'warning').strip() or 'warning'
 ALERT_ANALYSIS_COOLDOWN_MINUTES = int(os.environ.get('SXDEVOPS_ALERT_ANALYSIS_COOLDOWN_MINUTES', '60') or 60)
 AGGREGATION_WINDOW_SECONDS = int(os.environ.get('SXDEVOPS_ALERT_AGGREGATION_WINDOW_SECONDS', '60') or 0)
 MAX_BATCH_SIZE = max(int(os.environ.get('SXDEVOPS_ALERT_ANALYSIS_MAX_BATCH', '10') or 10), 1)
@@ -103,13 +104,28 @@ def _latest_action(alert):
     return AlertAction.objects.filter(alert=alert, action=ACTION_NAME).order_by('-id').first()
 
 
+def _effective_min_level(alert):
+    """接入源级阈值优先，接入源为空回退全局默认。"""
+    integration = getattr(alert, 'integration', None)
+    if integration is not None:
+        level = getattr(integration, 'ai_analysis_min_level', '') or ALERT_ANALYSIS_MIN_LEVEL
+        return level
+    return ALERT_ANALYSIS_MIN_LEVEL
+
+
 def enqueue_alert_analysis(alert, ignore_cooldown=False):
-    """告警入队自动分析；返回是否入队。防重：已完成/排队中跳过，失败允许重试一次。"""
+    """告警入队自动分析；返回是否入队。防重：已完成/排队中跳过，失败允许重试一次。
+
+    触发判定：接入源开关（关闭跳过）→ 接入源级/全局最低级别 → 冷却 → 防重。
+    """
     from ops.models import AlertAction
 
     if not alert or alert.status != 'active':
         return False
-    if LEVEL_RANK.get(alert.level or 'info', 0) < LEVEL_RANK.get(ALERT_ANALYSIS_MIN_LEVEL, 2):
+    integration = getattr(alert, 'integration', None)
+    if integration is not None and not getattr(integration, 'ai_analysis_enabled', True):
+        return False
+    if LEVEL_RANK.get(alert.level or 'info', 0) < LEVEL_RANK.get(_effective_min_level(alert), 0):
         return False
 
     latest = _latest_action(alert)
@@ -200,6 +216,32 @@ def _process_batch(alert_ids):
                 _run_single_analysis(alert)
 
 
+def push_alert_analysis_notification(alert):
+    """分析完成后向站内广播组推送轻量事件（仅 ID/级别/标题，不含敏感内容）。
+
+    前端收到事件后经 REST 摘要接口按权限拉取详情，权限隔离在后端执行。
+    """
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        layer = get_channel_layer()
+        async_to_sync(layer.group_send)(
+            'alert-analysis-broadcast',
+            {
+                'type': 'notify.event',
+                'event': {
+                    'kind': 'aiops_analysis_completed',
+                    'alert_id': alert.id,
+                    'level': alert.level,
+                    'title': _safe_text(alert.title, 120),
+                },
+            },
+        )
+    except Exception:
+        logger.warning('推送分析完成事件失败', exc_info=True)
+
+
 def _create_session_and_ask(question, title):
     from aiops.models import AIOpsChatMessage, AIOpsChatSession
 
@@ -231,6 +273,14 @@ def _run_single_analysis(alert):
         alert.annotations = annotations
         alert.save(update_fields=['annotations'])
         logger.info('alert ai analysis done: Alert#%s session=%s', alert.id, session.id)
+        push_alert_analysis_notification(alert)
+        # 按告警通知规则（notify_on_aiops_analysis）经配置渠道通知指定接收对象
+        from ops.alerting import dispatch_alert_notifications
+
+        try:
+            dispatch_alert_notifications(alert, action='aiops_analysis')
+        except Exception:
+            logger.warning('AI 分析完成通知分发失败: Alert#%s', alert.id, exc_info=True)
     except Exception as exc:
         logger.exception('alert ai analysis failed: Alert#%s', alert.id)
         apply_alert_action(
@@ -284,6 +334,14 @@ def _run_correlation_analysis(alerts):
             alert.annotations = annotations
             alert.save(update_fields=['annotations'])
         logger.info('alert correlation analysis done: group=%s alerts=%s', group_id, [a.id for a in alerts])
+        from ops.alerting import dispatch_alert_notifications
+
+        for alert in alerts:
+            push_alert_analysis_notification(alert)
+            try:
+                dispatch_alert_notifications(alert, action='aiops_analysis')
+            except Exception:
+                logger.warning('关联分析完成通知分发失败: Alert#%s', alert.id, exc_info=True)
     except Exception as exc:
         logger.exception('alert correlation analysis failed: group=%s', group_id)
         for alert in alerts:
@@ -313,11 +371,15 @@ def requeue_unanalyzed_alerts(limit=50):
     analyzed_ids = set(
         AlertAction.objects.filter(action=ACTION_NAME).values_list('alert_id', flat=True)
     )
+    min_rank = LEVEL_RANK.get(ALERT_ANALYSIS_MIN_LEVEL, 0)
     queryset = (
-        Alert.objects.filter(source_type='zabbix', status='active', level='critical')
+        Alert.objects.filter(source_type='zabbix', status='active')
         .exclude(id__in=analyzed_ids)
-        .order_by('-created_at')[:limit]
+        .order_by('-created_at')
     )
+    # 按全局阈值预筛（接入源级二次判定在 enqueue 内进行）
+    queryset = [alert for alert in queryset[:limit * 3]
+                if LEVEL_RANK.get(alert.level or 'info', 0) >= min_rank][:limit]
     enqueued = 0
     for alert in queryset:
         if enqueue_alert_analysis(alert, ignore_cooldown=True):

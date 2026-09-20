@@ -6,7 +6,10 @@ import ssl
 import sys
 from unittest.mock import MagicMock, patch
 
+import uuid
+
 from django.contrib.auth import get_user_model
+from rest_framework.authtoken.models import Token
 from django.core.cache import cache
 from django.db import OperationalError
 from django.test import TestCase, override_settings
@@ -4390,14 +4393,14 @@ class AlertAIAnalysisTests(TestCase):
 
         return _get_bot_user()
 
-    def test_enqueue_only_critical_created_alerts(self):
+    def test_enqueue_above_min_level_only(self):
         from ops.alert_ai_analysis import enqueue_alert_analysis
 
-        warning = self._make_alert(level='warning', fingerprint='fp-warn')
-        self.assertFalse(enqueue_alert_analysis(warning), '低于 critical 不触发')
+        info = self._make_alert(level='info', fingerprint='fp-info')
+        self.assertFalse(enqueue_alert_analysis(info), '低于全局默认 warning 不触发')
 
-        critical = self._make_alert(level='critical', fingerprint='fp-crit')
-        self.assertTrue(enqueue_alert_analysis(critical))
+        warning = self._make_alert(level='warning', fingerprint='fp-warn')
+        self.assertTrue(enqueue_alert_analysis(warning), '全局默认 warning 起触发')
 
     def test_duplicate_enqueue_blocked_and_failure_retry_once(self):
         from ops.alert_ai_analysis import enqueue_alert_analysis
@@ -4656,3 +4659,158 @@ class RunbookUrlSafetyTests(TestCase):
         }]})
         alert = Alert.objects.filter(source_type='zabbix').latest('id')
         self.assertEqual(alert.runbook_url, 'https://wiki.example.com/runbooks/disk-full')
+
+
+
+class AlertAnalysisClosedLoopTests(TestCase):
+    """告警闭环：接入源级开关/阈值、更新分支触发、摘要接口权限、通知规则开关、WS 鉴权。"""
+
+    def setUp(self):
+        from django.core.cache import cache
+        from unittest.mock import patch
+
+        from rbac.services import ensure_builtin_rbac
+
+        ensure_builtin_rbac()
+        cache.clear()
+        self.worker_patch = patch('ops.alert_ai_analysis.start_alert_analysis_worker')
+        self.worker_patch.start()
+        self.addCleanup(self.worker_patch.stop)
+
+    def tearDown(self):
+        from ops import alert_ai_analysis
+
+        while not alert_ai_analysis._analysis_queue.empty():
+            try:
+                alert_ai_analysis._analysis_queue.get_nowait()
+            except Exception:
+                break
+
+    def _make_alert(self, level='warning', fingerprint='fp-x', integration=None):
+        from ops.models import Alert
+
+        return Alert.objects.create(
+            title='闭环测试', level=level, status='active', source='zabbix', source_type='zabbix',
+            external_id='e1', fingerprint=fingerprint, integration=integration,
+            raw_payload={'objectid': fingerprint},
+        )
+
+    def _make_integration(self, enabled=True, min_level='warning'):
+        from ops.models import AlertIntegration
+
+        return AlertIntegration.objects.create(
+            name='闭环源', provider='zabbix', token=f'tok-{uuid.uuid4().hex[:10]}',
+            ai_analysis_enabled=enabled, ai_analysis_min_level=min_level,
+        )
+
+    def test_integration_disabled_blocks_enqueue(self):
+        from ops.alert_ai_analysis import enqueue_alert_analysis
+
+        integration = self._make_integration(enabled=False)
+        alert = self._make_alert(level='critical', fingerprint='fp-off', integration=integration)
+        self.assertFalse(enqueue_alert_analysis(alert), '接入源开关关闭时不触发')
+
+    def test_integration_min_level_filters(self):
+        from ops.alert_ai_analysis import enqueue_alert_analysis
+
+        integration = self._make_integration(enabled=True, min_level='critical')
+        warning = self._make_alert(level='warning', fingerprint='fp-w1', integration=integration)
+        critical = self._make_alert(level='critical', fingerprint='fp-c1', integration=integration)
+        self.assertFalse(enqueue_alert_analysis(warning), '低于接入源阈值不触发')
+        self.assertTrue(enqueue_alert_analysis(critical))
+
+    def test_no_integration_falls_back_to_global_default(self):
+        from ops.alert_ai_analysis import enqueue_alert_analysis
+
+        warning = self._make_alert(level='warning', fingerprint='fp-g1')
+        self.assertTrue(enqueue_alert_analysis(warning), '无接入源回退全局默认（warning）')
+
+    def test_existing_alert_update_branch_triggers_once(self):
+        from ops.alert_ai_analysis import enqueue_alert_analysis
+
+        alert = self._make_alert(level='critical', fingerprint='fp-upd')
+        # 首次推送（新建）入队
+        self.assertTrue(enqueue_alert_analysis(alert))
+        # 模拟后续推送（更新分支）：已排队中 → 防重不重复
+        self.assertFalse(enqueue_alert_analysis(alert, ignore_cooldown=True))
+
+    def test_summaries_endpoint_requires_alert_view(self):
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        no_perm_user = get_user_model().objects.create_user(username='no-alert-user', password='Admin@123456')
+        client.force_authenticate(user=no_perm_user)
+        response = client.get('/api/alerts/ai-analysis-summaries/')
+        self.assertEqual(response.status_code, 403)
+
+    def test_summaries_returns_analyzed_alerts(self):
+        from rest_framework.test import APIClient
+
+        from ops.models import Alert
+
+        alert = self._make_alert(level='warning', fingerprint='fp-s1')
+        alert.annotations = {'aiops_suggestion': '建议：检查磁盘。', 'opdata': ''}
+        alert.save(update_fields=['annotations'])
+        user = get_user_model().objects.create_superuser(username='summary-admin', password='Admin@123456')
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get('/api/alerts/ai-analysis-summaries/?limit=10')
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(any(item['alert_id'] == alert.id for item in payload))
+        item = next(item for item in payload if item['alert_id'] == alert.id)
+        self.assertIn('检查磁盘', item['suggestion'])
+
+    def test_rule_aiops_analysis_switch(self):
+        from ops.alerting import _rule_can_send
+        from ops.models import AlertNotificationRule
+
+        alert = self._make_alert(level='warning', fingerprint='fp-r1')
+        rule_on = AlertNotificationRule.objects.create(name='r-on', notify_on_aiops_analysis=True)
+        rule_off = AlertNotificationRule.objects.create(name='r-off', notify_on_aiops_analysis=False)
+        self.assertTrue(_rule_can_send(rule_on, alert, 'aiops_analysis'))
+        self.assertFalse(_rule_can_send(rule_off, alert, 'aiops_analysis'))
+        self.assertTrue(_rule_can_send(rule_on, alert, 'fire'))
+
+    def test_notification_consumer_auth(self):
+        from unittest.mock import patch
+
+        from ops.notification_consumer import NotificationConsumer
+
+        closed = {}
+
+        def make_consumer(query_string):
+            consumer = NotificationConsumer()
+            consumer.channel_layer = _FakeChannelLayer()
+            consumer.channel_name = 'test-channel'
+            consumer.scope = {'query_string': query_string, 'url_route': {}}
+            consumer.close = lambda code=1000: closed.update(code=code)
+            consumer.accept = lambda: closed.update(code=0)
+            return consumer
+
+        # 无效 token → 4401
+        make_consumer(b'token=invalid').connect()
+        self.assertEqual(closed['code'], 4401)
+        # 有效 token 但无权限 → 4403
+        user = get_user_model().objects.create_user(username='no-alert-ws', password='Admin@123456')
+        token = Token.objects.create(user=user)
+        make_consumer(f'token={token.key}'.encode()).connect()
+        self.assertEqual(closed['code'], 4403)
+        # 有权限 → accept
+        from rbac.models import PermissionDefinition, Role
+
+        role = Role.objects.create(code='alert-viewer-ws', name='Alert Viewer WS')
+        role.permissions.add(PermissionDefinition.objects.get(code='ops.alert.view'))
+        user2 = get_user_model().objects.create_user(username='alert-ws', password='Admin@123456')
+        role.users.add(user2)
+        token2 = Token.objects.create(user=user2)
+        make_consumer(f'token={token2.key}'.encode()).connect()
+        self.assertEqual(closed['code'], 0)
+
+
+class _FakeChannelLayer:
+    def group_add(self, group, channel):
+        pass
+
+    def group_discard(self, group, channel):
+        pass

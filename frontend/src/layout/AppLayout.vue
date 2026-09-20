@@ -181,12 +181,12 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import AIOpsChatWidget from '@/components/aiops/AIOpsChatWidget.vue'
 import { getModuleSettings } from '@/api/modules/rbac'
-import { getDashboardStats, getDeployments, getTransactionTickets } from '@/api/modules/ops'
+import { getAlertAiAnalysisSummaries, getDashboardStats, getDeployments, getTransactionTickets } from '@/api/modules/ops'
 import { getEventWallAnalysis } from '@/api/modules/eventwall'
 
 const route = useRoute()
@@ -411,15 +411,17 @@ const isAIOpsChatRoute = computed(() => route.name === 'AIOpsChat' || route.path
 const canOpenAIOpsAssistant = computed(() => authStore.hasPermission('aiops.chat.view') && !isAIOpsChatRoute.value)
 
 const notificationSections = computed(() => {
-  const sectionOrder = ['approval', 'alert', 'event']
+  const sectionOrder = ['approval', 'alert', 'ai_analysis', 'event']
   const sectionTitleMap = {
     approval: '待审批清单',
     alert: '告警提醒',
+    ai_analysis: 'AI 分析',
     event: '关键事件',
   }
   const sectionRouteMap = {
     approval: '/workorders/releases',
     alert: '/alerts',
+    ai_analysis: '/alerts',
     event: '/events/wall',
   }
   return sectionOrder
@@ -462,6 +464,21 @@ function buildAlertNotificationItem(item) {
     tag: meta.tag,
     tagType: meta.tagType,
     dotTone: item.level === 'critical' ? 'danger' : item.level === 'warning' ? 'warning' : 'info',
+    priority: item.level === 'critical' ? 3 : item.level === 'warning' ? 2 : 1,
+  }
+}
+
+function buildAiAnalysisNotificationItem(item) {
+  return {
+    key: `ai-analysis-${item.alert_id}`,
+    section: 'ai_analysis',
+    title: item.title || '告警 AI 分析完成',
+    description: item.suggestion || '已生成处置建议，请进入告警中心查看',
+    time: item.updated_at,
+    route: '/alerts',
+    tag: item.is_correlation ? '关联分析' : 'AI 分析',
+    tagType: 'primary',
+    dotTone: 'success',
     priority: item.level === 'critical' ? 3 : item.level === 'warning' ? 2 : 1,
   }
 }
@@ -593,6 +610,13 @@ async function loadNotifications() {
       total += priorityEvents.length
     }
 
+    if (authStore.hasPermission('ops.alert.view')) {
+      const aiSummaryResult = await getAlertAiAnalysisSummaries({ limit: 10 }).catch(() => [])
+      const summaries = Array.isArray(aiSummaryResult) ? aiSummaryResult : []
+      items.push(...summaries.slice(0, 4).map(buildAiAnalysisNotificationItem))
+      total += summaries.length
+    }
+
     notificationItems.value = items
       .sort((left, right) => {
         if (right.priority !== left.priority) return right.priority - left.priority
@@ -670,10 +694,55 @@ async function handleUserCommand(command) {
   }
 }
 
+// ── 站内实时通知（WebSocket）────────────────────────────────────────
+let notificationSocket = null
+let notificationReconnectTimer = null
+
+function connectNotificationSocket() {
+  if (notificationSocket && notificationSocket.readyState === WebSocket.OPEN) return
+  if (!authStore.isAuthenticated || !authStore.hasPermission('ops.alert.view')) return
+  const token = authStore.token
+  if (!token) return
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const url = `${protocol}//${window.location.host}/ws/notifications/?token=${encodeURIComponent(token)}`
+  const socket = new WebSocket(url)
+  notificationSocket = socket
+  socket.onmessage = (event) => {
+    try {
+      const payload = JSON.parse(event.data)
+      const notify = payload?.event
+      if (notify?.kind !== 'aiops_analysis_completed') return
+      const levelText = notify.level === 'critical' ? '严重' : notify.level === 'warning' ? '警告' : '信息'
+      ElNotification({
+        title: `告警 AI 分析完成（${levelText}）`,
+        message: notify.title || '已生成处置建议',
+        type: notify.level === 'critical' ? 'error' : 'warning',
+        duration: 8000,
+        onClick: () => {
+          router.push('/alerts')
+        },
+      })
+      void loadNotifications()
+    } catch {
+      /* 忽略非 JSON 消息 */
+    }
+  }
+  socket.onclose = () => {
+    notificationSocket = null
+    if (authStore.isAuthenticated && !notificationReconnectTimer) {
+      notificationReconnectTimer = window.setTimeout(() => {
+        notificationReconnectTimer = null
+        connectNotificationSocket()
+      }, 5000)
+    }
+  }
+}
+
 onMounted(() => {
   window.addEventListener(MODULE_SETTINGS_EVENT, loadModuleSettings)
   void loadModuleSettings()
   void loadNotifications()
+  connectNotificationSocket()
   notificationTimer = window.setInterval(() => {
     void loadNotifications()
   }, 60000)
@@ -684,6 +753,15 @@ onBeforeUnmount(() => {
   if (notificationTimer) {
     window.clearInterval(notificationTimer)
     notificationTimer = null
+  }
+  if (notificationReconnectTimer) {
+    window.clearTimeout(notificationReconnectTimer)
+    notificationReconnectTimer = null
+  }
+  if (notificationSocket) {
+    notificationSocket.onclose = null
+    notificationSocket.close()
+    notificationSocket = null
   }
 })
 </script>

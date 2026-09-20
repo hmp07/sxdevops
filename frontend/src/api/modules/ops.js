@@ -83,6 +83,7 @@ export const completeTransactionTicket = (id) => request.post(`/transaction-tick
 
 export const getAlerts = (params) => request.get('/alerts/', { params })
 export const getAlert = (id) => request.get(`/alerts/${id}/`)
+export const getAlertAiAnalysisSummaries = (params) => request.get('/alerts/ai-analysis-summaries/', { params })
 export const getAlertSummary = (params) => request.get('/alerts/summary/', { params })
 export const getAlertGroups = (params) => request.get('/alerts/groups/', { params })
 export const updateAlert = (id, data) => request.patch(`/alerts/${id}/`, data)

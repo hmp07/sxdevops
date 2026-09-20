@@ -757,6 +757,7 @@ def _interaction_url(alert, action, provider='', request=None):
 
 
 def _alert_context(alert, action='fire'):
+    annotations = alert.annotations or {}
     return {
         'id': alert.id,
         'title': alert.title,
@@ -778,6 +779,9 @@ def _alert_context(alert, action='fire'):
         'action': action,
         'group_key': alert.group_key,
         'occurrence_count': alert.occurrence_count,
+        # AI 分析结果（模板可用 {aiops_suggestion} / {aiops_root_cause}）
+        'aiops_suggestion': _text(annotations.get('aiops_suggestion'))[:500],
+        'aiops_root_cause': _text(annotations.get('aiops_root_cause'))[:500],
     }
 
 
@@ -797,6 +801,7 @@ def _default_title(alert, action='fire'):
         'fire': '告警触发',
         'resolved': '告警恢复',
         'escalation': '告警升级',
+        'aiops_analysis': 'AI 分析完成',
         'test': '告警测试',
     }.get(action, '告警通知')
     return f'[{prefix}] {alert.title}'
@@ -995,6 +1000,8 @@ def _rule_can_send(rule, alert, action):
     if action == 'escalation' and not rule.notify_on_escalation:
         return False
     if action == 'fire' and not rule.notify_on_fire:
+        return False
+    if action == 'aiops_analysis' and not rule.notify_on_aiops_analysis:
         return False
     if rule.min_level and LEVEL_RANK.get(alert.level, 0) < LEVEL_RANK.get(rule.min_level, 0):
         return False

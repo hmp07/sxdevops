@@ -895,6 +895,13 @@ class AlertIntegration(models.Model):
     is_enabled = models.BooleanField('启用', default=True)
     default_labels = models.JSONField('默认标签', default=dict, blank=True)
     description = models.CharField('说明', max_length=255, blank=True, default='')
+    # AI 分析开关与阈值：接入源级独立于全局默认（SXDEVOPS_ALERT_ANALYSIS_MIN_SEVERITY）
+    ai_analysis_enabled = models.BooleanField('启用 AI 分析', default=True)
+    ai_analysis_min_level = models.CharField(
+        'AI 分析最低级别', max_length=16,
+        choices=[('info', '信息'), ('warning', '警告'), ('critical', '严重')],
+        default='warning',
+    )
     last_received_at = models.DateTimeField('最近接收时间', null=True, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
@@ -1078,6 +1085,7 @@ class AlertNotificationRule(models.Model):
     notify_on_fire = models.BooleanField('触发时通知', default=True)
     notify_on_resolved = models.BooleanField('恢复时通知', default=True)
     notify_on_escalation = models.BooleanField('升级时通知', default=True)
+    notify_on_aiops_analysis = models.BooleanField('AI 分析完成时通知', default=False)
     description = models.CharField('说明', max_length=255, blank=True, default='')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)

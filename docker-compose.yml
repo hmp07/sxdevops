@@ -32,6 +32,8 @@ services:
       SXDEVOPS_SEED_DATA: ${SXDEVOPS_SEED_DATA:-0}
       # Zabbix 告警混合接入：webhook 推送为主，内置轮询为小时级兜底（整点对齐）
       SXDEVOPS_ZABBIX_POLL_INTERVAL: ${SXDEVOPS_ZABBIX_POLL_INTERVAL:-3600}
+      # 告警 AI 自动分析全局默认阈值（接入源级配置优先）
+      SXDEVOPS_ALERT_ANALYSIS_MIN_SEVERITY: ${SXDEVOPS_ALERT_ANALYSIS_MIN_SEVERITY:-warning}
       # 智能体/任务模板是平台功能数据（非演示数据），保留默认开启
       SXDEVOPS_SEED_TEMPLATES: ${SXDEVOPS_SEED_TEMPLATES:-1}
     ports:

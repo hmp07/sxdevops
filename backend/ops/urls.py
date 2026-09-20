@@ -44,6 +44,7 @@ urlpatterns = [
     path('alerts/webhooks/<str:provider>/', views.alert_webhook, name='alert-webhook'),
     path('alerts/webhooks/<str:provider>/<str:token>/', views.alert_webhook, name='alert-webhook-token'),
     path('alerts/card-actions/<uuid:token>/', views.alert_card_action, name='alert-card-action'),
+    path('alerts/ai-analysis-summaries/', views.alert_ai_analysis_summaries, name='alert-ai-analysis-summaries'),
     path('log/providers/', log_views.log_providers, name='log-providers'),
     path('log/providers/<str:provider>/catalog/', log_views.log_provider_catalog, name='log-provider-catalog'),
     path('log/query/', log_views.log_query, name='log-query'),

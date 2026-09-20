@@ -524,6 +524,14 @@
           <MatcherEditor v-model="integrationDialog.form.default_label_rows" mode="equals" />
         </el-form-item>
         <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="integrationDialog.form.is_enabled" /></el-form-item>
+        <el-form-item label="AI &#x81EA;&#x52A8;&#x5206;&#x6790;"><el-switch v-model="integrationDialog.form.ai_analysis_enabled" /></el-form-item>
+        <el-form-item label="&#x5206;&#x6790;&#x6700;&#x4F4E;&#x7EA7;&#x522B;">
+          <el-select v-model="integrationDialog.form.ai_analysis_min_level" :disabled="!integrationDialog.form.ai_analysis_enabled" style="width: 200px">
+            <el-option label="&#x4FE1;&#x606F;" value="info" />
+            <el-option label="&#x8B66;&#x544A;" value="warning" />
+            <el-option label="&#x4E25;&#x91CD;" value="critical" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="integrationDialog.form.description" type="textarea" :rows="2" /></el-form-item>
       </el-form>
       <template #footer>
@@ -632,6 +640,7 @@
           <el-checkbox v-model="notificationRuleDialog.form.notify_on_fire">&#x89E6;&#x53D1;</el-checkbox>
           <el-checkbox v-model="notificationRuleDialog.form.notify_on_resolved">&#x6062;&#x590D;</el-checkbox>
           <el-checkbox v-model="notificationRuleDialog.form.notify_on_escalation">&#x5347;&#x7EA7;</el-checkbox>
+          <el-checkbox v-model="notificationRuleDialog.form.notify_on_aiops_analysis">AI &#x5206;&#x6790;&#x5B8C;&#x6210;</el-checkbox>
         </el-form-item>
         <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="notificationRuleDialog.form.is_enabled" /></el-form-item>
         <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="notificationRuleDialog.form.description" type="textarea" :rows="2" /></el-form-item>
@@ -1540,7 +1549,10 @@ async function refreshAll() {
 }
 
 function emptyIntegration() {
-  return { id: null, name: '', provider: 'prometheus', default_label_rows: [], is_enabled: true, description: '' }
+  return {
+    id: null, name: '', provider: 'prometheus', default_label_rows: [],
+    is_enabled: true, description: '', ai_analysis_enabled: true, ai_analysis_min_level: 'warning',
+  }
 }
 
 function openIntegration(row = null) {
@@ -1681,6 +1693,7 @@ function emptyNotificationRule() {
     notify_on_fire: true,
     notify_on_resolved: true,
     notify_on_escalation: true,
+    notify_on_aiops_analysis: false,
     is_enabled: true,
     description: '',
   }

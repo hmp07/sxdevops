@@ -2172,11 +2172,13 @@ def alert_webhook(request, provider, token=''):
     if supplied_token and not integration and provider != Alert.SOURCE_GENERIC:
         return Response({'detail': '告警接入源令牌无效或已禁用。'}, status=status.HTTP_403_FORBIDDEN)
     result = ingest_webhook(provider, request.data, integration=integration, request=request)
-    # Zabbix 重要告警自动 AI 分析：仅新创建的告警触发（重复推送为 updated 不触发）
+    # Zabbix 告警自动 AI 分析：对全部到达告警入队（含更新分支），
+    # 接入源开关/级别阈值/防重/冷却判定在 enqueue 内部完成——
+    # 存量同 triggerid 告警首次被推送时也能触发分析
     if provider == Alert.SOURCE_ZABBIX:
         from ops.alert_ai_analysis import enqueue_alert_analysis
 
-        for alert in result.get('created_alerts', []):
+        for alert in result.get('alerts', []):
             enqueue_alert_analysis(alert)
     return Response({
         'success': True,
@@ -2185,6 +2187,34 @@ def alert_webhook(request, provider, token=''):
         'updated': result['updated'],
         'alert_ids': [alert.id for alert in result['alerts']],
     }, status=status.HTTP_202_ACCEPTED)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.alert.view')])
+def alert_ai_analysis_summaries(request):
+    """最近完成 AI 分析的告警摘要（站内铃铛面板与弹窗共用；后端权限过滤）。"""
+    try:
+        limit = int(request.query_params.get('limit') or 10)
+    except (TypeError, ValueError):
+        limit = 10
+    limit = min(max(limit, 1), 50)
+    summaries = []
+    for alert in Alert.objects.filter(source_type='zabbix').order_by('-updated_at')[:limit * 4]:
+        annotations = alert.annotations or {}
+        suggestion = str(annotations.get('aiops_suggestion') or annotations.get('aiops_root_cause') or '')
+        if not suggestion:
+            continue
+        summaries.append({
+            'alert_id': alert.id,
+            'title': alert.title[:160],
+            'level': alert.level,
+            'suggestion': suggestion[:200],
+            'is_correlation': bool(annotations.get('aiops_root_cause')),
+            'updated_at': alert.updated_at.isoformat(),
+        })
+        if len(summaries) >= limit:
+            break
+    return Response(summaries)
 
 
 @api_view(['GET', 'POST'])

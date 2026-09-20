@@ -48,6 +48,8 @@ services:
       SXDEVOPS_SEED_DATA: "0"
       # Zabbix 告警混合接入：webhook 推送为主，内置轮询为小时级兜底（整点对齐）
       SXDEVOPS_ZABBIX_POLL_INTERVAL: ${SXDEVOPS_ZABBIX_POLL_INTERVAL:-3600}
+      # 告警 AI 自动分析全局默认阈值（接入源级配置优先）
+      SXDEVOPS_ALERT_ANALYSIS_MIN_SEVERITY: ${SXDEVOPS_ALERT_ANALYSIS_MIN_SEVERITY:-warning}
       SXDEVOPS_SEED_TEMPLATES: "1"
       # 管理员账号初始化口令（.env 注入，未配置启动即报错）
       SXDEVOPS_ADMIN_PASSWORD: ${SXDEVOPS_ADMIN_PASSWORD:?SXDEVOPS_ADMIN_PASSWORD is required, see .env.arm64.example}
