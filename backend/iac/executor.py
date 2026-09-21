@@ -2,17 +2,26 @@
 import re
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 from django.conf import settings
 from django.utils import timezone
 
+from eventwall.models import EventRecord
+from eventwall.services import record_event
+from sxdevops.background import push_background_job_notification, start_background_thread
+
 from .cmdb_sync import mark_stack_resources_offline, sync_stack_to_cmdb
 from .models import TerraformExecution
 from .terraform import build_render_payload, render_terraform_project
 
+_EXEC_IN_FLIGHT = set()
+_EXEC_IN_FLIGHT_LOCK = threading.Lock()
 
-def run_terraform_action(stack, action, *, secrets, operator):
+
+def submit_terraform_action(stack, action, *, secrets, operator):
+    """渲染方案、落库执行记录（pending）并启动后台线程，立即返回 execution。"""
     payload = build_render_payload(
         name=stack.name,
         description=stack.description,
@@ -32,11 +41,67 @@ def run_terraform_action(stack, action, *, secrets, operator):
     execution = TerraformExecution.objects.create(
         stack=stack,
         action=action,
-        status=TerraformExecution.STATUS_RUNNING,
+        status=TerraformExecution.STATUS_PENDING,
         created_by=operator or '',
         started_at=timezone.now(),
     )
+    started = start_background_thread(_EXEC_IN_FLIGHT, _EXEC_IN_FLIGHT_LOCK,
+                                      f'stack:{stack.id}', _execute_terraform_action,
+                                      execution.id, secrets or {}, operator or '')
+    if not started:  # 防重入兜底：落库为 failed，视图据此返回 409
+        execution.status = TerraformExecution.STATUS_FAILED
+        execution.stderr = '该方案已有执行任务在进行中'
+        execution.finished_at = timezone.now()
+        execution.save(update_fields=['status', 'stderr', 'finished_at'])
+    return execution
 
+
+def _execute_terraform_action(execution_id, secrets, operator):
+    """后台线程：重取执行记录与方案，运行 terraform 子进程，完成后广播 + 事件墙。"""
+    execution = TerraformExecution.objects.select_related('stack').filter(pk=execution_id).first()
+    if execution is None:
+        return
+    stack = execution.stack
+    action = execution.action
+
+    execution.status = TerraformExecution.STATUS_RUNNING
+    execution.started_at = timezone.now()
+    execution.save(update_fields=['status', 'started_at'])
+
+    try:
+        _run_terraform_body(stack, execution, action, secrets or {}, operator or '')
+    finally:
+        execution.refresh_from_db()
+        ok = execution.status == TerraformExecution.STATUS_SUCCESS
+        record_event(
+            module='iac',
+            category='external_event',
+            action='terraform_execute_finish',
+            title=f'Terraform {action} 执行{"成功" if ok else "失败"}',
+            summary=f'方案 {stack.name} Terraform {action} 执行{"成功" if ok else "失败"}',
+            result=EventRecord.RESULT_SUCCESS if ok else EventRecord.RESULT_FAILED,
+            severity=EventRecord.SEVERITY_INFO if ok else EventRecord.SEVERITY_WARNING,
+            source_type=EventRecord.SOURCE_ASYNC,
+            actor_type=EventRecord.ACTOR_USER,
+            actor_username=execution.created_by or 'system',
+            actor_display=execution.created_by or 'system',
+            resource_type='terraform_execution', resource_id=execution.id, resource_name=stack.name,
+            correlation_id=f'iac-execution:{execution.id}',
+            metadata={'event_category': 'config_change', 'action': action, 'stack_id': stack.id},
+        )
+        message = f'Terraform {action} 执行成功。' if ok else (
+            (execution.stderr or '').splitlines()[0][:200] if execution.stderr
+            else f'Terraform {action} 执行失败。')
+        push_background_job_notification(
+            'iac_execute',
+            title=f'Terraform {action} 执行{"成功" if ok else "失败"}',
+            message=f'{stack.name}: {message}',
+            level='success' if ok else 'error', route='', job_id=execution.id,
+        )
+
+
+def _run_terraform_body(stack, execution, action, secrets, operator):
+    """terraform 执行体（原 run_terraform_action 的同步执行部分）。"""
     terraform_bin = shutil.which('terraform')
     if not terraform_bin:
         return _finish_execution(
@@ -51,8 +116,9 @@ def run_terraform_action(stack, action, *, secrets, operator):
     execution.command = _build_command_display(commands)
     execution.save(update_fields=['command'])
 
+    files = stack.generated_files or {}
     try:
-        workspace = _prepare_workspace(stack, rendered['files'])
+        workspace = _prepare_workspace(stack, files)
     except OSError as exc:
         return _finish_execution(
             stack,

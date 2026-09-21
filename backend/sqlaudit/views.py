@@ -1,4 +1,6 @@
-﻿from rest_framework import viewsets, status
+﻿import threading
+
+from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, action, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -8,6 +10,8 @@ from django.utils import timezone
 from eventwall.mixins import EventWallModelViewSetMixin
 from eventwall.models import EventRecord
 from eventwall.services import build_resource, record_event
+from rbac.permissions import RBACPermissionMixin, build_rbac_permission
+from sxdevops.background import push_background_job_notification, start_background_thread
 
 from .models import DataSource, SqlOrder, QueryOrder, SqlCheckResult
 from .serializers import (
@@ -16,7 +20,10 @@ from .serializers import (
 )
 from . import sql_checker
 from . import db_executor
-from rbac.permissions import RBACPermissionMixin, build_rbac_permission
+
+_QUERY_IN_FLIGHT = set()
+_ORDER_IN_FLIGHT = set()
+_IN_FLIGHT_LOCK = threading.Lock()
 
 
 class DataSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
@@ -193,42 +200,19 @@ class SqlOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        # 状态先置 executing 防重入；SQL 在后台线程执行，结果回写后站内通知
         order.status = 'executing'
-        order.save()
-
-        success, affected, duration, log = db_executor.execute_sql(
-            order.datasource, order.database, order.sql_content,
-        )
-
-        order.status = 'executed' if success else 'failed'
-        order.affected_rows = affected
-        order.duration_ms = duration
-        order.execute_log = log
-        order.executed_at = timezone.now()
-        order.save()
-        record_event(
-            request=request,
-            module='sqlaudit',
-            category='execution',
-            action='execute',
-            title='执行 SQL 工单',
-            summary=f'SQL 工单 {order.title} 执行{"成功" if success else "失败"}',
-            result=EventRecord.RESULT_SUCCESS if success else EventRecord.RESULT_FAILED,
-            severity=EventRecord.SEVERITY_WARNING,
-            resource_type='sql_order',
-            resource_id=order.id,
-            resource_name=order.title,
-            application=order.database,
-            correlation_id=f'sql-order:{order.id}',
-            related_resources=[build_resource('sqlaudit', 'sql_datasource', order.datasource_id, order.datasource.name)],
-            metadata={
-                'database': order.database,
-                'affected_rows': affected,
-                'duration_ms': duration,
-            },
-        )
-
-        return Response(SqlOrderSerializer(order).data)
+        order.save(update_fields=['status'])
+        started = start_background_thread(_ORDER_IN_FLIGHT, _IN_FLIGHT_LOCK,
+                                          f'sql-order:{order.id}', _execute_order_worker,
+                                          order.id, request.user.username)
+        if not started:
+            order.status = 'failed'
+            order.execute_log = '该工单已有执行任务在进行中'
+            order.save(update_fields=['status', 'execute_log'])
+            return Response({'error': '该工单已有执行任务在进行中'}, status=status.HTTP_409_CONFLICT)
+        return Response({'order': SqlOrderSerializer(order).data, 'message': '执行已提交，完成后将收到站内通知'},
+                        status=status.HTTP_202_ACCEPTED)
 
 
 class QueryOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
@@ -267,28 +251,19 @@ class QueryOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        success, columns, rows, count, duration, error = db_executor.execute_query(
-            ds, database, sql_content,
-        )
-
+        # 工单先落库（pending），SQL 在后台线程执行，结果回写后站内通知
         query_order = serializer.save(
             submitter=request.user.username,
-            result_count=count if success else 0,
-            duration_ms=duration,
+            status='pending',
+            error_message='',
+            result_data={},
         )
-        if not success:
-            return Response(
-                {'error': error, 'order': QueryOrderSerializer(query_order).data},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+        start_background_thread(_QUERY_IN_FLIGHT, _IN_FLIGHT_LOCK,
+                                f'query:{query_order.id}', _execute_query_worker, query_order.id)
         return Response({
             'order': QueryOrderSerializer(query_order).data,
-            'columns': columns,
-            'rows': rows,
-            'count': count,
-            'duration_ms': duration,
-        }, status=status.HTTP_201_CREATED)
+            'message': '查询已提交，完成后将收到站内通知',
+        }, status=status.HTTP_202_ACCEPTED)
 
 
 @api_view(['POST'])
@@ -308,3 +283,76 @@ def sql_check_api(request):
     return Response({
         'results': [item.to_dict() for item in results],
     })
+
+
+def _execute_query_worker(order_id):
+    """后台线程：执行查询工单并回写状态/结果，完成后站内广播。"""
+    order = QueryOrder.objects.select_related('datasource').filter(pk=order_id).first()
+    if order is None:
+        return
+    order.status = 'running'
+    order.save(update_fields=['status'])
+    success, columns, rows, count, duration, error = db_executor.execute_query(
+        order.datasource, order.database, order.sql_content,
+    )
+    order.status = 'success' if success else 'failed'
+    order.result_count = count if success else 0
+    order.duration_ms = duration
+    order.error_message = '' if success else (error or '查询失败')
+    if success:
+        order.result_data = {'columns': columns, 'rows': rows}
+    order.save(update_fields=['status', 'result_count', 'duration_ms', 'error_message', 'result_data'])
+    push_background_job_notification(
+        'sqlaudit_query',
+        title=f'查询执行{"完成" if success else "失败"}',
+        message=f'{order.database}: {count} 行 / {duration}ms' if success else (order.error_message or '')[:200],
+        level='success' if success else 'error',
+        route='/workorders/sql?tab=query', job_id=order.id,
+    )
+
+
+def _execute_order_worker(order_id, executor):
+    """后台线程：执行 SQL 工单（DDL/DML）并回写，写事件墙 + 站内广播。"""
+    order = SqlOrder.objects.select_related('datasource').filter(pk=order_id).first()
+    if order is None or order.status != 'executing':
+        return
+    success, affected, duration, log = db_executor.execute_sql(
+        order.datasource, order.database, order.sql_content,
+    )
+    order.status = 'executed' if success else 'failed'
+    order.affected_rows = affected
+    order.duration_ms = duration
+    order.execute_log = log
+    order.executed_at = timezone.now()
+    order.save(update_fields=['status', 'affected_rows', 'duration_ms', 'execute_log', 'executed_at'])
+    record_event(
+        module='sqlaudit',
+        category='execution',
+        action='execute',
+        title='执行 SQL 工单',
+        summary=f'SQL 工单 {order.title} 执行{"成功" if success else "失败"}',
+        result=EventRecord.RESULT_SUCCESS if success else EventRecord.RESULT_FAILED,
+        severity=EventRecord.SEVERITY_WARNING,
+        source_type=EventRecord.SOURCE_ASYNC,
+        actor_type=EventRecord.ACTOR_USER,
+        actor_username=executor,
+        actor_display=executor,
+        resource_type='sql_order',
+        resource_id=order.id,
+        resource_name=order.title,
+        application=order.database,
+        correlation_id=f'sql-order:{order.id}',
+        related_resources=[build_resource('sqlaudit', 'sql_datasource', order.datasource_id, order.datasource.name)],
+        metadata={
+            'database': order.database,
+            'affected_rows': affected,
+            'duration_ms': duration,
+        },
+    )
+    push_background_job_notification(
+        'sqlaudit_order',
+        title=f'SQL 工单执行{"完成" if success else "失败"}',
+        message=f'{order.title}: {"影响 " + str(affected) + " 行" if success else log[:200]}',
+        level='success' if success else 'error',
+        route='/workorders/sql?tab=orders', job_id=order.id,
+    )

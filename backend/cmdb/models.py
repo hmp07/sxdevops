@@ -128,7 +128,7 @@ class iTopDataSource(models.Model):
     sync_interval = models.PositiveIntegerField("同步间隔(秒)", default=3600)
     config = models.JSONField("同步配置", default=dict, blank=True)
     last_sync_at = models.DateTimeField("上次同步", null=True, blank=True)
-    sync_status = models.CharField("同步状态", max_length=16, default='idle')
+    sync_status = models.CharField("同步状态", max_length=255, default='idle')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

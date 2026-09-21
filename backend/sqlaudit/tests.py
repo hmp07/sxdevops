@@ -199,6 +199,8 @@ class SqlAuditRBACTests(TestCase):
 
     @patch('sqlaudit.views.db_executor.execute_query', return_value=(True, ['id'], [{'id': 1}], 1, 8, None))
     def test_query_create_ignores_client_controlled_fields(self, _mock_execute_query):
+        from .views import _execute_query_worker
+
         user = self.create_user_with_permissions('query-runner', ['sqlaudit.datasource.view', 'sqlaudit.query.execute'])
         self.client.force_login(user)
 
@@ -211,8 +213,115 @@ class SqlAuditRBACTests(TestCase):
             'duration_ms': 999,
         })
 
-        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.status_code, 202)
         order = QueryOrder.objects.get(submitter=user.username)
         self.assertEqual(order.submitter, user.username)
+        self.assertEqual(order.status, 'pending')
+        self.assertIsNone(order.result_count)
+        # 直接调用 worker 断言结果回写（异步执行路径）
+        _execute_query_worker(order.id)
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'success')
         self.assertEqual(order.result_count, 1)
         self.assertEqual(order.duration_ms, 8)
+        self.assertEqual(order.result_data, {'columns': ['id'], 'rows': [{'id': 1}]})
+
+    def test_query_create_validation_error_returns_400_sync(self):
+        user = self.create_user_with_permissions('query-validator', ['sqlaudit.datasource.view', 'sqlaudit.query.execute'])
+        self.client.force_login(user)
+
+        response = self.client.post('/api/sqlaudit/queries/', {
+            'datasource': self.datasource.id,
+            'database': 'app',
+            'sql_content': 'UPDATE orders SET status = 1',
+        })
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(QueryOrder.objects.count(), 0, '校验失败不落库')
+
+    @patch('sqlaudit.views.db_executor.execute_query', return_value=(False, [], [], 0, 0, 'boom'))
+    def test_query_worker_failure_sets_error_message(self, _mock_execute_query):
+        from .views import _execute_query_worker
+
+        user = self.create_user_with_permissions('query-failer', ['sqlaudit.datasource.view', 'sqlaudit.query.execute'])
+        self.client.force_login(user)
+        response = self.client.post('/api/sqlaudit/queries/', {
+            'datasource': self.datasource.id, 'database': 'app', 'sql_content': 'SELECT 1',
+        })
+        self.assertEqual(response.status_code, 202)
+        order = QueryOrder.objects.get(submitter=user.username)
+        _execute_query_worker(order.id)
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'failed')
+        self.assertEqual(order.error_message, 'boom')
+
+    @patch('sqlaudit.views.db_executor.execute_query', return_value=(True, ['id'], [{'id': 1}], 1, 8, None))
+    @patch('sqlaudit.views.push_background_job_notification')
+    def test_query_worker_pushes_notification(self, notify_mock, _mock_execute_query):
+        from .views import _execute_query_worker
+
+        user = self.create_user_with_permissions('query-notify', ['sqlaudit.datasource.view', 'sqlaudit.query.execute'])
+        self.client.force_login(user)
+        self.client.post('/api/sqlaudit/queries/', {
+            'datasource': self.datasource.id, 'database': 'app', 'sql_content': 'SELECT 1',
+        })
+        order = QueryOrder.objects.get(submitter=user.username)
+        _execute_query_worker(order.id)
+        notify_mock.assert_called_once()
+        self.assertEqual(notify_mock.call_args.args[0], 'sqlaudit_query')
+
+    @patch('sqlaudit.views.db_executor.execute_sql', return_value=(True, 3, 100, 'ok'))
+    def test_execute_async_returns_202_and_executing(self, _mock_execute_sql):
+        from eventwall.models import EventRecord
+
+        from .views import _execute_order_worker
+
+        order = SqlOrder.objects.create(
+            title='async-exec', datasource=self.datasource, database='app',
+            sql_type='DML', sql_content='UPDATE demo SET value = 1 WHERE id = 1',
+            submitter='dev', status='approved',
+        )
+        user = self.create_user_with_permissions('executor', ['sqlaudit.order.view', 'sqlaudit.order.execute'])
+        self.client.force_login(user)
+
+        response = self.client.post(f'/api/sqlaudit/orders/{order.id}/execute/')
+        self.assertEqual(response.status_code, 202)
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'executing')
+
+        _execute_order_worker(order.id, user.username)
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'executed')
+        self.assertEqual(order.affected_rows, 3)
+        event = EventRecord.objects.filter(resource_type='sql_order', resource_id=order.id).last()
+        self.assertIsNotNone(event, '执行完成应写事件墙')
+        self.assertEqual(event.result, EventRecord.RESULT_SUCCESS)
+
+    def test_execute_conflict_when_executing(self):
+        order = SqlOrder.objects.create(
+            title='executing-order', datasource=self.datasource, database='app',
+            sql_type='DML', sql_content='UPDATE demo SET value = 1', submitter='dev',
+            status='executing',
+        )
+        user = self.create_user_with_permissions('executor2', ['sqlaudit.order.view', 'sqlaudit.order.execute'])
+        self.client.force_login(user)
+
+        response = self.client.post(f'/api/sqlaudit/orders/{order.id}/execute/')
+        self.assertEqual(response.status_code, 400)
+
+    def test_apply_mysql_max_execution_time_hint(self):
+        from .db_executor import _apply_mysql_max_execution_time
+
+        self.assertEqual(
+            _apply_mysql_max_execution_time('SELECT * FROM t', 60000),
+            'SELECT /*+ MAX_EXECUTION_TIME(60000) */ * FROM t',
+        )
+        self.assertEqual(
+            _apply_mysql_max_execution_time('select 1;', 60000),
+            'SELECT /*+ MAX_EXECUTION_TIME(60000) */ 1;',
+        )
+        self.assertEqual(
+            _apply_mysql_max_execution_time('UPDATE t SET a = 1', 60000),
+            'UPDATE t SET a = 1',
+            '非 SELECT 原样返回',
+        )

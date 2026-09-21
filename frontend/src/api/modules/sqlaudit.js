@@ -22,4 +22,5 @@ export const checkSql = (data) => request.post('/sqlaudit/check/', data)
 
 // 查询工单
 export const getQueryOrders = (params) => request.get('/sqlaudit/queries/', { params })
+export const getQueryOrderDetail = (id) => request.get(`/sqlaudit/queries/${id}/`)
 export const submitQuery = (data) => request.post('/sqlaudit/queries/', data)

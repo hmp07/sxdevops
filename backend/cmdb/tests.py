@@ -577,3 +577,126 @@ class CmdbSearchAndSyncTests(AuthenticatedTestCase):
         self.assertEqual(k8s_entry['count'], 2)
 
 
+
+
+class iTopDataSourceAsyncTests(AuthenticatedTestCase):
+    """iTop 数据源保存异步化：连接测试门禁 + 后台同步线程 + 完成通知。"""
+
+    def _post_create(self, **overrides):
+        payload = {
+            'name': 'itop-prod',
+            'api_url': 'http://itop.example.com/webservices/rest.php',
+            'api_version': '1.4',
+            'auth_user': 'admin',
+            'auth_password': 'secret',
+            'organization': 'demo',
+        }
+        payload.update(overrides)
+        return self.client.post('/api/cmdb/itop/datasources/', payload, format='json')
+
+    def test_create_rejects_when_connection_fails(self):
+        from unittest.mock import patch
+
+        from .models import iTopDataSource
+
+        with patch('cmdb.itop_views.test_connection', return_value=False):
+            response = self._post_create()
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(iTopDataSource.objects.count(), 0, '连接失败不落库')
+
+    def test_create_saves_and_starts_sync_thread(self):
+        from unittest.mock import patch
+
+        from .models import iTopDataSource
+
+        with patch('cmdb.itop_views.test_connection', return_value=True), \
+             patch('cmdb.itop_views._start_sync_thread', return_value=True) as start_mock:
+            response = self._post_create()
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(iTopDataSource.objects.count(), 1)
+        start_mock.assert_called_once_with(iTopDataSource.objects.get().id)
+
+    def test_trigger_sync_running_conflict(self):
+        from unittest.mock import patch
+
+        from .models import iTopDataSource
+
+        with patch('cmdb.itop_views.test_connection', return_value=True), \
+             patch('cmdb.itop_views._start_sync_thread', return_value=True):
+            self._post_create()
+        ds = iTopDataSource.objects.get()
+        ds.sync_status = 'running'
+        ds.save(update_fields=['sync_status'])
+        response = self.client.post(f'/api/cmdb/itop/datasources/{ds.id}/trigger_sync/')
+        self.assertEqual(response.status_code, 409)
+
+    def test_trigger_sync_starts_thread_returns_202(self):
+        from unittest.mock import patch
+
+        from .models import iTopDataSource
+
+        with patch('cmdb.itop_views.test_connection', return_value=True), \
+             patch('cmdb.itop_views._start_sync_thread', return_value=True):
+            self._post_create()
+        ds = iTopDataSource.objects.get()
+        with patch('cmdb.itop_views._start_sync_thread', return_value=True) as start_mock:
+            response = self.client.post(f'/api/cmdb/itop/datasources/{ds.id}/trigger_sync/')
+        self.assertEqual(response.status_code, 202)
+        start_mock.assert_called_once_with(ds.id)
+
+    def test_worker_success_writes_wall_event_and_notification(self):
+        from unittest.mock import patch
+
+        from eventwall.models import EventRecord
+
+        from .itop_views import _sync_worker
+        from .models import iTopDataSource
+
+        ds = iTopDataSource.objects.create(name='itop-worker', api_url='http://x/rest.php',
+                                           auth_user='u', auth_password='p')
+
+        def fake_sync(ds_obj):
+            ds_obj.sync_status = 'ok'
+            ds_obj.save(update_fields=['sync_status'])
+
+        with patch('cmdb.itop_views.run_full_sync', side_effect=fake_sync), \
+             patch('cmdb.itop_views.push_background_job_notification') as notify_mock:
+            _sync_worker(ds.id)
+        event = EventRecord.objects.filter(action='itop_sync_finish').first()
+        self.assertIsNotNone(event)
+        self.assertEqual(event.result, EventRecord.RESULT_SUCCESS)
+        self.assertEqual(event.metadata.get('event_category'), 'config_change')
+        notify_mock.assert_called_once()
+        self.assertEqual(notify_mock.call_args.args[0], 'itop_sync')
+        kwargs = notify_mock.call_args.kwargs
+        self.assertEqual(kwargs['level'], 'success')
+        self.assertEqual(kwargs['job_id'], ds.id)
+
+    def test_worker_failure_level_error(self):
+        from unittest.mock import patch
+
+        from eventwall.models import EventRecord
+
+        from .itop_views import _sync_worker
+        from .models import iTopDataSource
+
+        ds = iTopDataSource.objects.create(name='itop-worker-fail', api_url='http://x/rest.php',
+                                           auth_user='u', auth_password='p')
+        with patch('cmdb.itop_views.run_full_sync', side_effect=Exception('boom')), \
+             patch('cmdb.itop_views.push_background_job_notification') as notify_mock:
+            _sync_worker(ds.id)
+        self.assertEqual(notify_mock.call_args.kwargs['level'], 'error')
+        event = EventRecord.objects.filter(action='itop_sync_finish').first()
+        self.assertIsNotNone(event)
+        self.assertEqual(event.result, EventRecord.RESULT_FAILED)
+
+    def test_sync_status_accepts_long_error(self):
+        # 迁移 0008 将 sync_status 扩至 255；SQLite 不强制长度，本用例作为 MySQL 生产的回归护栏
+        from .models import iTopDataSource
+
+        ds = iTopDataSource.objects.create(name='itop-long-status', api_url='http://x/rest.php',
+                                           auth_user='u', auth_password='p')
+        ds.sync_status = 'error: ' + 'x' * 150
+        ds.save()
+        ds.refresh_from_db()
+        self.assertIn('error:', ds.sync_status)

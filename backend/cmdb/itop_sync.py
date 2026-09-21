@@ -33,7 +33,7 @@ TICKET_TYPE_MAP = {
 }
 
 
-def _call_itop_api(ds, json_data):
+def _call_itop_api(ds, json_data, timeout=60):
     """调用 iTop REST API（同步引擎独立实现，不依赖 MCP Server）"""
     try:
         resp = requests.post(
@@ -44,7 +44,7 @@ def _call_itop_api(ds, json_data):
                 'auth_pwd': ds.auth_password,
                 'json_data': json_data,
             },
-            timeout=60,
+            timeout=timeout,
         )
         resp.raise_for_status()
         return resp.json()
@@ -52,13 +52,13 @@ def _call_itop_api(ds, json_data):
         return {'code': -1, 'message': str(e)}
 
 
-def test_connection(ds):
-    """测试 iTop 连接"""
+def test_connection(ds, timeout=10):
+    """测试 iTop 连接（保存门禁用 10s，留出网络余量保证前端 15s 内返回）"""
     result = _call_itop_api(ds, json.dumps({
         'operation': 'core/check_credentials',
         'user': ds.auth_user,
         'password': ds.auth_password,
-    }))
+    }), timeout=timeout)
     return result.get('authorized', False) and result.get('code') == 0
 
 

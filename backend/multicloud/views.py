@@ -13,16 +13,19 @@ from rbac.services import DEMO_ACCOUNT_MUTATION_MESSAGE, is_demo_account, user_h
 from .models import CloudAsset, CloudCredential, CloudEnvironment, CloudSyncTask
 from .serializers import CloudAssetSerializer, CloudCredentialSerializer, CloudEnvironmentSerializer, CloudSyncTaskSerializer
 from .services import (
-    batch_sync_targets,
     build_cost_trend,
     build_overview,
     build_provider_catalog,
     build_topology,
     execute_batch_action,
-    sync_credential_environments,
-    sync_environment_inventory,
+    resolve_batch_target_ids,
+    submit_credential_sync,
+    submit_environment_sync,
     sync_environment_to_cmdb,
     test_credential_connection,
+    _SYNC_IN_FLIGHT,
+    _SYNC_IN_FLIGHT_LOCK,
+    _batch_sync_worker,
 )
 
 
@@ -89,26 +92,28 @@ class CloudCredentialViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, vi
     @action(detail=True, methods=['post'])
     def sync_all(self, request, pk=None):
         credential = self.get_object()
-        result = sync_credential_environments(credential, operator=request.user.username)
+        result = submit_credential_sync(credential, operator=request.user.username)
         credential.refresh_from_db()
+        if result is None:
+            return Response({'message': '该账号下环境均已在同步中'}, status=status.HTTP_409_CONFLICT)
         record_event(
             request=request,
             module='multicloud',
             category='sync',
             action='sync_all',
             title='同步云账号环境',
-            summary=result['message'],
-            result=EventRecord.RESULT_SUCCESS if result.get('success', True) else EventRecord.RESULT_FAILED,
+            summary=f'已提交 {result["count"]} 个环境同步任务',
+            result=EventRecord.RESULT_PENDING,
             severity=EventRecord.SEVERITY_INFO,
             resource_type='cloud_credential',
             resource_id=credential.id,
             resource_name=credential.name,
             correlation_id=f'cloud-credential:{credential.id}',
-            metadata={'provider': credential.provider},
+            metadata={'provider': credential.provider, 'count': result['count']},
         )
         return Response(
-            {'message': result['message'], 'result': result, 'credential': CloudCredentialSerializer(credential).data},
-            status=status.HTTP_200_OK,
+            {'message': f'已提交 {result["count"]} 个环境同步任务', 'result': result, 'credential': CloudCredentialSerializer(credential).data},
+            status=status.HTTP_202_ACCEPTED,
         )
 
 
@@ -158,17 +163,19 @@ class CloudEnvironmentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, v
     @action(detail=True, methods=['post'])
     def sync(self, request, pk=None):
         environment = self.get_object()
-        task = sync_environment_inventory(environment, operator=request.user.username)
+        task = submit_environment_sync(environment, operator=request.user.username)
         environment.refresh_from_db()
+        if task is None:
+            return Response({'message': '该环境正在同步中'}, status=status.HTTP_409_CONFLICT)
         record_event(
             request=request,
             module='multicloud',
             category='sync',
             action='sync_inventory',
-            title='同步云环境资源',
-            summary=task.summary,
-            result=EventRecord.RESULT_SUCCESS if task.status == 'success' else EventRecord.RESULT_FAILED,
-            severity=EventRecord.SEVERITY_INFO if task.status == 'success' else EventRecord.SEVERITY_WARNING,
+            title='提交云环境资源同步',
+            summary=f'已提交 {environment.name} 同步任务',
+            result=EventRecord.RESULT_PENDING,
+            severity=EventRecord.SEVERITY_INFO,
             resource_type='cloud_environment',
             resource_id=environment.id,
             resource_name=environment.name,
@@ -182,8 +189,8 @@ class CloudEnvironmentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, v
             metadata={'task_type': task.task_type, 'status': task.status},
         )
         return Response(
-            {'message': task.summary, 'task': CloudSyncTaskSerializer(task).data, 'environment': CloudEnvironmentSerializer(environment).data},
-            status=status.HTTP_200_OK,
+            {'message': '同步任务已提交', 'task': CloudSyncTaskSerializer(task).data, 'environment': CloudEnvironmentSerializer(environment).data},
+            status=status.HTTP_202_ACCEPTED,
         )
 
     @action(detail=True, methods=['post'])
@@ -292,39 +299,42 @@ def batch_sync_view(request):
     environment_ids = request.data.get('environment_ids') or []
     credential_ids = request.data.get('credential_ids') or []
     sync_cmdb = bool(request.data.get('sync_cmdb'))
-    results = batch_sync_targets(
-        environment_ids=environment_ids,
-        credential_ids=credential_ids,
-        operator=request.user.username,
-        sync_cmdb=sync_cmdb,
-    )
+    target_ids = resolve_batch_target_ids(environment_ids, credential_ids)
+    if not target_ids:
+        return Response({'message': '没有可同步的目标', 'count': 0}, status=status.HTTP_400_BAD_REQUEST)
+    # 防重入由每个环境的 sync_status 守卫承担；batch 键唯一即可
+    from sxdevops.background import start_background_thread
+
+    start_background_thread(_SYNC_IN_FLIGHT, _SYNC_IN_FLIGHT_LOCK,
+                            f'batch-sync:{timezone.now().strftime("%H%M%S%f")}',
+                            _batch_sync_worker, target_ids, request.user.username, sync_cmdb)
     record_event(
         request=request,
         module='multicloud',
         category='sync',
         action='batch_sync',
         title='批量同步多云目标',
-        summary=f'已提交 {len(results)} 个多云同步任务',
-        result=EventRecord.RESULT_SUCCESS,
+        summary=f'已提交 {len(target_ids)} 个多云同步任务',
+        result=EventRecord.RESULT_PENDING,
         severity=EventRecord.SEVERITY_INFO,
         resource_type='cloud_batch_sync',
-        resource_id=f'batch-{len(results)}',
+        resource_id=f'batch-{len(target_ids)}',
         resource_name='批量同步',
-        correlation_id=f'multicloud-batch-sync:{len(results)}:{timezone.now().strftime("%Y%m%d%H%M%S")}',
+        correlation_id=f'multicloud-batch-sync:{len(target_ids)}:{timezone.now().strftime("%Y%m%d%H%M%S")}',
         metadata={
             'environment_ids': environment_ids,
             'credential_ids': credential_ids,
             'sync_cmdb': sync_cmdb,
-            'count': len(results),
+            'count': len(target_ids),
         },
     )
     return Response(
         {
-            'message': f'Submitted {len(results)} batch sync tasks.',
-            'count': len(results),
-            'results': results,
+            'message': f'已提交 {len(target_ids)} 个批量同步任务',
+            'count': len(target_ids),
+            'status': 'running',
         },
-        status=status.HTTP_200_OK,
+        status=status.HTTP_202_ACCEPTED,
     )
 
 

@@ -28,10 +28,10 @@
         <el-table-column prop="api_version" label="版本" width="70" />
         <el-table-column prop="organization" label="组织" width="120" />
         <el-table-column prop="sync_mode" label="同步模式" width="90" />
-        <el-table-column prop="sync_status" label="状态" width="100">
+        <el-table-column prop="sync_status" label="状态" width="110">
           <template #default="{ row }">
-            <el-tag :type="row.sync_status === 'ok' ? 'success' : row.sync_status === 'running' ? 'warning' : 'info'" size="small">
-              {{ row.sync_status === 'ok' ? '正常' : row.sync_status === 'running' ? '同步中' : row.sync_status || '空闲' }}
+            <el-tag :title="row.sync_status" :type="row.sync_status === 'ok' ? 'success' : row.sync_status === 'running' ? 'warning' : 'info'" size="small">
+              {{ statusLabel(row).slice(0, 30) }}{{ statusLabel(row).length > 30 ? '…' : '' }}
             </el-tag>
           </template>
         </el-table-column>
@@ -72,7 +72,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref, reactive } from 'vue'
+import { onMounted, onBeforeUnmount, ref, reactive } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled } from '@element-plus/icons-vue'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
@@ -121,7 +121,7 @@ async function saveDs() {
       ElMessage.success('数据源已更新')
     } else {
       await createITopDataSource(payload)
-      ElMessage.success('数据源已创建')
+      ElMessage.success('数据源已创建，后台全量同步已开始')
     }
     dsVisible.value = false
     await loadDataSources()
@@ -141,21 +141,16 @@ async function testConnection(row) {
 
 async function triggerSync(row) {
   try {
-    const resp = await triggerITopSync(row.id)
-    const r = resp?.result || {}
-    const cis = r.cis || {}
-    const lines = [
-      `CI 新建 ${cis.created || 0} / 更新 ${cis.updated || 0} / 跳过 ${cis.skipped || 0}`,
-      `关系新建 ${(r.relations || {}).created || 0}`,
-      `工单新建 ${(r.tickets || {}).created || 0} / 更新 ${(r.tickets || {}).updated || 0}`,
-    ]
-    ElMessage.success(`同步完成：${lines.join('，')}`)
-    const errors = cis.errors || []
-    if (errors.length) {
-      ElMessage.warning(`部分 CI 类同步失败：${errors.join('；').slice(0, 200)}`)
-    }
+    await triggerITopSync(row.id) // 202：已触发；409：interceptor 弹出错误
+    ElMessage.info('同步已触发，完成后将收到站内通知')
     await loadDataSources()
   } catch { /* */ }
+}
+
+function statusLabel(row) {
+  if (row.sync_status === 'ok') return '正常'
+  if (row.sync_status === 'running') return '同步中'
+  return row.sync_status || '空闲'
 }
 
 async function deleteDs(row) {
@@ -167,5 +162,36 @@ async function deleteDs(row) {
   } catch { /* cancelled */ }
 }
 
-onMounted(() => { loadDataSources() })
+let pollTimer = null
+
+function handleBackgroundJob(event) {
+  if ((event.detail || {}).job_type === 'itop_sync') {
+    loadDataSources()
+  }
+}
+
+function startPolling() {
+  stopPolling()
+  pollTimer = window.setInterval(() => {
+    if (dataSources.value.some(item => item.sync_status === 'running')) loadDataSources()
+  }, 8000)
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+onMounted(() => {
+  loadDataSources()
+  startPolling()
+  window.addEventListener('sxdevops-background-job', handleBackgroundJob)
+})
+
+onBeforeUnmount(() => {
+  stopPolling()
+  window.removeEventListener('sxdevops-background-job', handleBackgroundJob)
+})
 </script>

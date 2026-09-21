@@ -23,6 +23,7 @@
               <el-option label="待审核" value="pending" />
               <el-option label="已通过" value="approved" />
               <el-option label="已驳回" value="rejected" />
+              <el-option label="执行中" value="executing" />
               <el-option label="已执行" value="executed" />
               <el-option label="执行失败" value="failed" />
             </el-select>
@@ -208,7 +209,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Search, Select } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -242,7 +243,7 @@ const page = ref(1)
 const total = ref(0)
 const executingId = ref(null)
 const syncingRoute = ref(false)
-const validStatuses = ['pending', 'approved', 'rejected', 'executed', 'failed']
+const validStatuses = ['pending', 'approved', 'rejected', 'executing', 'executed', 'failed']
 
 const datasources = ref([])
 const databases = ref([])
@@ -445,21 +446,48 @@ const handleExecute = async (row) => {
 
   executingId.value = row.id
   try {
+    // 202：执行已提交，后台线程执行，完成后站内通知 + 轮询刷新
     const res = await executeSqlOrder(row.id)
-    if (res.status === 'executed') {
-      ElMessage.success(`执行完成，影响 ${res.affected_rows} 行，耗时 ${res.duration_ms}ms`)
-    } else {
-      ElMessage.error(`执行失败: ${res.execute_log}`)
-    }
+    ElMessage.info(res?.message || '执行已提交，完成后将收到站内通知')
     if (canViewOrders.value) fetchData()
+    startExecutingPoll()
   } catch (e) { console.error(e) }
   finally { executingId.value = null }
+}
+
+let execPollTimer = null
+
+function startExecutingPoll() {
+  stopExecutingPoll()
+  execPollTimer = window.setInterval(() => {
+    if (items.value.some(item => item.status === 'executing')) {
+      if (canViewOrders.value) fetchData()
+    } else {
+      stopExecutingPoll()
+    }
+  }, 4000)
+}
+
+function stopExecutingPoll() {
+  if (execPollTimer) { window.clearInterval(execPollTimer); execPollTimer = null }
+}
+
+function handleBackgroundJob(event) {
+  if ((event.detail || {}).job_type === 'sqlaudit_order' && canViewOrders.value) {
+    fetchData()
+  }
 }
 
 onMounted(() => {
   applyRouteFilters()
   page.value = 1
   if (canViewOrders.value) fetchData()
+  window.addEventListener('sxdevops-background-job', handleBackgroundJob)
+})
+
+onBeforeUnmount(() => {
+  stopExecutingPoll()
+  window.removeEventListener('sxdevops-background-job', handleBackgroundJob)
 })
 
 watch(() => route.query.status, () => {

@@ -3,6 +3,8 @@
 支持 MySQL、PolarDB 与 MongoDB。
 """
 import json
+import os
+import re
 import time
 
 import pymysql
@@ -16,6 +18,22 @@ except ImportError:  # pragma: no cover
 
 MYSQL_LIKE_TYPES = {'mysql', 'polardb'}
 MONGODB_TYPE = 'mongodb'
+# SQL 语句级超时（毫秒）：MySQL SELECT 经 MAX_EXECUTION_TIME 优化器提示生效；
+# DML/DDL 无等价语句级超时，由连接 read_timeout/write_timeout 网络层兜底
+MYSQL_STATEMENT_TIMEOUT_MS = int(os.environ.get('SQLAUDIT_STATEMENT_TIMEOUT_MS', '120000') or 120000)
+MONGODB_MAX_TIME_MS = 120000
+_MYSQL_SELECT_HINT_RE = re.compile(r'^SELECT\s+', re.IGNORECASE)
+
+
+def _apply_mysql_max_execution_time(sql_content, timeout_ms):
+    """为 SELECT 语句注入 MAX_EXECUTION_TIME 优化器提示（MySQL 5.7.8+ 支持）。
+
+    该提示仅对 SELECT 生效；非 SELECT 语句原样返回。
+    """
+    if not sql_content:
+        return sql_content
+    return _MYSQL_SELECT_HINT_RE.sub(
+        f'SELECT /*+ MAX_EXECUTION_TIME({timeout_ms}) */ ', sql_content, count=1)
 MYSQL_SYSTEM_DATABASES = {'information_schema', 'mysql', 'performance_schema', 'sys'}
 MONGODB_SYSTEM_DATABASES = {'admin', 'config', 'local'}
 MONGODB_READ_ACTIONS = {'find', 'aggregate', 'count', 'distinct'}
@@ -127,6 +145,10 @@ def _build_mysql_connect_kwargs(datasource, database=None, cursorclass=None, aut
         'password': datasource.password,
         'charset': datasource.charset,
         'connect_timeout': timeout,
+        # 网络层超时兜底：慢查询/长事务超过该时长即断开（语句级超时由
+        # MAX_EXECUTION_TIME 提示负责；DML/DDL 依赖此兜底）
+        'read_timeout': timeout + 10,
+        'write_timeout': timeout + 10,
     }
     if database:
         kwargs['database'] = database
@@ -203,7 +225,7 @@ def _execute_mysql_query(datasource, database, sql_content, limit):
             ),
         )
         with conn.cursor() as cursor:
-            cursor.execute(sql_content)
+            cursor.execute(_apply_mysql_max_execution_time(sql_content, MYSQL_STATEMENT_TIMEOUT_MS))
             rows = cursor.fetchmany(limit)
             count = cursor.rowcount
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
@@ -405,6 +427,7 @@ def _execute_mongodb_query(datasource, database, sql_content, limit):
             cursor = collection.find(
                 payload.get('filter', {}),
                 payload.get('projection'),
+                max_time_ms=MONGODB_MAX_TIME_MS,
             )
             sort = payload.get('sort')
             if sort:
@@ -417,14 +440,14 @@ def _execute_mongodb_query(datasource, database, sql_content, limit):
         elif action == 'aggregate':
             collection = db[payload['collection']]
             pipeline = payload.get('pipeline', [])
-            rows = [_normalize_mongo_value(item) for item in collection.aggregate(pipeline)]
+            rows = [_normalize_mongo_value(item) for item in collection.aggregate(pipeline, maxTimeMS=MONGODB_MAX_TIME_MS)]
             rows = rows[:int(payload.get('limit', limit))]
         elif action == 'count':
             collection = db[payload['collection']]
-            rows = [{'count': collection.count_documents(payload.get('filter', {}))}]
+            rows = [{'count': collection.count_documents(payload.get('filter', {}), maxTimeMS=MONGODB_MAX_TIME_MS)}]
         else:
             collection = db[payload['collection']]
-            rows = [{'value': _normalize_mongo_value(item)} for item in collection.distinct(payload['field'], payload.get('filter', {}))]
+            rows = [{'value': _normalize_mongo_value(item)} for item in collection.distinct(payload['field'], payload.get('filter', {}), maxTimeMS=MONGODB_MAX_TIME_MS)]
             rows = rows[:int(payload.get('limit', limit))]
 
         columns = _extract_columns(rows)

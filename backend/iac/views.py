@@ -10,8 +10,8 @@ from rest_framework.response import Response
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 
 from .cmdb_sync import sync_stack_to_cmdb
-from .executor import run_terraform_action
-from .models import TerraformStack
+from .executor import submit_terraform_action
+from .models import TerraformExecution, TerraformStack
 from .serializers import (
     TerraformExecutionRequestSerializer,
     TerraformExecutionSerializer,
@@ -86,22 +86,37 @@ class TerraformStackViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def execute(self, request, pk=None):
         stack = self.get_object()
+        # 防重入：同一方案已有在途执行（pending/running）直接 409
+        if TerraformExecution.objects.filter(
+                stack=stack,
+                status__in=[TerraformExecution.STATUS_PENDING, TerraformExecution.STATUS_RUNNING]).exists():
+            return Response({'message': '该方案已有执行任务在进行中，请稍后再试'},
+                            status=status.HTTP_409_CONFLICT)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        execution = run_terraform_action(
+        execution = submit_terraform_action(
             stack,
             serializer.validated_data['action'],
             secrets=serializer.validated_data.get('secrets') or {},
             operator=request.user.username,
         )
         stack.refresh_from_db()
+        if execution.status == TerraformExecution.STATUS_FAILED:  # 线程启动失败的兜底
+            return Response(
+                {
+                    'message': execution.stderr or '执行任务提交失败',
+                    'execution': TerraformExecutionSerializer(execution).data,
+                    'stack': TerraformStackSerializer(stack).data,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response(
             {
-                'message': _execution_message(execution),
+                'message': '执行任务已提交，完成后将收到站内通知',
                 'execution': TerraformExecutionSerializer(execution).data,
                 'stack': TerraformStackSerializer(stack).data,
             },
-            status=status.HTTP_200_OK,
+            status=status.HTTP_202_ACCEPTED,
         )
 
     @action(detail=True, methods=['post'])
@@ -148,14 +163,6 @@ def terraform_bundle_view(request):
     filename = f'{serializer.validated_data["payload"]["name"]}-terraform.zip'
     response['Content-Disposition'] = f'attachment; filename="{filename}"'
     return response
-
-
-def _execution_message(execution):
-    if execution.status == 'success':
-        return f'Terraform {execution.action} 执行成功。'
-    if execution.stderr:
-        return execution.stderr.splitlines()[0]
-    return f'Terraform {execution.action} 执行失败。'
 
 
 def _build_zip_bytes(files):

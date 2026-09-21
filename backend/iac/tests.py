@@ -329,8 +329,9 @@ class TerraformIacTests(TestCase):
         self.assertIn('gateway_ip        = "10.20.1.1"', files['main.tf'])
         self.assertIn('huaweicloud_vpc_eip', files['main.tf'])
 
+    @mock.patch('iac.executor.start_background_thread', return_value=True)
     @mock.patch('iac.executor.shutil.which', return_value=None)
-    def test_execute_endpoint_returns_failed_execution_when_terraform_missing(self, _mock_which):
+    def test_execute_endpoint_returns_failed_execution_when_terraform_missing(self, _mock_which, _mock_thread):
         create_response = self.client.post('/api/iac/stacks/', self.aliyun_payload, format='json')
         stack_id = create_response.json()['id']
 
@@ -347,14 +348,45 @@ class TerraformIacTests(TestCase):
             format='json',
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 202)
         payload = response.json()
-        self.assertEqual(payload['execution']['status'], 'failed')
-        self.assertIn('未安装 terraform', payload['execution']['stderr'])
+        self.assertEqual(payload['execution']['status'], 'pending')
+        execution_id = payload['execution']['id']
         self.assertEqual(TerraformExecution.objects.count(), 1)
+
+        # 直接调用 worker 断言异步执行路径：terraform 缺失 → failed + stack 状态回写
+        from .executor import _execute_terraform_action
+        _execute_terraform_action(execution_id, {'access_key': 'demo-ak', 'secret_key': 'demo-sk'}, 'tester')
+        execution = TerraformExecution.objects.get(id=execution_id)
+        self.assertEqual(execution.status, 'failed')
+        self.assertIn('未安装 terraform', execution.stderr)
         stack = TerraformStack.objects.get(id=stack_id)
         self.assertEqual(stack.last_execution_status, 'failed')
         self.assertEqual(stack.last_execution_action, 'plan')
+
+    @mock.patch('iac.executor.start_background_thread', return_value=True)
+    def test_execute_returns_202_and_creates_pending_execution(self, _mock_thread):
+        create_response = self.client.post('/api/iac/stacks/', self.aliyun_payload, format='json')
+        stack_id = create_response.json()['id']
+
+        response = self.client.post(f'/api/iac/stacks/{stack_id}/execute/',
+                                    {'action': 'plan', 'secrets': {'access_key': 'demo-ak', 'secret_key': 'demo-sk', 'instance_password': 'DemoPassword@123'}}, format='json')
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()['execution']['status'], 'pending')
+        self.assertEqual(TerraformExecution.objects.count(), 1)
+
+    @mock.patch('iac.executor.start_background_thread', return_value=True)
+    def test_execute_conflict_when_execution_in_flight(self, _mock_thread):
+        create_response = self.client.post('/api/iac/stacks/', self.aliyun_payload, format='json')
+        stack_id = create_response.json()['id']
+        stack = TerraformStack.objects.get(id=stack_id)
+        TerraformExecution.objects.create(stack=stack, action='apply', status='running')
+
+        response = self.client.post(f'/api/iac/stacks/{stack_id}/execute/',
+                                    {'action': 'plan', 'secrets': {'access_key': 'demo-ak', 'secret_key': 'demo-sk', 'instance_password': 'DemoPassword@123'}}, format='json')
+
+        self.assertEqual(response.status_code, 409)
 
     def test_sync_cmdb_endpoint_creates_bindings_and_relations(self):
         payload = copy.deepcopy(self.aliyun_payload)

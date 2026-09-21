@@ -51,13 +51,21 @@ class MultiCloudTests(TestCase):
         self.assertIn('resource_types', payload['aws'])
         self.assertIn('sdk', payload['aws'])
 
-    def test_environment_sync_creates_demo_assets(self):
+    @patch('multicloud.services.start_background_thread', return_value=True)
+    def test_environment_sync_creates_demo_assets(self, _mock_thread):
+        from multicloud.models import CloudSyncTask
+        from multicloud.services import _execute_environment_sync
+
         response = self.client.post(f'/api/multicloud/environments/{self.environment.id}/sync/', {}, format='json')
-        self.assertEqual(response.status_code, 200)
-        self.assertGreaterEqual(response.json()['environment']['asset_count'], 6)
+        self.assertEqual(response.status_code, 202)
+        task = CloudSyncTask.objects.get(environment=self.environment)
+        # 直接调用 worker 断言异步执行路径
+        _execute_environment_sync(task)
+        self.assertEqual(task.status, 'success')
         self.assertTrue(CloudAsset.objects.filter(environment=self.environment, resource_type='ecs').exists())
 
-    def test_credential_sync_all_runs_for_related_environments(self):
+    @patch('multicloud.services.start_background_thread', return_value=True)
+    def test_credential_sync_all_runs_for_related_environments(self, _mock_thread):
         CloudEnvironment.objects.create(
             credential=self.credential,
             name='订单中心共享',
@@ -70,8 +78,29 @@ class MultiCloudTests(TestCase):
             updated_by='test',
         )
         response = self.client.post(f'/api/multicloud/credentials/{self.credential.id}/sync_all/', {}, format='json')
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json()['result']['count'], 2)
+
+    @patch('multicloud.services.start_background_thread', return_value=True)
+    def test_environment_sync_conflict_when_running(self, _mock_thread):
+        self.environment.sync_status = 'running'
+        self.environment.save(update_fields=['sync_status'])
+        response = self.client.post(f'/api/multicloud/environments/{self.environment.id}/sync/', {}, format='json')
+        self.assertEqual(response.status_code, 409)
+
+    def test_batch_sync_empty_returns_400(self):
+        response = self.client.post('/api/multicloud/batch-sync/', {}, format='json')
+        self.assertEqual(response.status_code, 400)
+
+    @patch('multicloud.services.start_background_thread', return_value=True)
+    def test_batch_sync_returns_202_and_count(self, _mock_thread):
+        response = self.client.post(
+            '/api/multicloud/batch-sync/',
+            {'environment_ids': [self.environment.id]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()['count'], 1)
 
     def test_overview_endpoint_aggregates_assets_and_costs(self):
         sync_environment_inventory(self.environment, operator='test')
@@ -139,8 +168,9 @@ class MultiCloudTests(TestCase):
         self.assertIn(payload['status'], {'warning', 'error'})
         self.assertNotEqual(payload['status'], 'healthy')
 
+    @patch('multicloud.services.start_background_thread', return_value=True)
     @patch('multicloud.services.get_cloud_adapter')
-    def test_real_sdk_inventory_sync_uses_adapter_rows(self, mocked_get_adapter):
+    def test_real_sdk_inventory_sync_uses_adapter_rows(self, mocked_get_adapter, _mock_thread):
         self.credential.provider = 'aws'
         self.credential.demo_mode = False
         self.credential.default_region = 'ap-southeast-1'
@@ -180,8 +210,13 @@ class MultiCloudTests(TestCase):
                 ]
 
         mocked_get_adapter.side_effect = lambda credential: FakeAdapter(credential)
+        from multicloud.models import CloudSyncTask
+        from multicloud.services import _execute_environment_sync
+
         response = self.client.post(f'/api/multicloud/environments/{self.environment.id}/sync/', {}, format='json')
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 202)
+        task = CloudSyncTask.objects.get(environment=self.environment)
+        _execute_environment_sync(task)
         self.assertTrue(CloudAsset.objects.filter(environment=self.environment, resource_id='i-live-001').exists())
         self.environment.refresh_from_db()
         self.assertEqual(self.environment.summary['sync_mode'], 'sdk')

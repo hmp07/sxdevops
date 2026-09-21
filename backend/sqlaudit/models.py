@@ -80,12 +80,24 @@ class SqlOrder(models.Model):
 
 class QueryOrder(models.Model):
     """查询工单"""
+    STATUS_CHOICES = [
+        ('pending', '等待执行'),
+        ('running', '执行中'),
+        ('success', '成功'),
+        ('failed', '失败'),
+    ]
+
     datasource = models.ForeignKey(
         DataSource, on_delete=models.PROTECT, verbose_name='数据源',
     )
     database = models.CharField('目标数据库', max_length=128)
     sql_content = models.TextField('SQL 内容')
     submitter = models.CharField('提交人', max_length=64, default='admin')
+    status = models.CharField(
+        '状态', max_length=16, choices=STATUS_CHOICES, default='pending',
+    )
+    error_message = models.TextField('错误信息', blank=True, default='')
+    result_data = models.JSONField('查询结果', default=dict, blank=True)
     result_count = models.IntegerField('结果行数', null=True, blank=True)
     duration_ms = models.IntegerField('耗时(ms)', null=True, blank=True)
     created_at = models.DateTimeField('查询时间', auto_now_add=True)

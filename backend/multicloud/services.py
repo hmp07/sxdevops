@@ -1,3 +1,4 @@
+import threading
 from collections import Counter, defaultdict
 from datetime import timedelta
 from decimal import Decimal
@@ -5,9 +6,15 @@ from decimal import Decimal
 from django.utils import timezone
 
 from cmdb.models import CIType, ConfigItem, CostRecord
+from eventwall.models import EventRecord
+from eventwall.services import build_resource, record_event
+from sxdevops.background import push_background_job_notification, start_background_thread
 
 from .models import CloudAsset, CloudCredential, CloudEnvironment, CloudSyncTask
 from .sdk_adapters import CloudAdapterError, get_cloud_adapter, get_provider_sdk_capabilities
+
+_SYNC_IN_FLIGHT = set()
+_SYNC_IN_FLIGHT_LOCK = threading.Lock()
 
 
 PROVIDER_CATALOG = {
@@ -428,7 +435,7 @@ def _inventory_for_environment(environment):
     }
 
 
-def sync_environment_inventory(environment, operator='', task_type='full'):
+def _create_sync_task(environment, operator='', task_type='full'):
     now = timezone.now()
     task = CloudSyncTask.objects.create(
         credential=environment.credential,
@@ -441,7 +448,13 @@ def sync_environment_inventory(environment, operator='', task_type='full'):
     )
     environment.sync_status = 'running'
     environment.save(update_fields=['sync_status', 'updated_at'])
+    return task
 
+
+def _execute_environment_sync(task):
+    """执行单个环境同步（task 已建好并置 running），回写 task/environment。"""
+    environment = task.environment
+    now = timezone.now()
     try:
         desired, sync_meta = _inventory_for_environment(environment)
         active_keys = {(item['resource_type'], item['resource_id']) for item in desired}
@@ -498,6 +511,99 @@ def sync_environment_inventory(environment, operator='', task_type='full'):
         task.finished_at = timezone.now()
         task.save(update_fields=['status', 'summary', 'result', 'finished_at'])
         return task
+
+
+def sync_environment_inventory(environment, operator='', task_type='full'):
+    """同步版入口（内部调用与测试使用）：建任务并同步执行。"""
+    task = _create_sync_task(environment, operator, task_type)
+    return _execute_environment_sync(task)
+
+
+def submit_environment_sync(environment, operator='', task_type='full'):
+    """异步提交单环境同步：立即建任务并启动后台线程，返回 task；已在同步中返回 None。"""
+    if environment.sync_status == 'running':
+        return None
+    task = _create_sync_task(environment, operator, task_type)
+    started = start_background_thread(_SYNC_IN_FLIGHT, _SYNC_IN_FLIGHT_LOCK,
+                                      f'env-sync:{environment.id}', _environment_sync_worker, task.id)
+    if not started:  # 兜底（sync_status 已守卫，理论上不可达）：失败态回写
+        task.status = 'failed'
+        task.summary = '同步任务已在后台执行中'
+        task.finished_at = timezone.now()
+        task.save(update_fields=['status', 'summary', 'finished_at'])
+        environment.sync_status = 'failed'
+        environment.save(update_fields=['sync_status', 'updated_at'])
+    return task
+
+
+def _environment_sync_worker(task_id):
+    """后台线程：重取任务执行同步，完成后写事件墙（进墙）+ 站内广播。"""
+    task = CloudSyncTask.objects.select_related('environment', 'credential').filter(pk=task_id).first()
+    if task is None:
+        return
+    _execute_environment_sync(task)
+    ok = task.status == 'success'
+    record_event(
+        module='multicloud', category='external_event', action='sync_inventory_finish',
+        title=f'云环境 {task.environment.name} 资源同步{"完成" if ok else "失败"}',
+        summary=task.summary,
+        result=EventRecord.RESULT_SUCCESS if ok else EventRecord.RESULT_FAILED,
+        severity=EventRecord.SEVERITY_INFO if ok else EventRecord.SEVERITY_WARNING,
+        source_type=EventRecord.SOURCE_ASYNC, actor_type=EventRecord.ACTOR_SYSTEM,
+        actor_username=task.operator or 'system', actor_display=task.operator or 'system',
+        resource_type='cloud_environment', resource_id=task.environment_id,
+        resource_name=task.environment.name,
+        business_line=task.environment.business_line,
+        environment=task.environment.environment_type,
+        correlation_id=f'cloud-sync:{task.id}',
+        related_resources=[build_resource('multicloud', 'cloud_credential', task.credential_id, task.credential.name)],
+        metadata={'event_category': 'config_change', 'task_type': task.task_type, 'status': task.status},
+    )
+    push_background_job_notification(
+        'multicloud_sync',
+        title=f'云环境同步{"完成" if ok else "失败"}',
+        message=f'{task.environment.name}: {task.summary}',
+        level='success' if ok else 'error', route='/multicloud', job_id=task.id,
+    )
+
+
+def submit_credential_sync(credential, operator=''):
+    """异步提交账号下全部环境同步（单线程顺序执行）；无待同步目标返回 None。"""
+    pending = [env for env in credential.environments.all() if env.sync_status != 'running']
+    if not pending:
+        return None
+    task_ids = [_create_sync_task(env, operator, 'inventory').id for env in pending]
+    start_background_thread(_SYNC_IN_FLIGHT, _SYNC_IN_FLIGHT_LOCK,
+                            f'cred-sync:{credential.id}', _credential_sync_worker,
+                            credential.id, task_ids)
+    return {'count': len(task_ids), 'tasks': task_ids}
+
+
+def _credential_sync_worker(credential_id, task_ids):
+    tasks = list(CloudSyncTask.objects.filter(pk__in=task_ids).select_related('environment', 'credential'))
+    for task in tasks:
+        _execute_environment_sync(task)
+    success_count = sum(1 for t in tasks if t.status == 'success')
+    credential_name = tasks[0].credential.name if tasks else ''
+    record_event(
+        module='multicloud', category='external_event', action='sync_all_finish',
+        title='云账号环境同步完成',
+        summary=f'{credential_name}: {success_count}/{len(tasks)} 个环境同步成功',
+        result=EventRecord.RESULT_SUCCESS if success_count == len(tasks) else EventRecord.RESULT_FAILED,
+        severity=EventRecord.SEVERITY_INFO if success_count == len(tasks) else EventRecord.SEVERITY_WARNING,
+        source_type=EventRecord.SOURCE_ASYNC, actor_type=EventRecord.ACTOR_SYSTEM,
+        resource_type='cloud_credential', resource_id=credential_id,
+        resource_name=credential_name,
+        correlation_id=f'cloud-credential-sync:{credential_id}',
+        metadata={'event_category': 'config_change', 'success_count': success_count, 'count': len(tasks)},
+    )
+    push_background_job_notification(
+        'multicloud_sync',
+        title='云账号环境同步完成',
+        message=f'{credential_name}: {success_count}/{len(tasks)} 个环境同步成功',
+        level='success' if success_count == len(tasks) else ('warning' if success_count else 'error'),
+        route='/multicloud', job_id=credential_id,
+    )
 
 
 def sync_credential_environments(credential, operator=''):
@@ -816,6 +922,42 @@ def batch_sync_targets(environment_ids=None, credential_ids=None, operator='', s
                 )
                 seen_ids.add(environment.id)
     return results
+
+
+def resolve_batch_target_ids(environment_ids=None, credential_ids=None):
+    """解析批量同步目标：环境 id 直接收下，账号 id 展开为其环境 id（去重保序）。"""
+    target_ids, seen = [], set()
+    for environment_id in CloudEnvironment.objects.filter(id__in=(environment_ids or [])).values_list('id', flat=True):
+        if environment_id not in seen:
+            seen.add(environment_id)
+            target_ids.append(environment_id)
+    for credential in CloudCredential.objects.filter(id__in=(credential_ids or [])).prefetch_related('environments'):
+        for environment_id in credential.environments.values_list('id', flat=True):
+            if environment_id not in seen:
+                seen.add(environment_id)
+                target_ids.append(environment_id)
+    return target_ids
+
+
+def _batch_sync_worker(target_ids, operator, sync_cmdb):
+    """后台线程：顺序执行各目标同步（复用同步版函数，各自建任务），完成后广播。"""
+    success = 0
+    for environment_id in target_ids:
+        environment = CloudEnvironment.objects.filter(pk=environment_id).select_related('credential').first()
+        if environment is None:
+            continue
+        if environment.sync_status == 'running':  # 环境级防重入：跳过在途目标
+            continue
+        task = sync_environment_to_cmdb(environment, operator=operator) if sync_cmdb \
+            else sync_environment_inventory(environment, operator=operator, task_type='inventory')
+        success += task.status == 'success'
+    push_background_job_notification(
+        'multicloud_sync',
+        title='批量多云同步完成',
+        message=f'{len(target_ids)} 个目标: {success} 成功 / {len(target_ids) - success} 失败或跳过',
+        level='success' if success == len(target_ids) else ('warning' if success else 'error'),
+        route='/multicloud', job_id=None,
+    )
 
 
 def execute_batch_action(scope, action, ids=None, operator='', payload=None):

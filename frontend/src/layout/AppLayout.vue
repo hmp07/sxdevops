@@ -716,7 +716,7 @@ const NOTIFICATION_RECONNECT_MAX_DELAY = 30000
 
 function connectNotificationSocket() {
   if (notificationSocket && notificationSocket.readyState === WebSocket.OPEN) return
-  if (!authStore.isAuthenticated || !authStore.hasPermission('ops.alert.view')) return
+  if (!authStore.isAuthenticated) return
   const token = authStore.token
   if (!token) return
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -731,18 +731,37 @@ function connectNotificationSocket() {
     try {
       const payload = JSON.parse(event.data)
       const notify = payload?.event
-      if (notify?.kind !== 'aiops_analysis_completed') return
-      const levelText = notify.level === 'critical' ? '严重' : notify.level === 'warning' ? '警告' : '信息'
-      ElNotification({
-        title: `告警 AI 分析完成（${levelText}）`,
-        message: notify.title || '已生成处置建议',
-        type: notify.level === 'critical' ? 'error' : 'warning',
-        duration: 8000,
-        onClick: () => {
-          router.push('/alerts')
-        },
-      })
-      void loadNotifications()
+      if (!notify) return
+      if (notify.kind === 'aiops_analysis_completed') {
+        const levelText = notify.level === 'critical' ? '严重' : notify.level === 'warning' ? '警告' : '信息'
+        ElNotification({
+          title: `告警 AI 分析完成（${levelText}）`,
+          message: notify.title || '已生成处置建议',
+          type: notify.level === 'critical' ? 'error' : 'warning',
+          duration: 8000,
+          onClick: () => {
+            router.push('/alerts')
+          },
+        })
+        void loadNotifications()
+        return
+      }
+      if (notify.kind === 'background_job_completed') {
+        // 统一后台作业完成通知：toast + CustomEvent 供相关页面刷新
+        ElNotification({
+          title: notify.title || '后台任务完成',
+          message: notify.message || '',
+          type: notify.level === 'success' ? 'success'
+            : notify.level === 'warning' ? 'warning'
+              : notify.level === 'error' ? 'error' : 'info',
+          duration: 8000,
+          onClick: notify.route ? () => { router.push(notify.route) } : undefined,
+        })
+        window.dispatchEvent(new CustomEvent('sxdevops-background-job', {
+          detail: { job_type: notify.job_type, job_id: notify.job_id, level: notify.level },
+        }))
+        void loadNotifications()
+      }
     } catch {
       /* 忽略非 JSON 消息 */
     }

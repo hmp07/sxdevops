@@ -59,7 +59,7 @@ const router = useRouter()
 const authStore = useAuthStore()
 const activeTab = ref('datasources')
 const snapshotLoading = ref(false)
-const validOrderStatuses = ['pending', 'approved', 'rejected', 'executed', 'failed']
+const validOrderStatuses = ['pending', 'approved', 'rejected', 'executing', 'executed', 'failed']
 const snapshotStats = ref({
   datasources: { total: 0, active: 0, mysql: 0, mongodb: 0 },
   orders: { total: 0, pending: 0, approved: 0, failed: 0 },

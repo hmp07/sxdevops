@@ -1,10 +1,10 @@
 """站内通知 WebSocket Consumer。
 
-鉴权：Sec-WebSocket-Protocol bearer.<token> 子协议 → Token 校验 → is_active →
-user_has_permissions(ops.alert.view)。连接后加入广播组
-alert-analysis-broadcast；服务端在告警 AI 分析完成时向该组广播
-轻量事件（仅告警 ID/级别/标题，不含敏感内容），前端收到后再经
-REST 摘要接口按权限拉取详情。
+鉴权：Sec-WebSocket-Protocol bearer.<token> 子协议 → Token 校验 → is_active。
+连接后：
+- 所有已登录用户加入 background-job-broadcast（后台作业完成通知，载荷为轻量字段）；
+- 持有 ops.alert.view 的用户额外加入 alert-analysis-broadcast（告警 AI 分析完成，
+  前端收到后再经 REST 摘要接口按权限拉取详情）。
 """
 import json
 import logging
@@ -16,6 +16,7 @@ from rbac.services import user_has_permissions
 logger = logging.getLogger(__name__)
 
 BROADCAST_GROUP = 'alert-analysis-broadcast'
+BACKGROUND_JOB_GROUP = 'background-job-broadcast'
 
 
 class NotificationConsumer(WebsocketConsumer):
@@ -34,16 +35,17 @@ class NotificationConsumer(WebsocketConsumer):
         if not token or not token.user.is_active:
             self.close(code=4401)
             return
-        if not user_has_permissions(token.user, ['ops.alert.view']):
-            self.close(code=4403)
-            return
 
         self.user = token.user
         self.accept(subprotocol=f'bearer.{token_key}')
         try:
             from asgiref.sync import async_to_sync
 
-            async_to_sync(self.channel_layer.group_add)(BROADCAST_GROUP, self.channel_name)
+            # 后台作业完成通知：所有已登录用户可收
+            async_to_sync(self.channel_layer.group_add)(BACKGROUND_JOB_GROUP, self.channel_name)
+            # 告警 AI 分析广播组保留 ops.alert.view 门槛（现有行为不变）
+            if user_has_permissions(token.user, ['ops.alert.view']):
+                async_to_sync(self.channel_layer.group_add)(BROADCAST_GROUP, self.channel_name)
         except Exception:
             logger.warning('加入通知广播组失败', exc_info=True)
 
@@ -51,6 +53,7 @@ class NotificationConsumer(WebsocketConsumer):
         try:
             from asgiref.sync import async_to_sync
 
+            async_to_sync(self.channel_layer.group_discard)(BACKGROUND_JOB_GROUP, self.channel_name)
             async_to_sync(self.channel_layer.group_discard)(BROADCAST_GROUP, self.channel_name)
         except Exception:
             pass

@@ -4903,8 +4903,6 @@ class AlertAnalysisClosedLoopTests(TestCase):
         self.assertIn('AI 分析已完成', fallback_body)
 
     def test_notification_consumer_auth(self):
-        from unittest.mock import patch
-
         from ops.notification_consumer import NotificationConsumer
 
         closed = {}
@@ -4921,12 +4919,14 @@ class AlertAnalysisClosedLoopTests(TestCase):
         # 无效 token（子协议携带）→ 4401
         make_consumer(subprotocols=['bearer.invalid']).connect()
         self.assertEqual(closed['code'], 4401)
-        # 有效 token 但无权限 → 4403
+        # 有效 token 但无告警查看权限 → 仍可连接，仅加入后台作业广播组
         user = get_user_model().objects.create_user(username='no-alert-ws', password='Admin@123456')
         token = Token.objects.create(user=user)
-        make_consumer(subprotocols=[f'bearer.{token.key}']).connect()
-        self.assertEqual(closed['code'], 4403)
-        # 有权限 → accept 且回显子协议
+        consumer = make_consumer(subprotocols=[f'bearer.{token.key}'])
+        consumer.connect()
+        self.assertEqual(closed['code'], 0)
+        self.assertEqual(consumer.channel_layer.joined, ['background-job-broadcast'])
+        # 有告警查看权限 → 额外加入告警分析广播组，且回显子协议
         from rbac.models import PermissionDefinition, Role
 
         role = Role.objects.create(code='alert-viewer-ws', name='Alert Viewer WS')
@@ -4934,9 +4934,12 @@ class AlertAnalysisClosedLoopTests(TestCase):
         user2 = get_user_model().objects.create_user(username='alert-ws', password='Admin@123456')
         role.users.add(user2)
         token2 = Token.objects.create(user=user2)
-        make_consumer(subprotocols=[f'bearer.{token2.key}']).connect()
+        consumer2 = make_consumer(subprotocols=[f'bearer.{token2.key}'])
+        consumer2.connect()
         self.assertEqual(closed['code'], 0)
         self.assertEqual(closed.get('subprotocol'), f'bearer.{token2.key}')
+        self.assertEqual(consumer2.channel_layer.joined,
+                         ['background-job-broadcast', 'alert-analysis-broadcast'])
         # 旧式 query token 已废弃 → 4401（凭据不得进 URL/访问日志）
         user3 = get_user_model().objects.create_user(username='alert-ws-legacy', password='Admin@123456')
         role.users.add(user3)
@@ -4946,10 +4949,13 @@ class AlertAnalysisClosedLoopTests(TestCase):
 
 
 class _FakeChannelLayer:
-    def group_add(self, group, channel):
-        pass
+    def __init__(self):
+        self.joined = []
 
-    def group_discard(self, group, channel):
+    async def group_add(self, group, channel):
+        self.joined.append(group)
+
+    async def group_discard(self, group, channel):
         pass
 
 

@@ -41,7 +41,7 @@
       <div class="query-hint">{{ queryHint }}</div>
     </div>
 
-    <div class="workbench-card" v-if="queryResult || queryError">
+    <div class="workbench-card" v-if="queryResult || queryError || pendingQueryId">
       <div class="workbench-card-head">
         <div class="workbench-card-title">
           <strong>查询结果</strong>
@@ -54,6 +54,10 @@
 
       <div v-if="queryError">
         <el-alert :title="queryError" type="error" show-icon :closable="false" />
+      </div>
+
+      <div v-else-if="pendingQueryId">
+        <el-alert title="查询执行中，完成后将自动展示结果…" type="info" show-icon :closable="false" />
       </div>
 
       <el-table v-else :data="queryResult.rows" stripe style="width: 100%;"
@@ -99,9 +103,9 @@
 </template>
 
 <script setup>
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getDataSources, getDataSourceDatabases, submitQuery, getQueryOrders } from '@/api/modules/sqlaudit'
+import { getDataSources, getDataSourceDatabases, submitQuery, getQueryOrders, getQueryOrderDetail } from '@/api/modules/sqlaudit'
 import { useAuthStore } from '@/stores/auth'
 import { getDatasourceTypeLabel, getQueryPlaceholder } from '@/utils/sqlaudit'
 
@@ -166,23 +170,72 @@ const handleQuery = async () => {
   queryError.value = ''
   queryResult.value = null
   try {
+    // 202：查询已提交，后台执行；轮询工单状态直至成功/失败
     const res = await submitQuery({
       datasource: selectedDs.value,
       database: selectedDb.value,
       sql_content: sqlContent.value,
       submitter: submitter.value,
     })
-    queryResult.value = {
-      columns: res.columns,
-      rows: res.rows,
-      count: res.count,
-      duration_ms: res.duration_ms,
+    pendingQueryId.value = res.order?.id || null
+    ElMessage.info('查询已提交，完成后将自动展示结果')
+    startPolling()
+  } catch (e) {
+    queryError.value = e.response?.data?.error || '查询提交失败'
+  } finally { querying.value = false }
+}
+
+const pendingQueryId = ref(null)
+let pollTimer = null
+const POLL_INTERVAL = 2000
+const POLL_TIMEOUT = 120000
+
+async function pollQueryResultOnce() {
+  if (!pendingQueryId.value) return
+  let order = null
+  try { order = await getQueryOrderDetail(pendingQueryId.value) } catch { /* ignore */ }
+  if (!order) return
+  if (order.status === 'success') {
+    queryResult.value = order.result_data
+      ? { columns: order.result_data.columns || [], rows: order.result_data.rows || [],
+          count: order.result_count, duration_ms: order.duration_ms }
+      : { columns: [], rows: [], count: order.result_count, duration_ms: order.duration_ms }
+    pendingQueryId.value = null
+    stopPolling()
+    if (canViewQueries.value) fetchHistory()
+  } else if (order.status === 'failed') {
+    queryError.value = order.error_message || '查询失败'
+    pendingQueryId.value = null
+    stopPolling()
+    if (canViewQueries.value) fetchHistory()
+  }
+}
+
+function startPolling() {
+  stopPolling()
+  const startedAt = Date.now()
+  pollTimer = window.setInterval(async () => {
+    if (!pendingQueryId.value) { stopPolling(); return }
+    await pollQueryResultOnce()
+    if (pendingQueryId.value && Date.now() - startedAt > POLL_TIMEOUT) {
+      stopPolling()
+      queryError.value = '查询耗时较长，可稍后在查询历史中查看结果'
+    }
+  }, POLL_INTERVAL)
+}
+
+function stopPolling() {
+  if (pollTimer) { window.clearInterval(pollTimer); pollTimer = null }
+}
+
+function handleBackgroundJob(event) {
+  const detail = event.detail || {}
+  if (detail.job_type === 'sqlaudit_query') {
+    if (detail.job_id != null && detail.job_id === pendingQueryId.value) {
+      void pollQueryResultOnce()
     }
     if (canViewQueries.value) fetchHistory()
-  } catch (e) {
-    queryError.value = e.response?.data?.error || '查询失败'
-    if (canViewQueries.value) fetchHistory()
-  } finally { querying.value = false }
+  }
 }
 
 const fetchHistory = async () => {
@@ -199,6 +252,12 @@ const fetchHistory = async () => {
 onMounted(() => {
   loadDatasources()
   if (canViewQueries.value) fetchHistory()
+  window.addEventListener('sxdevops-background-job', handleBackgroundJob)
+})
+
+onBeforeUnmount(() => {
+  stopPolling()
+  window.removeEventListener('sxdevops-background-job', handleBackgroundJob)
 })
 </script>
 
