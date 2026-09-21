@@ -1,0 +1,58 @@
+/* Markdown 渲染样式（全局）：视觉基准 = AIOpsChatWidget .rich-* 输出；
+   使用面仅 EventWall.vue 两处 .markdown-body 容器（分析内容 / 会话消息） */
+.markdown-body { font-size: 13px; line-height: 1.5; color: #334155; word-break: break-word; }
+
+/* 标题：对齐 .rich-heading —— 所有级别同款，无字号层级 */
+.markdown-body h1, .markdown-body h2, .markdown-body h3,
+.markdown-body h4, .markdown-body h5, .markdown-body h6 {
+  font-size: 13px; font-weight: 700; color: #0f172a; margin: 0 0 6px;
+}
+
+/* 段落（对齐 .rich-paragraph） */
+.markdown-body p { margin: 0; white-space: pre-wrap; }
+
+/* 相邻块间距：段-段 8px，其余块组合 10px（对齐 Widget p+p mt8、其他 mt10）。
+   注意顺序：:is 相邻规则在前，p+p 在后（同特异性靠顺序） */
+.markdown-body :is(h1, h2, h3, h4, h5, h6, p, ul, ol, pre, blockquote, table, hr)
+  + :is(h1, h2, h3, h4, h5, h6, p, ul, ol, blockquote, table) { margin-top: 10px; }
+.markdown-body p + p { margin-top: 8px; }
+
+/* 列表（对齐 .rich-list / .rich-sublist） */
+.markdown-body ul, .markdown-body ol { margin: 0; padding-left: 16px; }
+.markdown-body ul > li + li, .markdown-body ol > li + li { margin-top: 8px; }
+.markdown-body li > ul, .markdown-body li > ol { margin: 4px 0 0; padding-left: 16px; font-size: 12px; color: #475569; }
+.markdown-body input[type="checkbox"] { margin-right: 6px; vertical-align: -1px; }
+
+/* 行内代码（对齐 .rich-inline-code） */
+.markdown-body code {
+  display: inline-block; margin: 0 2px; padding: 1px 6px; border-radius: 6px;
+  background: #eff6ff; color: #1d4ed8; font-size: 12px;
+  font-family: Consolas, Monaco, monospace;
+}
+
+/* 代码块（对齐 .rich-code：深色底 11px 圆角 10） */
+.markdown-body pre {
+  margin: 8px 0 0; padding: 8px 10px; border-radius: 10px;
+  background: #0f172a; color: #e2e8f0; font-size: 11px; line-height: 1.5;
+  white-space: pre-wrap; overflow: auto;
+}
+.markdown-body pre code { display: block; margin: 0; padding: 0; border-radius: 0; background: transparent; color: inherit; font-size: inherit; }
+
+/* 表格（对齐 .rich-table：斑马纹） */
+.markdown-body table { width: 100%; margin: 10px 0; border-collapse: collapse; font-size: 12px; line-height: 1.5; }
+.markdown-body th, .markdown-body td { padding: 6px 10px; border: 1px solid #e5e7eb; text-align: left; }
+.markdown-body th { background: #f1f5f9; font-weight: 600; color: #374151; }
+.markdown-body td { color: #4b5563; }
+.markdown-body tbody tr:nth-child(even) { background: #f8fafc; }
+
+/* 链接（对齐 .rich-inline-link） */
+.markdown-body a { color: #2563eb; text-decoration: none; }
+.markdown-body a:hover { text-decoration: underline; }
+
+.markdown-body strong { font-weight: 600; }
+
+/* 引用块/分隔线：marked 独有能力，Widget 无对应样式；取基准调色板协调值 */
+.markdown-body blockquote { margin: 10px 0; padding: 6px 12px; border-left: 3px solid #93c5fd; background: #eff6ff; color: #475569; }
+.markdown-body hr { border: none; border-top: 1px solid #e5e7eb; margin: 12px 0; }
+
+.markdown-body img { max-width: 100%; }

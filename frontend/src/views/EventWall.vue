@@ -1877,17 +1877,18 @@ onUnmounted(cleanupTimelineSelection)
   border-color: #bacefd;
 }
 
-.detail-section strong {
+/* 抽屉基础排版仅作用于直接子元素，避免泄漏进 markdown 内容（全局 markdown.css 负责） */
+.detail-section > strong {
   font-size: 15px;
 }
 
-.detail-section p {
+.detail-section > p {
   margin: 4px 0 0;
   color: #646a73;
   line-height: 1.5;
 }
 
-.detail-section h4 {
+.detail-section > h4 {
   margin: 0 0 8px;
   font-size: 13px;
 }
@@ -2087,7 +2088,6 @@ pre {
 .analysis-text {
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.8;
   color: #334155;
   font-size: 13px;
 }
@@ -2135,105 +2135,9 @@ pre {
 .session-content {
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.7;
   font-size: 13px;
-  color: #1e293b;
-}
-
-/* Markdown 排版（v-html 内容需 :deep） */
-:deep(.markdown-body) {
-  font-size: 13px;
-  line-height: 1.8;
-  color: #1e293b;
-}
-
-:deep(.markdown-body h1),
-:deep(.markdown-body h2),
-:deep(.markdown-body h3),
-:deep(.markdown-body h4) {
-  margin: 12px 0 6px;
-  font-weight: 600;
-  color: #0f172a;
-  line-height: 1.4;
-}
-
-:deep(.markdown-body h1) { font-size: 17px; }
-:deep(.markdown-body h2) { font-size: 15px; }
-:deep(.markdown-body h3) { font-size: 14px; }
-:deep(.markdown-body h4) { font-size: 13px; }
-
-:deep(.markdown-body p) {
-  margin: 6px 0;
-}
-
-:deep(.markdown-body ul),
-:deep(.markdown-body ol) {
-  margin: 6px 0;
-  padding-left: 20px;
-}
-
-:deep(.markdown-body li) {
-  margin: 2px 0;
-}
-
-:deep(.markdown-body code) {
-  background: #f1f5f9;
-  border-radius: 4px;
-  padding: 1px 5px;
-  font-family: Consolas, Monaco, monospace;
-  font-size: 12px;
-  color: #be3b5d;
-}
-
-:deep(.markdown-body pre) {
-  background: #f1f5f9;
-  border-radius: 6px;
-  padding: 10px 12px;
-  overflow: auto;
-  margin: 8px 0;
-}
-
-:deep(.markdown-body pre code) {
-  background: transparent;
-  padding: 0;
   color: #334155;
 }
 
-:deep(.markdown-body table) {
-  border-collapse: collapse;
-  margin: 8px 0;
-  width: 100%;
-}
-
-:deep(.markdown-body th),
-:deep(.markdown-body td) {
-  border: 1px solid #e2e8f0;
-  padding: 6px 10px;
-  text-align: left;
-  font-size: 12px;
-}
-
-:deep(.markdown-body th) {
-  background: #f8fafc;
-  font-weight: 600;
-}
-
-:deep(.markdown-body blockquote) {
-  margin: 8px 0;
-  padding: 4px 12px;
-  border-left: 3px solid #cbd5e1;
-  color: #475569;
-  background: #f8fafc;
-}
-
-:deep(.markdown-body hr) {
-  border: none;
-  border-top: 1px solid #e2e8f0;
-  margin: 12px 0;
-}
-
-:deep(.markdown-body a) {
-  color: #409eff;
-  text-decoration: none;
-}
+/* Markdown 排版样式已移至全局 assets/markdown.css（与智能助手输出风格统一） */
 </style>
