@@ -4445,6 +4445,7 @@ class AlertAIAnalysisTests(TestCase):
         wall_event = EventRecord.objects.filter(action='alert_analysis', metadata__alert_id=alert.id).first()
         self.assertIsNotNone(wall_event, '单条分析完成应写入事件墙')
         self.assertEqual(wall_event.metadata.get('analysis_kind'), 'single')
+        self.assertEqual(wall_event.severity, EventRecord.SEVERITY_DANGER, 'critical 告警分析事件应映射为 danger')
         self.assertIn(chr(10), wall_event.detail or '', 'detail 应保留换行段落')
         self.assertIn('评估扩容', wall_event.detail or '')
 
@@ -4503,6 +4504,76 @@ class AlertAIAnalysisTests(TestCase):
             queued_ids.append(alert_ai_analysis._analysis_queue.get_nowait())
         self.assertEqual(queued_ids, [unanalyzed.id])
 
+    def test_suppressed_alert_not_enqueued(self):
+        from ops.alert_ai_analysis import enqueue_alert_analysis
+        from ops.models import AlertAction
+
+        alert = self._make_alert(fingerprint='fp-suppressed')
+        alert.is_suppressed = True
+        alert.save(update_fields=['is_suppressed'])
+        self.assertFalse(enqueue_alert_analysis(alert), '被抑制告警不进入 AI 分析')
+        self.assertFalse(AlertAction.objects.filter(alert=alert, action='aiops_analysis').exists())
+
+    def test_normalize_level_fail_closed(self):
+        from ops.alert_ai_analysis import _normalize_level
+
+        self.assertEqual(_normalize_level('  WARNING '), 'warning')
+        self.assertEqual(_normalize_level('Critical'), 'critical')
+        self.assertEqual(_normalize_level('bogus'), 'critical', '非法值 fail-closed 为 critical')
+        self.assertEqual(_normalize_level(''), 'critical')
+
+    def test_integration_invalid_min_level_fails_closed(self):
+        from ops.alert_ai_analysis import enqueue_alert_analysis
+        from ops.models import AlertIntegration
+
+        integration = AlertIntegration.objects.create(name='zabbix-坏阈值', provider='zabbix', token='tok-2')
+        integration.ai_analysis_min_level = 'bogus'
+        integration.save(update_fields=['ai_analysis_min_level'])
+        warning = self._make_alert(level='warning', fingerprint='fp-bad-threshold', integration=integration)
+        self.assertFalse(enqueue_alert_analysis(warning), '非法接入源阈值 fail-closed，不分析 warning')
+        critical = self._make_alert(level='critical', fingerprint='fp-bad-threshold-2', integration=integration)
+        self.assertTrue(enqueue_alert_analysis(critical), 'critical 仍触发')
+
+    def test_requeue_not_crowded_out_by_low_level_noise(self):
+        from ops import alert_ai_analysis
+        from ops.alert_ai_analysis import requeue_unanalyzed_alerts
+
+        critical = self._make_alert(fingerprint='fp-req-noise-target')
+        for index in range(150):
+            self._make_alert(level='info', fingerprint=f'fp-req-noise-{index}')
+        enqueued = requeue_unanalyzed_alerts()
+        self.assertEqual(enqueued, 1, '低级别噪音不应挤掉更早的 critical 告警')
+        queued_ids = []
+        while not alert_ai_analysis._analysis_queue.empty():
+            queued_ids.append(alert_ai_analysis._analysis_queue.get_nowait())
+        self.assertEqual(queued_ids, [critical.id])
+
+    def test_requeue_respects_integration_relaxed_threshold(self):
+        from ops.alert_ai_analysis import requeue_unanalyzed_alerts
+        from ops.models import AlertIntegration
+
+        integration = AlertIntegration.objects.create(name='zabbix-放宽源', provider='zabbix', token='tok-3',
+                                                      ai_analysis_min_level='info')
+        self._make_alert(level='info', fingerprint='fp-req-relaxed', integration=integration)
+        self.assertEqual(requeue_unanalyzed_alerts(), 1, '接入源放宽阈值应纳入重扫预筛')
+
+    def test_requeue_failed_action_retried_once(self):
+        from ops import alert_ai_analysis
+        from ops.alert_ai_analysis import requeue_unanalyzed_alerts
+        from ops.models import AlertAction
+
+        retryable = self._make_alert(fingerprint='fp-req-failed-1')
+        AlertAction.objects.create(alert=retryable, action='aiops_analysis', actor='aiops-bot',
+                                   metadata={'status': 'failed', 'attempts': 1})
+        exhausted = self._make_alert(fingerprint='fp-req-failed-2')
+        AlertAction.objects.create(alert=exhausted, action='aiops_analysis', actor='aiops-bot',
+                                   metadata={'status': 'failed', 'attempts': 2})
+        enqueued = requeue_unanalyzed_alerts()
+        self.assertEqual(enqueued, 1, 'failed 且 attempts<2 允许重扫一次，attempts>=2 被 enqueue 拒绝')
+        queued_ids = []
+        while not alert_ai_analysis._analysis_queue.empty():
+            queued_ids.append(alert_ai_analysis._analysis_queue.get_nowait())
+        self.assertEqual(queued_ids, [retryable.id])
 
 
 class ZabbixMacroAuditTests(TestCase):
@@ -4785,6 +4856,52 @@ class AlertAnalysisClosedLoopTests(TestCase):
         self.assertFalse(_rule_can_send(rule_off, alert, 'aiops_analysis'))
         self.assertTrue(_rule_can_send(rule_on, alert, 'fire'))
 
+    def test_rule_serializer_includes_aiops_analysis_switch(self):
+        from ops.models import AlertNotificationRule
+        from ops.serializers import AlertNotificationRuleSerializer
+
+        rule = AlertNotificationRule.objects.create(name='r-ser', notify_on_aiops_analysis=True)
+        output = AlertNotificationRuleSerializer(rule).data
+        self.assertTrue(output.get('notify_on_aiops_analysis'), '序列化输出应包含 AI 分析开关字段')
+        serializer = AlertNotificationRuleSerializer(
+            rule, data={'name': 'r-ser', 'notify_on_aiops_analysis': False}, partial=True)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        serializer.save()
+        rule.refresh_from_db()
+        self.assertFalse(rule.notify_on_aiops_analysis, '写入路径应持久化 AI 分析开关字段')
+
+    def test_summaries_not_crowded_out_by_noise(self):
+        from rest_framework.test import APIClient
+
+        alert = self._make_alert(level='warning', fingerprint='fp-s-noise')
+        alert.annotations = {'aiops_suggestion': '建议：检查磁盘。'}
+        alert.save(update_fields=['annotations'])
+        # 45 条更晚创建的无标注噪音告警：旧实现 [:limit*4] 先切片再过滤，会被全部挤掉
+        for index in range(45):
+            self._make_alert(level='info', fingerprint=f'fp-s-noise-{index}')
+        user = get_user_model().objects.create_superuser(username='summary-noise-admin', password='Admin@123456')
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get('/api/alerts/ai-analysis-summaries/?limit=10')
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(any(item['alert_id'] == alert.id for item in payload),
+                        '近期噪音告警不应把已分析告警挤出摘要窗口')
+
+    def test_aiops_analysis_default_body_contains_conclusions(self):
+        from ops.alerting import _default_body
+
+        alert = self._make_alert(level='warning', fingerprint='fp-body')
+        alert.annotations = {'aiops_root_cause': '根因：磁盘满', 'aiops_suggestion': '建议：清理日志'}
+        alert.save(update_fields=['annotations'])
+        body = _default_body(alert, 'aiops_analysis')
+        self.assertIn('根因：磁盘满', body)
+        self.assertIn('建议：清理日志', body)
+
+        bare = self._make_alert(level='critical', fingerprint='fp-body-2')
+        fallback_body = _default_body(bare, 'aiops_analysis')
+        self.assertIn('AI 分析已完成', fallback_body)
+
     def test_notification_consumer_auth(self):
         from unittest.mock import patch
 
@@ -4820,12 +4937,12 @@ class AlertAnalysisClosedLoopTests(TestCase):
         make_consumer(subprotocols=[f'bearer.{token2.key}']).connect()
         self.assertEqual(closed['code'], 0)
         self.assertEqual(closed.get('subprotocol'), f'bearer.{token2.key}')
-        # 兼容旧式 query token
+        # 旧式 query token 已废弃 → 4401（凭据不得进 URL/访问日志）
         user3 = get_user_model().objects.create_user(username='alert-ws-legacy', password='Admin@123456')
         role.users.add(user3)
         token3 = Token.objects.create(user=user3)
         make_consumer(query_string=f'token={token3.key}'.encode()).connect()
-        self.assertEqual(closed['code'], 0)
+        self.assertEqual(closed['code'], 4401)
 
 
 class _FakeChannelLayer:

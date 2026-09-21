@@ -1518,7 +1518,7 @@ class AlertNotificationRuleSerializer(serializers.ModelSerializer):
             'id', 'name', 'is_enabled', 'matchers', 'min_level', 'aggregation_rule', 'aggregation_rule_name',
             'escalation_policy', 'escalation_policy_name', 'channels', 'recipients', 'recipient_groups',
             'channel_ids', 'recipient_ids', 'recipient_group_ids', 'notify_on_fire', 'notify_on_resolved',
-            'notify_on_escalation', 'description', 'created_at', 'updated_at',
+            'notify_on_escalation', 'notify_on_aiops_analysis', 'description', 'created_at', 'updated_at',
         ]
 
     def create(self, validated_data):

@@ -196,6 +196,9 @@ const authStore = useAuthStore()
 const notificationsLoading = ref(false)
 const notificationItems = ref([])
 const notificationCount = ref(0)
+// 站内通知「已读」水位：记录上次打开铃铛面板的时间，AI 分析分区只统计此后的新摘要
+const NOTICE_LAST_SEEN_KEY = 'sxdevops-notice-last-seen'
+const noticeLastSeen = ref(localStorage.getItem(NOTICE_LAST_SEEN_KEY) || '')
 const moduleVisibility = ref({})
 const MODULE_SETTINGS_EVENT = 'sxdevops-module-settings-updated'
 const TASK_SCHEDULES_VISIBLE = false
@@ -549,6 +552,7 @@ function formatScopeText(item) {
 }
 
 async function loadNotifications() {
+  if (notificationsLoading.value) return // WS 事件/定时器/手动刷新并发时防重复拉取
   notificationsLoading.value = true
   try {
     const tasks = []
@@ -613,8 +617,13 @@ async function loadNotifications() {
     if (authStore.hasPermission('ops.alert.view')) {
       const aiSummaryResult = await getAlertAiAnalysisSummaries({ limit: 10 }).catch(() => [])
       const summaries = Array.isArray(aiSummaryResult) ? aiSummaryResult : []
-      items.push(...summaries.slice(0, 4).map(buildAiAnalysisNotificationItem))
-      total += summaries.length
+      // 仅统计上次打开面板之后新完成的分析（badge 不再被历史累计摘要刷屏）
+      const seenCutoff = new Date(noticeLastSeen.value || 0).getTime()
+      const unseenSummaries = summaries.filter(
+        (item) => new Date(item.updated_at || '').getTime() > seenCutoff
+      )
+      items.push(...unseenSummaries.slice(0, 4).map(buildAiAnalysisNotificationItem))
+      total += unseenSummaries.length
     }
 
     notificationItems.value = items
@@ -633,9 +642,14 @@ async function loadNotifications() {
 }
 
 function handleNoticeOpen() {
-  if (!notificationItems.value.length && !notificationsLoading.value) {
-    void loadNotifications()
+  // 面板打开即已读：推进水位并重新拉取，AI 分区与 badge 随之归零
+  noticeLastSeen.value = new Date().toISOString()
+  try {
+    localStorage.setItem(NOTICE_LAST_SEEN_KEY, noticeLastSeen.value)
+  } catch {
+    /* 隐私模式等场景下存储不可用时忽略 */
   }
+  void loadNotifications()
 }
 
 async function loadModuleSettings() {
@@ -697,6 +711,8 @@ async function handleUserCommand(command) {
 // ── 站内实时通知（WebSocket）────────────────────────────────────────
 let notificationSocket = null
 let notificationReconnectTimer = null
+let notificationReconnectDelay = 5000 // 指数退避起点，连接成功后重置
+const NOTIFICATION_RECONNECT_MAX_DELAY = 30000
 
 function connectNotificationSocket() {
   if (notificationSocket && notificationSocket.readyState === WebSocket.OPEN) return
@@ -708,6 +724,9 @@ function connectNotificationSocket() {
   // token 经 Sec-WebSocket-Protocol 子协议传输（不进 URL/访问日志）
   const socket = new WebSocket(url, [`bearer.${token}`])
   notificationSocket = socket
+  socket.onopen = () => {
+    notificationReconnectDelay = 5000 // 连接成功重置退避
+  }
   socket.onmessage = (event) => {
     try {
       const payload = JSON.parse(event.data)
@@ -728,19 +747,31 @@ function connectNotificationSocket() {
       /* 忽略非 JSON 消息 */
     }
   }
-  socket.onclose = () => {
+  socket.onclose = (event) => {
     notificationSocket = null
-    if (authStore.isAuthenticated && !notificationReconnectTimer) {
-      notificationReconnectTimer = window.setTimeout(() => {
-        notificationReconnectTimer = null
-        connectNotificationSocket()
-      }, 5000)
-    }
+    // 正常关闭(1000)/鉴权失败(4401)/权限不足(4403)：停止重连，避免固定 5s 无限重试
+    if (event.code === 1000 || event.code === 4401 || event.code === 4403) return
+    if (!authStore.isAuthenticated || notificationReconnectTimer) return
+    const delay = notificationReconnectDelay
+    notificationReconnectDelay = Math.min(notificationReconnectDelay * 2, NOTIFICATION_RECONNECT_MAX_DELAY)
+    notificationReconnectTimer = window.setTimeout(() => {
+      notificationReconnectTimer = null
+      connectNotificationSocket()
+    }, delay)
   }
 }
 
 onMounted(() => {
   window.addEventListener(MODULE_SETTINGS_EVENT, loadModuleSettings)
+  // 首次访问无 lastSeen：以当前时间为基线，历史累计分析摘要不计入未读
+  if (!noticeLastSeen.value) {
+    noticeLastSeen.value = new Date().toISOString()
+    try {
+      localStorage.setItem(NOTICE_LAST_SEEN_KEY, noticeLastSeen.value)
+    } catch {
+      /* 存储不可用时忽略 */
+    }
+  }
   void loadModuleSettings()
   void loadNotifications()
   connectNotificationSocket()
@@ -966,6 +997,11 @@ onBeforeUnmount(() => {
 .notice-item__dot.is-info {
   background: #60a5fa;
   box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.08);
+}
+
+.notice-item__dot.is-success {
+  background: #10b981;
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.08);
 }
 
 .notice-item__body {

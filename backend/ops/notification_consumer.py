@@ -1,6 +1,6 @@
 """站内通知 WebSocket Consumer。
 
-鉴权范式与 ssh_consumer 一致：query token → Token 校验 → is_active →
+鉴权：Sec-WebSocket-Protocol bearer.<token> 子协议 → Token 校验 → is_active →
 user_has_permissions(ops.alert.view)。连接后加入广播组
 alert-analysis-broadcast；服务端在告警 AI 分析完成时向该组广播
 轻量事件（仅告警 ID/级别/标题，不含敏感内容），前端收到后再经
@@ -8,7 +8,6 @@ REST 摘要接口按权限拉取详情。
 """
 import json
 import logging
-from urllib.parse import parse_qs
 
 from channels.generic.websocket import WebsocketConsumer
 from rest_framework.authtoken.models import Token
@@ -21,15 +20,16 @@ BROADCAST_GROUP = 'alert-analysis-broadcast'
 
 class NotificationConsumer(WebsocketConsumer):
     def connect(self):
-        # 优先从 Sec-WebSocket-Protocol 子协议取 token（避免凭据进入 URL/访问日志），
-        # 兼容旧式 query token（与 ssh/k8s consumer 同款）
+        # 仅从 Sec-WebSocket-Protocol 子协议取 token（避免凭据进入 URL/访问日志）；
+        # 旧式 ?token= 查询串已废弃（凭据会写入访问日志，安全审查整改后不再兼容）
         token_key = ''
         for proto in (self.scope.get('subprotocols') or []):
             if str(proto).startswith('bearer.'):
                 token_key = str(proto)[len('bearer.'):]
                 break
         if not token_key:
-            token_key = parse_qs(self.scope.get('query_string', b'').decode('utf-8')).get('token', [''])[0]
+            self.close(code=4401)
+            return
         token = Token.objects.filter(key=token_key).select_related('user').first()
         if not token or not token.user.is_active:
             self.close(code=4401)

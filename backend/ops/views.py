@@ -2199,11 +2199,17 @@ def alert_ai_analysis_summaries(request):
         limit = 10
     limit = min(max(limit, 1), 50)
     summaries = []
-    for alert in Alert.objects.filter(source_type='zabbix').order_by('-updated_at')[:limit * 4]:
+    # 过滤下推 SQL（has_key）：避免「先切片再过滤」导致近期无标注噪音告警把已分析告警挤出窗口
+    queryset = (
+        Alert.objects.filter(source_type='zabbix')
+        .filter(Q(annotations__has_key='aiops_suggestion') | Q(annotations__has_key='aiops_root_cause'))
+        .order_by('-updated_at')[:limit]
+    )
+    for alert in queryset:
         annotations = alert.annotations or {}
         suggestion = str(annotations.get('aiops_suggestion') or annotations.get('aiops_root_cause') or '')
         if not suggestion:
-            continue
+            continue  # 键存在但值为空串时兜底跳过
         summaries.append({
             'alert_id': alert.id,
             'title': alert.title[:160],
@@ -2212,8 +2218,6 @@ def alert_ai_analysis_summaries(request):
             'is_correlation': bool(annotations.get('aiops_root_cause')),
             'updated_at': alert.updated_at.isoformat(),
         })
-        if len(summaries) >= limit:
-            break
     return Response(summaries)
 
 

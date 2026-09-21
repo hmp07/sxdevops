@@ -606,3 +606,27 @@ class ZabbixAlertAnalysisWallTests(TestCase):
         records = payload.get('events', [])
         self.assertFalse(any(item.get('action') == 'alert_analysis' and (item.get('environment') == '测试环境') for item in records),
                          '其他环境的记录不应出现在当前环境视图')
+
+    def test_analysis_events_hidden_without_alert_view(self):
+        from rbac.models import PermissionDefinition, Role
+
+        self._record('alert_analysis', environment='')
+        self._record('alert_import', environment='')
+
+        role = Role.objects.create(code='eventwall-only', name='EventWall Only')
+        role.permissions.add(PermissionDefinition.objects.get(code='eventwall.view'))
+        limited = get_user_model().objects.create_user(username='wall-limited', password='Admin@123456')
+        role.users.add(limited)
+        client = APIClient()
+        client.force_authenticate(user=limited)
+
+        response = client.get('/api/events/analysis_wall/?environment=生产环境')
+        self.assertEqual(response.status_code, 200)
+        records = response.json().get('events', [])
+        self.assertTrue(any(item.get('action') == 'alert_import' for item in records), '普通事件应可见')
+        self.assertFalse(any(item.get('action') in ('alert_analysis', 'alert_correlation') for item in records),
+                         '无 ops.alert.view 的用户不应看到 AI 分析事件')
+
+        analysis_event = EventRecord.objects.filter(action='alert_analysis').first()
+        detail = client.get(f'/api/events/{analysis_event.id}/')
+        self.assertEqual(detail.status_code, 404, 'retrieve 边界同样隔离')

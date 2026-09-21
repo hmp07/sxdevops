@@ -288,7 +288,7 @@
         </section>
         <section v-if="isAiAnalysisEvent" class="detail-section detail-section--analysis">
           <h4>分析内容</h4>
-          <div class="analysis-body" :class="{ 'is-collapsed': !analysisExpanded }">
+          <div class="analysis-body" :class="{ 'is-collapsed': !analysisExpanded && analysisTextLong }">
             <div class="analysis-text markdown-body" v-html="renderedAnalysisText"></div>
           </div>
           <div v-if="analysisTextLong" class="analysis-toggle">
@@ -316,9 +316,9 @@
             </b>
           </div>
           <div v-if="sessionMessages.length" class="session-panel">
-            <div v-for="(msg, index) in sessionMessages" :key="index" class="session-message" :class="`is-${msg.role}`">
+            <div v-for="(msg, index) in sessionMessagesRendered" :key="index" class="session-message" :class="`is-${msg.role}`">
               <div class="session-role">{{ msg.role === 'assistant' ? 'AI 分析' : '输入' }}</div>
-              <div class="session-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+              <div class="session-content markdown-body" v-html="msg.html"></div>
             </div>
           </div>
         </section>
@@ -336,7 +336,7 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Aim, RefreshRight, Search } from '@element-plus/icons-vue'
 import { getEventSources, getEventWallAnalysis, getEventWallFilterOptions } from '@/api/modules/eventwall'
-import { getAIOpsMessages } from '@/api/modules/aiops'
+import { getAIOpsBotAnalysisMessages } from '@/api/modules/aiops'
 import EventWallTabs from '@/components/eventwall/EventWallTabs.vue'
 import { renderMarkdown } from '@/utils/markdown'
 
@@ -368,6 +368,10 @@ const aiAnalysisText = computed(() => {
 })
 const analysisTextLong = computed(() => aiAnalysisText.value.length > 600)
 const renderedAnalysisText = computed(() => renderMarkdown(aiAnalysisText.value))
+// 预渲染会话消息 markdown：仅 sessionMessages 变化时重跑 marked+DOMPurify（模板内方法调用会每次重渲染全量重跑）
+const sessionMessagesRendered = computed(() =>
+  sessionMessages.value.map((msg) => ({ ...msg, html: renderMarkdown(msg.content || '') }))
+)
 const correlationAlertIds = computed(() => {
   const ids = activeEvent.value?.metadata?.alert_ids || []
   return Array.isArray(ids) ? ids.filter(Boolean) : []
@@ -385,7 +389,7 @@ async function toggleSessionDetail() {
   }
   sessionLoading.value = true
   try {
-    const messages = await getAIOpsMessages(sessionId)
+    const messages = await getAIOpsBotAnalysisMessages(sessionId)
     sessionMessages.value = Array.isArray(messages) ? messages.slice(-8) : []
   } catch {
     sessionMessages.value = []

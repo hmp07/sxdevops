@@ -6,11 +6,12 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from rest_framework import pagination, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.response import Response
 
 from eventwall.models import EventRecord
 from eventwall.services import record_event
+from ops.alert_ai_analysis import BOT_USERNAME
 from ops.models import Alert, DockerHost, GrafanaSetting, K8sCluster, LogDataSource, MetricDataSource, ObservabilityDataSourceLink, TaskResource, TaskResourceGroup, TracingDataSource
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import is_demo_account, user_has_permissions
@@ -874,6 +875,20 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
         return response
 
 
+class BotAnalysisMessagesPermission(BasePermission):
+    """受限读取 AI 自动分析 bot 会话：持有 ops.alert.view 或 aiops.chat.view 任一权限。
+
+    rbac_permissions 列表语义为 AND（全满足才放行），无法表达 OR，
+    故本 action 以独立 permission_classes 覆盖（RBACPermission 不参与）。
+    """
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        return (user_has_permissions(request.user, ['ops.alert.view'])
+                or user_has_permissions(request.user, ['aiops.chat.view']))
+
+
 class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = AIOpsChatSessionSerializer
     http_method_names = ['get', 'post', 'delete', 'head', 'options']
@@ -888,6 +903,8 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'send_message': ['aiops.chat.view'],
         'send_message_async': ['aiops.chat.view'],
         'send_message_stream': ['aiops.chat.view'],
+        # 实际鉴权由 action 级 permission_classes（BotAnalysisMessagesPermission）完成，此处仅作文档登记
+        'bot_analysis_messages': ['aiops.chat.view'],
     }
 
     def get_queryset(self):
@@ -935,6 +952,19 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def messages(self, request, pk=None):
         session = self.get_object()
+        messages = session.messages.order_by('created_at', 'id')
+        return Response(AIOpsChatMessageSerializer(messages, many=True).data)
+
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated, BotAnalysisMessagesPermission])
+    def bot_analysis_messages(self, request, pk=None):
+        """事件墙/告警详情读取 AI 自动分析会话消息（仅限 aiops-bot 机器人会话）。
+
+        不经过 get_queryset 的 user=self.request.user 过滤（分析会话归属机器人），
+        直接按 pk + 机器人用户名取会话，防止泄露任意真人用户会话。
+        """
+        session = AIOpsChatSession.objects.filter(pk=pk, user__username=BOT_USERNAME).first()
+        if not session:
+            return Response({'detail': '分析会话不存在。'}, status=status.HTTP_404_NOT_FOUND)
         messages = session.messages.order_by('created_at', 'id')
         return Response(AIOpsChatMessageSerializer(messages, many=True).data)
 

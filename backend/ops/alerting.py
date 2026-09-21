@@ -808,6 +808,24 @@ def _default_title(alert, action='fire'):
 
 
 def _default_body(alert, action='fire'):
+    if action == 'aiops_analysis':
+        # AI 分析完成通知：默认正文携带根因与处置建议（渠道未配自定义模板时使用）
+        context = _alert_context(alert, action)
+        root_cause = context['aiops_root_cause']
+        suggestion = context['aiops_suggestion']
+        lines = [
+            f'级别: {alert.get_level_display()}',
+            f'对象: {alert.resource or alert.host.hostname if alert.host else alert.resource or "-"}',
+            f'服务: {alert.service or "-"}',
+            f'环境: {alert.environment or "-"}',
+        ]
+        if root_cause:
+            lines += ['', f'根因: {root_cause}']
+        if suggestion:
+            lines += ['', f'处置建议: {suggestion}']
+        if not root_cause and not suggestion:
+            lines += ['', 'AI 分析已完成，请登录平台查看详情。']
+        return '\n'.join(lines)
     lines = [
         f'级别: {alert.get_level_display()}',
         f'状态: {alert.get_status_display()}',

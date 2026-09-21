@@ -1842,9 +1842,7 @@ onMounted(async () => {
   const alertId = Number(route.query.alert_id)
   if (alertId) {
     try {
-      const alert = await getAlert(alertId)
-      selectedAlert.value = alert
-      detailVisible.value = true
+      openDetail(await getAlert(alertId))
     } catch {
       /* 告警不存在时静默忽略 */
     }

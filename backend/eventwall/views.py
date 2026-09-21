@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from rbac.permissions import RBACPermissionMixin
+from rbac.services import user_has_permissions
 
 from .models import EventRecord, EventSource
 from .serializers import EventRecordSerializer, EventSourceIngestSerializer, EventSourceSerializer
@@ -712,6 +713,9 @@ def _build_window(queryset, params, default_days=7):
     return queryset, None, None
 
 
+ALERT_ANALYSIS_EVENT_ACTIONS = ['alert_analysis', 'alert_correlation']
+
+
 class EventRecordViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
     queryset = EventRecord.objects.select_related('parent_event').all()
     serializer_class = EventRecordSerializer
@@ -741,6 +745,10 @@ class EventRecordViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
         if params.get('environment') == HOURLY_DEMO_ENVIRONMENT:
             _ensure_hourly_sample_demo_events()
         queryset = super().get_queryset().exclude(result=EventRecord.RESULT_REJECTED)
+        # 告警 AI 分析/关联分析事件仅对持有 ops.alert.view 的用户可见（list/retrieve/analysis_wall/
+        # filter_options/associations 共用 get_queryset，权限边界一致）
+        if not user_has_permissions(self.request.user, ['ops.alert.view']):
+            queryset = queryset.exclude(action__in=ALERT_ANALYSIS_EVENT_ACTIONS)
         if getattr(self, 'action', '') not in {'operation_audit', 'prune_operation_audit'}:
             queryset = queryset.filter(_event_wall_record_q())
         mapping = {

@@ -126,6 +126,47 @@ class AIOpsApiTests(TestCase):
         self.assertTrue(any(item['name'] == 'sxdevops.query_knowledge_graph' for item in tools))
         self.assertTrue(all('available' in item for item in tools))
 
+    def test_bot_analysis_messages_restricted_read(self):
+        from aiops.models import AIOpsChatMessage, AIOpsChatSession
+        from ops.alert_ai_analysis import _get_bot_user
+
+        bot = _get_bot_user()
+        bot_session = AIOpsChatSession.objects.create(user=bot, title='自动分析', context={})
+        AIOpsChatMessage.objects.create(session=bot_session, role='user', content='分析告警')
+        AIOpsChatMessage.objects.create(session=bot_session, role='assistant', content='建议：扩容。')
+
+        response = self.client.get(f'/api/aiops/sessions/{bot_session.id}/bot_analysis_messages/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 2)
+
+        own_session = AIOpsChatSession.objects.create(user=self.user, title='我的会话', context={})
+        response = self.client.get(f'/api/aiops/sessions/{own_session.id}/bot_analysis_messages/')
+        self.assertEqual(response.status_code, 404, '真人会话不可经该接口读取')
+
+    def test_bot_analysis_messages_permission_boundary(self):
+        from aiops.models import AIOpsChatSession
+        from ops.alert_ai_analysis import _get_bot_user
+        from rbac.models import PermissionDefinition, Role
+
+        bot = _get_bot_user()
+        bot_session = AIOpsChatSession.objects.create(user=bot, title='自动分析', context={})
+
+        def request_with(perm_code):
+            username = f'bot-msg-{perm_code or "none"}'.replace('.', '-')
+            user = User.objects.create_user(username=username, password='Passw0rd!123')
+            if perm_code:
+                role = Role.objects.create(code=f'{username}-role', name=perm_code)
+                role.permissions.add(PermissionDefinition.objects.get(code=perm_code))
+                user.rbac_roles.add(role)
+            token = Token.objects.create(user=user)
+            client = APIClient()
+            client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+            return client.get(f'/api/aiops/sessions/{bot_session.id}/bot_analysis_messages/')
+
+        self.assertEqual(request_with('ops.alert.view').status_code, 200)
+        self.assertEqual(request_with('aiops.chat.view').status_code, 200)
+        self.assertEqual(request_with('').status_code, 403, '无任一权限应拒绝')
+
     def ensure_ecommerce_knowledge_environment(self):
         cluster = K8sCluster.objects.create(
             name='ecommerce-test-k3s',

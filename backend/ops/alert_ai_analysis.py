@@ -9,10 +9,10 @@
 - 每个告警仅分析一次（AlertAction action='aiops_analysis' 打点，失败最多重试 1 次）；
 - 按 fingerprint 冷却（SXDEVOPS_ALERT_ANALYSIS_COOLDOWN_MINUTES，默认 60 分钟），
   抖动告警不反复烧模型；
-- 小时级调度器兜底重扫未分析的 critical 活跃告警（进程重启/漏触发自愈）。
+- 小时级调度器兜底重扫未分析的活跃告警（进程重启/漏触发自愈）。
 
 环境变量：
-- SXDEVOPS_ALERT_ANALYSIS_MIN_SEVERITY: 触发分析的最低级别（info|warning|critical，默认 critical）
+- SXDEVOPS_ALERT_ANALYSIS_MIN_SEVERITY: 触发分析的最低级别（info|warning|critical，默认 warning）
 - SXDEVOPS_ALERT_ANALYSIS_COOLDOWN_MINUTES: fingerprint 冷却（默认 60）
 - SXDEVOPS_ALERT_AGGREGATION_WINDOW_SECONDS: 关联分析聚合窗口（默认 60，0=关闭聚合）
 - SXDEVOPS_ALERT_ANALYSIS_MAX_BATCH: 单批最大告警数（默认 10）
@@ -73,8 +73,19 @@ BOT_PERMISSION_CODES = [
 ]
 
 LEVEL_RANK = {'info': 0, 'warning': 1, 'critical': 2}
+
+
+def _normalize_level(value, fallback='critical'):
+    """规范化告警级别阈值：strip + lower；非法/空值记录告警并按 fallback（fail-closed）处理。"""
+    level = str(value or '').strip().lower()
+    if level in LEVEL_RANK:
+        return level
+    logger.warning('非法告警分析级别阈值 %r，按 %r 处理（fail-closed）', value, fallback)
+    return fallback
+
+
 # 全局默认阈值（接入源级 ai_analysis_min_level 优先于本值；接入源为空的告警回退本值）
-ALERT_ANALYSIS_MIN_LEVEL = os.environ.get('SXDEVOPS_ALERT_ANALYSIS_MIN_SEVERITY', 'warning').strip() or 'warning'
+ALERT_ANALYSIS_MIN_LEVEL = _normalize_level(os.environ.get('SXDEVOPS_ALERT_ANALYSIS_MIN_SEVERITY', 'warning'))
 ALERT_ANALYSIS_COOLDOWN_MINUTES = int(os.environ.get('SXDEVOPS_ALERT_ANALYSIS_COOLDOWN_MINUTES', '60') or 60)
 AGGREGATION_WINDOW_SECONDS = int(os.environ.get('SXDEVOPS_ALERT_AGGREGATION_WINDOW_SECONDS', '60') or 0)
 MAX_BATCH_SIZE = max(int(os.environ.get('SXDEVOPS_ALERT_ANALYSIS_MAX_BATCH', '10') or 10), 1)
@@ -119,27 +130,29 @@ def _latest_action(alert):
 
 
 def _effective_min_level(alert):
-    """接入源级阈值优先，接入源为空回退全局默认。"""
+    """接入源级阈值优先，接入源为空/未配置回退全局默认；非法值 fail-closed 为 critical。"""
     integration = getattr(alert, 'integration', None)
     if integration is not None:
-        level = getattr(integration, 'ai_analysis_min_level', '') or ALERT_ANALYSIS_MIN_LEVEL
-        return level
+        configured = str(getattr(integration, 'ai_analysis_min_level', '') or '').strip()
+        if configured:
+            return _normalize_level(configured)
     return ALERT_ANALYSIS_MIN_LEVEL
 
 
 def enqueue_alert_analysis(alert, ignore_cooldown=False):
     """告警入队自动分析；返回是否入队。防重：已完成/排队中跳过，失败允许重试一次。
 
-    触发判定：接入源开关（关闭跳过）→ 接入源级/全局最低级别 → 冷却 → 防重。
+    触发判定：活跃/抑制状态 → 接入源开关（关闭跳过）→ 接入源级/全局最低级别 → 冷却 → 防重。
     """
     from ops.models import AlertAction
 
-    if not alert or alert.status != 'active':
+    if not alert or alert.status != 'active' or getattr(alert, 'is_suppressed', False):
         return False
     integration = getattr(alert, 'integration', None)
     if integration is not None and not getattr(integration, 'ai_analysis_enabled', True):
         return False
-    if LEVEL_RANK.get(alert.level or 'info', 0) < LEVEL_RANK.get(_effective_min_level(alert), 0):
+    alert_rank = LEVEL_RANK.get(str(alert.level or 'info').strip().lower(), 0)
+    if alert_rank < LEVEL_RANK.get(_effective_min_level(alert), LEVEL_RANK['critical']):
         return False
 
     latest = _latest_action(alert)
@@ -271,6 +284,7 @@ def _create_session_and_ask(question, title):
 def _run_single_analysis(alert):
     from ops.alerting import apply_alert_action
 
+    from eventwall.models import EventRecord
     from eventwall.services import record_event
 
     try:
@@ -298,7 +312,7 @@ def _run_single_analysis(alert):
             title=f'告警 AI 分析完成: {_safe_text(alert.title, 120)}',
             summary=_safe_text(summary, 200) or '已生成处置建议',
             detail=_safe_multiline_text(full_text),
-            severity='critical' if alert.level == 'critical' else 'warning',
+            severity=EventRecord.SEVERITY_DANGER if alert.level == 'critical' else EventRecord.SEVERITY_WARNING,
             resource_type='zabbix_event',
             resource_id=alert.external_id or str(alert.id),
             resource_name=_safe_text(alert.title, 200),
@@ -412,14 +426,14 @@ def _run_correlation_analysis(alerts):
 
 
 def requeue_unanalyzed_alerts(limit=50):
-    """兜底重扫：critical 活跃 zabbix 告警中尚无完成打点的项重新入队（忽略冷却）。
+    """兜底重扫：达到全局/接入源阈值的活跃 zabbix 告警中尚无完成/排队中打点的项重新入队（忽略冷却）。
 
     同时清理超过 2 小时仍处于 pending 的陈旧打点（进程重启导致内存队列丢失时自愈）。
     """
     from datetime import timedelta
 
     from django.utils import timezone
-    from ops.models import Alert, AlertAction
+    from ops.models import Alert, AlertAction, AlertIntegration
 
     stale_before = timezone.now() - timedelta(hours=2)
     AlertAction.objects.filter(
@@ -428,22 +442,26 @@ def requeue_unanalyzed_alerts(limit=50):
         created_at__lt=stale_before,
     ).delete()
 
+    # 完成/排队中的打点视为已覆盖；failed 打点保留重扫资格（enqueue 内按 attempts 限重试一次）
     analyzed_ids = set(
-        AlertAction.objects.filter(action=ACTION_NAME).values_list('alert_id', flat=True)
+        AlertAction.objects.filter(
+            action=ACTION_NAME, metadata__status__in=['pending', 'completed'],
+        ).values_list('alert_id', flat=True)
     )
-    min_rank = LEVEL_RANK.get(ALERT_ANALYSIS_MIN_LEVEL, 0)
+    # 级别预筛下推 SQL：全局阈值及以上 ∪ 接入源放宽的级别（enqueue 会按接入源阈值二次判定，
+    # 预筛不可严于任何接入源阈值，否则接入源放宽后存量告警永远补不到）
+    allowed_levels = {level for level, rank in LEVEL_RANK.items() if rank >= LEVEL_RANK[ALERT_ANALYSIS_MIN_LEVEL]}
+    for value in AlertIntegration.objects.exclude(ai_analysis_min_level='').values_list('ai_analysis_min_level', flat=True).distinct():
+        allowed_levels.add(_normalize_level(value))
     queryset = (
-        Alert.objects.filter(source_type='zabbix', status='active')
+        Alert.objects.filter(source_type='zabbix', status='active', level__in=allowed_levels)
         .exclude(id__in=analyzed_ids)
-        .order_by('-created_at')
+        .order_by('-created_at')[:limit]
     )
-    # 按全局阈值预筛（接入源级二次判定在 enqueue 内进行）
-    queryset = [alert for alert in queryset[:limit * 3]
-                if LEVEL_RANK.get(alert.level or 'info', 0) >= min_rank][:limit]
     enqueued = 0
     for alert in queryset:
         if enqueue_alert_analysis(alert, ignore_cooldown=True):
             enqueued += 1
     if enqueued:
-        logger.info('requeued %s unanalyzed critical zabbix alerts', enqueued)
+        logger.info('requeued %s unanalyzed zabbix alerts', enqueued)
     return enqueued
