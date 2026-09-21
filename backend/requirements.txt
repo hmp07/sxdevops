@@ -12,6 +12,10 @@ paramiko>=3.4
 channels>=4.0
 channels-redis>=4.2
 daphne>=4.1
+# redis-py 固定 <7：7.x 把「任务取消」改写为 TimeoutError 外抛，
+# 通知 WebSocket 断连/重连竞争时会杀死消费者并打印
+# "Timeout reading from redis" 循环报错（生产 192.168.1.230 已触发）
+redis>=5.0,<7
 kubernetes>=31.0
 aliyun-python-sdk-ecs>=4.24
 huaweicloudsdkcore>=3.1
