@@ -457,6 +457,7 @@ class LogViewsTests(TestCase):
 @override_settings(LOG_PROVIDER_CONFIGS=TEST_LOG_PROVIDER_CONFIGS, OBSERVABILITY_CONFIG=TEST_OBSERVABILITY_CONFIG)
 class ObservabilityViewsTests(TestCase):
     def setUp(self):
+        cache.clear()  # 追踪 catalog/数据源缓存跨用例隔离
         self.client = APIClient()
         self.user = get_user_model().objects.create_superuser('observer-admin', 'observer@example.com', 'Admin@123456')
         self.client.force_authenticate(user=self.user)
@@ -2103,6 +2104,139 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(payload['summary']['service_count'], 2)
         self.assertEqual(payload['recent_traces'][0]['trace_id'], 'jaeger-trace-1')
         self.assertEqual(payload['topology']['call_count'], 1)
+
+    def _jaeger_trace_payload(self, trace_id, service_name='gateway-service'):
+        return {
+            'traceID': trace_id,
+            'processes': {'p1': {'serviceName': service_name}},
+            'spans': [
+                {
+                    'spanID': 'span-root',
+                    'processID': 'p1',
+                    'operationName': 'GET /api/orders',
+                    'startTime': 1711674900000000,
+                    'duration': 250000,
+                    'tags': [{'key': 'http.status_code', 'value': '200'}],
+                    'references': [],
+                }
+            ],
+        }
+
+    def _jaeger_catalog_side_effects(self, trace_id='jaeger-cache-1'):
+        payload = self._jaeger_trace_payload(trace_id)
+        return [
+            MockHttpResponse({'data': ['gateway-service']}),
+            MockHttpResponse({'data': [payload]}),
+            MockHttpResponse({'data': [payload]}),
+            MockHttpResponse({'data': [payload]}),
+        ]
+
+    def _jaeger_cache_config(self):
+        return {
+            **TEST_OBSERVABILITY_CONFIG,
+            'tracing': {'default_provider': 'jaeger'},
+            'skywalking': {**TEST_OBSERVABILITY_CONFIG['skywalking'], 'enabled': False},
+            'jaeger': {
+                'provider': 'jaeger',
+                'enabled': True,
+                'query_url': 'http://jaeger-cache.example.com',
+                'ui_url': 'http://jaeger-cache-ui.example.com',
+                'demo_mode': False,
+            },
+        }
+
+    @patch('ops.tracing_providers.http_requests.get')
+    def test_tracing_catalog_cache_serves_second_request_without_external_calls(self, mock_get):
+        mock_get.side_effect = self._jaeger_catalog_side_effects()
+        with override_settings(OBSERVABILITY_CONFIG=self._jaeger_cache_config()):
+            first = self.client.get('/api/observability/tracing/catalog/?provider=jaeger')
+            second = self.client.get('/api/observability/tracing/catalog/?provider=jaeger')
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()['summary'], second.json()['summary'])
+        self.assertEqual(mock_get.call_count, 4, '第二次请求应命中缓存，不再打外部系统')
+
+    @patch('ops.tracing_providers.http_requests.get')
+    def test_tracing_search_reuses_cached_catalog(self, mock_get):
+        # search 内部携带 service_id 加载 catalog：预热需带相同参数使缓存键一致
+        mock_get.side_effect = self._jaeger_catalog_side_effects() + [MockHttpResponse({'data': []})]
+        with override_settings(OBSERVABILITY_CONFIG=self._jaeger_cache_config()):
+            warm = self.client.get('/api/observability/tracing/catalog/?provider=jaeger&service_id=gateway-service')
+            self.assertEqual(warm.status_code, 200)
+            response = self.client.post(
+                '/api/observability/tracing/search/',
+                {'provider': 'jaeger', 'service_id': 'gateway-service', 'limit': 10},
+                format='json',
+            )
+        self.assertEqual(response.status_code, 200)
+        services_calls = [call for call in mock_get.call_args_list if '/api/services' in str(call.args)]
+        self.assertEqual(len(services_calls), 1, 'search 应复用 catalog 缓存，不重复拉取 services')
+        self.assertEqual(mock_get.call_count, 5, '仅预热 4 次 + 搜索 1 次')
+
+    @patch('ops.tracing_providers.http_requests.get')
+    def test_trace_detail_reuses_cached_catalog(self, mock_get):
+        trace_id = 'jaeger-cache-1'
+        mock_get.side_effect = self._jaeger_catalog_side_effects(trace_id=trace_id) + [
+            MockHttpResponse({'data': [self._jaeger_trace_payload(trace_id)]}),
+        ]
+        with override_settings(OBSERVABILITY_CONFIG=self._jaeger_cache_config()):
+            self.client.get('/api/observability/tracing/catalog/?provider=jaeger')
+            response = self.client.get(f'/api/observability/tracing/traces/{trace_id}/?provider=jaeger')
+        self.assertEqual(response.status_code, 200)
+        services_calls = [call for call in mock_get.call_args_list if '/api/services' in str(call.args)]
+        self.assertEqual(len(services_calls), 1, 'trace 详情应复用 catalog 缓存')
+
+    @patch('ops.tracing_providers.http_requests.get')
+    def test_tracing_datasource_update_invalidates_catalog_cache(self, mock_get):
+        create_response = self.client.post(
+            '/api/observability/tracing/datasources/',
+            {
+                'name': 'Cache Jaeger',
+                'provider': 'jaeger',
+                'is_enabled': True,
+                'is_default': True,
+                'config': {
+                    'query_url': 'http://jaeger-cache.example.com',
+                    'ui_url': 'http://jaeger-cache-ui.example.com',
+                    'demo_mode': False,
+                },
+            },
+            format='json',
+        )
+        self.assertEqual(create_response.status_code, 201)
+        ds_id = create_response.json()['id']
+        mock_get.side_effect = (
+            self._jaeger_catalog_side_effects()
+            + self._jaeger_catalog_side_effects(trace_id='jaeger-cache-2')
+        )
+        warm = self.client.get(f'/api/observability/tracing/catalog/?provider=jaeger&datasource_id={ds_id}')
+        self.assertEqual(warm.status_code, 200)
+        update = self.client.patch(
+            f'/api/observability/tracing/datasources/{ds_id}/', {'description': 'changed'}, format='json')
+        self.assertEqual(update.status_code, 200)
+        again = self.client.get(f'/api/observability/tracing/catalog/?provider=jaeger&datasource_id={ds_id}')
+        self.assertEqual(again.status_code, 200)
+        self.assertEqual(mock_get.call_count, 8, '数据源更新后应重新实时拉取 catalog')
+
+    def test_resolve_provider_caches_datasource_lookup(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from ops.tracing_providers import _resolve_provider
+
+        ds = TracingDataSource.objects.create(
+            name='Resolve Cache', provider='jaeger', is_enabled=True,
+            config={'query_url': 'http://jaeger-resolve.example.com', 'demo_mode': False},
+        )
+        with CaptureQueriesContext(connection) as warm_queries:
+            _resolve_provider('', datasource_id=str(ds.id))
+        with CaptureQueriesContext(connection) as cached_queries:
+            provider_id, config = _resolve_provider('', datasource_id=str(ds.id))
+        self.assertEqual(provider_id, 'jaeger')
+        self.assertEqual(config['datasource_name'], 'Resolve Cache')
+        # 预热含 provider 配置读取 + 数据源查询；命中缓存后仅剩配置读取（少 1 次）
+        self.assertEqual(len(cached_queries.captured_queries), len(warm_queries.captured_queries) - 1,
+                         '命中缓存后不再查数据源')
 
     @patch('ops.tracing_providers.http_requests.get')
     def test_tracing_search_uses_requested_datasource_config(self, mock_get):

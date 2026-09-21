@@ -29,6 +29,7 @@ from .serializers import (
 )
 from .tracing_providers import (
     ObservabilityError,
+    _bump_tracing_cache_version,
     load_trace_detail,
     load_tracing_catalog,
     search_tracing,
@@ -1437,6 +1438,19 @@ class TracingDataSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, 
         if is_enabled in ('true', 'false'):
             queryset = queryset.filter(is_enabled=is_enabled == 'true')
         return queryset
+
+    # === 链路追踪缓存失效：任何数据源写操作 bump 版本号，全体 catalog/datasource 缓存键随之失效 ===
+    def perform_create(self, serializer):
+        super().perform_create(serializer)
+        _bump_tracing_cache_version()
+
+    def perform_update(self, serializer):
+        super().perform_update(serializer)
+        _bump_tracing_cache_version()
+
+    def perform_destroy(self, instance):
+        super().perform_destroy(instance)
+        _bump_tracing_cache_version()
 
     @action(detail=True, methods=['post'])
     def test_connection(self, request, pk=None):

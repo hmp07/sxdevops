@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, TimeoutError, wait
@@ -35,7 +36,9 @@ UNKNOWN_SYSTEM = '未标记系统'
 UNKNOWN_ENV = '未标记环境'
 UNKNOWN_SERVICE = '未标记服务'
 UNASSIGNED_SYSTEM = '未归属系统'
-GRAPH_RESPONSE_CACHE_TTL = 20
+GRAPH_RESPONSE_CACHE_TTL = int(os.environ.get('SXDEVOPS_KG_GRAPH_CACHE_TTL', '60') or 60)
+GRAPH_VERSION_META_CACHE_TTL = int(os.environ.get('SXDEVOPS_KG_VERSION_META_CACHE_TTL', '10') or 10)
+GRAPH_VERSION_META_CACHE_KEY = 'aiops:kg:version-meta'
 EXTERNAL_DISCOVERY_CACHE_TTL = 60
 EXTERNAL_DISCOVERY_STALE_CACHE_TTL = 300
 FAST_EXTERNAL_TIMEOUT = 4
@@ -324,6 +327,34 @@ def _cached_external_batch(items, ttl=EXTERNAL_DISCOVERY_CACHE_TTL, timeout=FAST
     return results
 
 
+def _graph_version_meta():
+    """缓存键版本元数据：3 个版本查询结果缓存 10s。
+
+    build_knowledge_graph 每次请求（含缓存命中路径）都先算键，这三查询是
+    每次请求的固定开销；10s 窗口内的数据变更最多延迟一个 TTL 才反映到新键。
+    """
+    cached = _cache_get(GRAPH_VERSION_META_CACHE_KEY)
+    if cached is not None:
+        return cached
+    latest_config = (
+        AIOpsKnowledgeEnvironment.objects
+        .order_by('-updated_at')
+        .values_list('updated_at', flat=True)
+        .first()
+    )
+    task_resource_version = TaskResource.objects.aggregate(latest=Max('updated_at'), count=Count('id'))
+    task_resource_group_version = TaskResourceGroup.objects.aggregate(latest=Max('updated_at'), count=Count('id'))
+    meta = {
+        'latest_config': latest_config.isoformat() if latest_config else '',
+        'task_resource_count': task_resource_version.get('count') or 0,
+        'latest_task_resource': task_resource_version.get('latest').isoformat() if task_resource_version.get('latest') else '',
+        'task_resource_group_count': task_resource_group_version.get('count') or 0,
+        'latest_task_resource_group': task_resource_group_version.get('latest').isoformat() if task_resource_group_version.get('latest') else '',
+    }
+    _cache_set(GRAPH_VERSION_META_CACHE_KEY, meta, GRAPH_VERSION_META_CACHE_TTL)
+    return meta
+
+
 def _graph_cache_key(params):
     query_items = []
     if params:
@@ -335,22 +366,10 @@ def _graph_cache_key(params):
             ]
         except AttributeError:
             query_items = sorted((params or {}).items())
-    latest_config = (
-        AIOpsKnowledgeEnvironment.objects
-        .order_by('-updated_at')
-        .values_list('updated_at', flat=True)
-        .first()
-    )
-    task_resource_version = TaskResource.objects.aggregate(latest=Max('updated_at'), count=Count('id'))
-    task_resource_group_version = TaskResourceGroup.objects.aggregate(latest=Max('updated_at'), count=Count('id'))
     raw = json.dumps(
         {
             'query': query_items,
-            'latest_config': latest_config.isoformat() if latest_config else '',
-            'task_resource_count': task_resource_version.get('count') or 0,
-            'latest_task_resource': task_resource_version.get('latest').isoformat() if task_resource_version.get('latest') else '',
-            'task_resource_group_count': task_resource_group_version.get('count') or 0,
-            'latest_task_resource_group': task_resource_group_version.get('latest').isoformat() if task_resource_group_version.get('latest') else '',
+            **_graph_version_meta(),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -3085,6 +3104,14 @@ def build_knowledge_graph(params=None):
         a for a in alert_records
         if a.source_type == Alert.SOURCE_ZABBIX and a.status == Alert.STATUS_ACTIVE
     ][:20]
+    # 批量预取告警关联的 TaskResource：一次 host_id__in 查询替代逐告警 N+1
+    # （setdefault 保序等价原 .first()：该 filter 无显式 order_by，默认按 pk 升序）
+    zabbix_host_ids = [a.host_id for a in zabbix_alert_records if a.host_id]
+    alert_host_resource_map = {}
+    if zabbix_host_ids:
+        for tr in TaskResource.objects.filter(host_id__in=zabbix_host_ids):
+            alert_host_resource_map.setdefault(tr.host_id, tr.id)
+
     for alert in zabbix_alert_records:
         env_name = graph_environment(alert.environment, 'alert')
         if not env_name:
@@ -3108,9 +3135,9 @@ def build_knowledge_graph(params=None):
         add_edge(_node_key('environment', env_name), node_id, '环境告警', 'environment_alert', 2)
         if alert.host_id:
             try:
-                tr = TaskResource.objects.filter(host_id=alert.host_id).first()
-                if tr:
-                    host_node = _node_key('infrastructure', 'task_resource', tr.id)
+                tr_id = alert_host_resource_map.get(alert.host_id)
+                if tr_id:
+                    host_node = _node_key('infrastructure', 'task_resource', tr_id)
                     if host_node in nodes:
                         add_edge(node_id, host_node, '发生于主机', 'alert_host', 3)
             except Exception:

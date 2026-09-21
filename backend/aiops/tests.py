@@ -168,6 +168,69 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(request_with('aiops.chat.view').status_code, 403)
         self.assertEqual(request_with('').status_code, 403, '无任一权限应拒绝')
 
+    def test_graph_response_cache_ttl_default_60(self):
+        from aiops.knowledge_graph import _impl
+
+        self.assertEqual(_impl.GRAPH_RESPONSE_CACHE_TTL, 60, '整图响应缓存 TTL 应为 60')
+        self.assertEqual(_impl.GRAPH_VERSION_META_CACHE_TTL, 10)
+
+    def test_graph_version_meta_cache_avoids_repeat_queries(self):
+        from unittest.mock import patch
+
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from aiops.knowledge_graph import _impl
+
+        cache.clear()
+        with patch('aiops.knowledge_graph._impl._cache_enabled', return_value=True):
+            with CaptureQueriesContext(connection) as warm_queries:
+                first = _impl._graph_cache_key({})
+            with CaptureQueriesContext(connection) as cached_queries:
+                second = _impl._graph_cache_key({})
+        self.assertEqual(first, second)
+        self.assertGreater(len(warm_queries.captured_queries), 0)
+        self.assertEqual(len(cached_queries.captured_queries), 0, '版本元数据命中缓存后不再查库')
+
+    def test_zabbix_alert_host_lookup_uses_single_batch_query(self):
+        from unittest.mock import patch
+
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from aiops.models import AIOpsKnowledgeEnvironment
+        from ops.models import Alert, Host, TaskResource, TaskResourceGroup
+
+        env_group = TaskResourceGroup.objects.create(
+            name='生产环境', code='prod', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='生产环境', aliases=['prod'], event_environments=['生产环境'],
+            alert_environments=['生产环境'], task_resource_environment_ids=[env_group.id], is_enabled=True,
+        )
+        host = Host.objects.create(hostname='zabbix-host-1', ip_address='10.0.0.9', environment='prod', status='online')
+        TaskResource.objects.create(
+            name='zabbix-host-1', resource_type=TaskResource.RESOURCE_HOST,
+            environment=env_group, host=host, status=TaskResource.STATUS_ACTIVE)
+        for index in range(5):
+            Alert.objects.create(
+                title=f'告警 {index}', level='warning', status='active', source='zabbix',
+                source_type=Alert.SOURCE_ZABBIX, environment='生产环境', host=host,
+                external_id=f'e-kg-{index}', fingerprint=f'fp-kg-{index}', raw_payload={'objectid': f'fp-kg-{index}'},
+            )
+
+        with patch('aiops.knowledge_graph._impl._cached_external_batch', return_value={}), \
+             patch('aiops.knowledge_graph._impl._cached_external_value', return_value=None), \
+             patch('aiops.knowledge_graph._impl._cache_enabled', return_value=True):
+            with CaptureQueriesContext(connection) as ctx:
+                response = self.client.get('/api/aiops/knowledge-graph/?environment=生产环境')
+        self.assertEqual(response.status_code, 200)
+        # 只统计 taskresource 表上的 host_id 过滤（修复前为 5 次等值 N+1，修复后恰 1 次 IN）
+        host_queries = [
+            q for q in ctx.captured_queries
+            if 'ops_taskresource' in q['sql'] and ('"host_id" = ' in q['sql'] or '"host_id" IN (' in q['sql'])
+        ]
+        self.assertEqual(len(host_queries), 1, '告警→主机映射应单次批量查询（修复前为 5 次 N+1）')
+
     def ensure_ecommerce_knowledge_environment(self):
         cluster = K8sCluster.objects.create(
             name='ecommerce-test-k3s',

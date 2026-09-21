@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 import requests as http_requests
 from django.conf import settings
+from django.core.cache import cache
 from rest_framework import status
 
 # 平台演示模式总开关：未开启时链路追踪不再回退到内置演示数据
@@ -11,6 +12,12 @@ TRACING_DEMO_ENABLED = os.environ.get('SXDEVOPS_DEMO_MODE') == '1'
 REQUEST_TIMEOUT = 20
 DEFAULT_TRACE_LIMIT = 20
 TRACING_SENSITIVE_KEYS = {'authorization', 'token', 'api_key', 'password', 'client_secret'}
+
+# === 链路追踪缓存 TTL（env 可覆盖；catalog 每次实时打外部系统 2~13 次 HTTP，必须缓存） ===
+TRACING_CATALOG_CACHE_TTL = int(os.environ.get('SXDEVOPS_TRACING_CATALOG_CACHE_TTL', '30') or 30)
+TRACING_CATALOG_STALE_CACHE_TTL = int(os.environ.get('SXDEVOPS_TRACING_CATALOG_STALE_CACHE_TTL', '300') or 300)
+TRACING_DATASOURCE_CACHE_TTL = int(os.environ.get('SXDEVOPS_TRACING_DATASOURCE_CACHE_TTL', '60') or 60)
+TRACING_CACHE_VERSION_TTL = 86400  # 版本号键长 TTL，防中途过期回绕（同 k8s_views 惯例）
 
 PROVIDER_LABELS = {
     'demo': '演示数据',
@@ -274,23 +281,78 @@ def _default_provider_id():
     return 'demo' if TRACING_DEMO_ENABLED else 'skywalking'
 
 
+def _tracing_cache_version_key():
+    return 'ops:tracing:cache-version'
+
+
+def _tracing_cache_version():
+    cache_key = _tracing_cache_version_key()
+    version = cache.get(cache_key)
+    if version is None:
+        version = 1
+        cache.set(cache_key, version, TRACING_CACHE_VERSION_TTL)
+    return version
+
+
+def _bump_tracing_cache_version():
+    """数据源写操作后调用：catalog/datasource 缓存键内嵌版本号，bump 即全体失效。"""
+    cache_key = _tracing_cache_version_key()
+    current = cache.get(cache_key)
+    if current is None:
+        cache.set(cache_key, 2, TRACING_CACHE_VERSION_TTL)
+        return
+    try:
+        cache.incr(cache_key)
+    except Exception:
+        cache.set(cache_key, int(current) + 1, TRACING_CACHE_VERSION_TTL)
+
+
+def _tracing_catalog_cache_key(provider_id, config, layer='', service_id=''):
+    # 用解析后的 datasource_id（config 已注入）分区；service_id 会影响
+    # _live_catalog 的 recent_traces/instances，必须进键
+    datasource_id = str(config.get('datasource_id') or '')
+    return f"ops:tracing:catalog:v{_tracing_cache_version()}:{provider_id}:{datasource_id}:{layer or ''}:{service_id or ''}"
+
+
+def _tracing_datasource_cache_key(datasource_id):
+    return f'ops:tracing:datasource:v{_tracing_cache_version()}:{datasource_id}'
+
+
+def _get_tracing_datasource_payload(datasource_id):
+    """缓存数据源 payload（dict 而非 ORM 对象，避免陈旧实例）；写操作经版本号键整体失效。"""
+    cache_key = _tracing_datasource_cache_key(datasource_id)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    from .models import TracingDataSource
+
+    datasource = TracingDataSource.objects.get(pk=datasource_id, is_enabled=True)
+    payload = {
+        'id': datasource.id,
+        'provider': datasource.provider,
+        'config': datasource.config or {},
+        'name': datasource.name,
+        'description': datasource.description,
+    }
+    cache.set(cache_key, payload, TRACING_DATASOURCE_CACHE_TTL)
+    return payload
+
+
 def _resolve_provider(provider='', datasource_id=None):
     configs = get_tracing_provider_configs()
     datasource_id = str(datasource_id or '').strip()
     if datasource_id:
         try:
-            from .models import TracingDataSource
-
-            datasource = TracingDataSource.objects.get(pk=datasource_id, is_enabled=True)
-            resolved_provider = datasource.provider
+            datasource = _get_tracing_datasource_payload(datasource_id)
+            resolved_provider = datasource['provider']
             if provider and provider not in ('demo', resolved_provider):
                 raise ObservabilityError('provider 与链路数据源类型不一致', status.HTTP_400_BAD_REQUEST)
-            config = {**configs.get(resolved_provider, {}), **(datasource.config or {})}
+            config = {**configs.get(resolved_provider, {}), **datasource['config']}
             config['provider'] = resolved_provider
             config['enabled'] = True
-            config['datasource_id'] = datasource.id
-            config['datasource_name'] = datasource.name
-            config['description'] = datasource.description
+            config['datasource_id'] = datasource['id']
+            config['datasource_name'] = datasource['name']
+            config['description'] = datasource['description']
             if resolved_provider == 'skywalking':
                 config.setdefault('graphql_path', '/graphql')
                 config.setdefault('default_layer', '')
@@ -1828,6 +1890,34 @@ def _demo_catalog(provider_id, config, warning='', service_id=''):
     }
 
 
+def _get_or_set_tracing_catalog(provider_id, config, layer, service_id):
+    """catalog 缓存入口：命中直接返回；miss 走实时查询并双写（TTL + :stale）。
+
+    实时查询失败且存在 stale 时降级返回上一份成功结果（附状态提示），
+    无 stale 时维持原行为（由上层决定 demo 回退或报错）。
+    """
+    cache_key = _tracing_catalog_cache_key(provider_id, config, layer=layer, service_id=service_id)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    stale_key = f'{cache_key}:stale'
+    try:
+        result = _live_catalog(provider_id, config, layer=layer, service_id=service_id)
+    except ObservabilityError:
+        stale = cache.get(stale_key)
+        if stale is not None:
+            result = dict(stale)
+            result['tracing'] = {
+                **result['tracing'],
+                'status_text': f"{result['tracing'].get('status_text', '')}，实时查询失败已返回缓存",
+            }
+            return result
+        raise
+    cache.set(cache_key, result, TRACING_CATALOG_CACHE_TTL)
+    cache.set(stale_key, result, TRACING_CATALOG_STALE_CACHE_TTL)
+    return result
+
+
 def load_tracing_catalog(provider='', layer='', datasource_id='', service_id=''):
     provider_id, config = _resolve_provider(provider, datasource_id=datasource_id)
     if provider_id == 'demo':
@@ -1837,7 +1927,7 @@ def load_tracing_catalog(provider='', layer='', datasource_id='', service_id='')
             return _demo_catalog(provider_id, config, service_id=service_id)
         raise ObservabilityError(f"{PROVIDER_LABELS.get(provider_id, provider_id)} 查询地址未配置", status.HTTP_400_BAD_REQUEST)
     try:
-        return _live_catalog(provider_id, config, layer=layer, service_id=service_id)
+        return _get_or_set_tracing_catalog(provider_id, config, layer, service_id)
     except ObservabilityError as exc:
         if config.get('demo_mode'):
             return _demo_catalog(provider_id, config, warning=f'已回退演示数据: {exc}', service_id=service_id)
