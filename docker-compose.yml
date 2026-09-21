@@ -26,6 +26,8 @@ services:
       # 允许访问的主机名/IP（逗号分隔）：必填，按实际访问地址配置（Host 头防护，不允许 * 兜底）
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:?ALLOWED_HOSTS is required - set to your actual domain/IP in .env}
       CORS_ALLOW_ALL_ORIGINS: "0"
+      # 管理员口令：.env 注入（必填，缺失则启动报错；每次启动由 ensure_admin 自动建号/加固）
+      SXDEVOPS_ADMIN_PASSWORD: ${SXDEVOPS_ADMIN_PASSWORD:?SXDEVOPS_ADMIN_PASSWORD is required - set it in .env}
       SXDEVOPS_WAIT_FOR_DB: "1"
       SXDEVOPS_MIGRATE: "1"
       # 演示种子默认关闭；需要演示数据时显式置 1（含演示账号与示例数据源）

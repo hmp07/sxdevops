@@ -289,6 +289,7 @@ done
 | `exec format error` | 镜像架构与主机不匹配（x86 镜像跑在 arm64）。按 3.3 节逐镜像确认 Architecture=arm64，重新拉取/构建 |
 | `docker compose: command not found` | Compose 插件未安装。安装 `docker-compose-plugin`（见 2.1/2.2）；老式独立二进制可改用 `docker-compose` 命令 |
 | MySQL 容器反复重启 | ① 数据卷残留旧版本数据：`docker compose down -v` 清卷重建（会清数据）② 查看日志 `docker logs sxdevops-mysql` |
+| 登录提示「用户名或密码错误」 | 账号缺失或 .env 口令未生效（旧版 compose 未接线 `SXDEVOPS_ADMIN_PASSWORD`），按 9.3 节排查处理 |
 | MySQL 日志 MY-013360 告警（mysql_native_password 弃用） | 旧版 compose 指定了已弃用的认证插件。升级新代码重建镜像后，按 9.2 节迁移存量账号即可消除 |
 | 应用容器在"等待 MySQL"后超时退出 | MySQL 未在 120s 内通过健康检查；确认资源充足（arm64 低配机首次初始化较慢，可提高内存） |
 | `docker pull` 超时 | Docker Hub 不可达。配置 2.3 节 registry-mirrors，或使用离线导入（4.2 节） |
@@ -376,6 +377,31 @@ docker exec sxdevops-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SELE
 > 说明：`docker exec sh -c '...'` 单引号内变量由容器内 shell 展开，口令不会出现在宿主机命令历史中。
 > 若迁移后应用无法连接，先核对第 2 步依赖是否就绪；可随时回退：
 > `ALTER USER 'sxdevops'@'%' IDENTIFIED WITH mysql_native_password BY '<MYSQL_PASSWORD>';`
+
+### 9.3 管理员账号缺失 / 口令重置（登录提示「用户名或密码错误」）
+
+旧版 compose 未把 `SXDEVOPS_ADMIN_PASSWORD` 注入容器：生产模式（DEBUG=0）下平台不会自动建号，
+.env 口令也不生效，登录会统一提示「用户名或密码错误」（实为账号不存在）。新版 compose 已接线该
+变量（缺失则启动报错），每次启动由 `ensure_admin` 自动建号/加固，正常部署无需本节。
+
+旧环境升级、或忘记/丢失管理员口令时，按以下步骤处理（命令幂等，可重复执行）：
+
+```bash
+# 1. 确认 admin 账号是否存在（EXISTS=存在 / MISSING=缺失）
+docker compose -f docker-compose.arm64.yml exec sxdevops python manage.py shell -c \
+  "from django.contrib.auth import get_user_model; u=get_user_model().objects.filter(username='admin').first(); print('EXISTS' if u else 'MISSING')"
+
+# 2. 建号或重置为 .env 中的口令（MISSING/EXISTS 均适用，口令来自 SXDEVOPS_ADMIN_PASSWORD）
+ADMIN_PW=$(grep '^SXDEVOPS_ADMIN_PASSWORD=' .env | cut -d= -f2- | tr -d '\r')
+docker compose -f docker-compose.arm64.yml exec sxdevops python manage.py shell -c \
+  "from django.contrib.auth import get_user_model; u, created = get_user_model().objects.get_or_create(username='admin', defaults={'email': 'admin@example.com'}); u.is_superuser = True; u.is_staff = True; u.set_password('$ADMIN_PW'); u.save(); print('created' if created else 'reset', 'admin')"
+
+# 3. 浏览器以 admin / 上述口令登录（口令查询：grep '^SXDEVOPS_ADMIN_PASSWORD=' .env）
+```
+
+> 说明：`Admin@123456` 是开发模式（DEBUG=1）的兜底口令，生产部署一律使用 .env 中的随机口令。
+> 升级新版 compose 后（`docker compose ... up -d --force-recreate`），`ensure_admin` 会在每次启动
+> 时自动执行本节第 2 步的等效逻辑，后续无需再手动干预。
 
 ---
 
