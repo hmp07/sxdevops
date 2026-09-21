@@ -164,7 +164,8 @@ class AIOpsApiTests(TestCase):
             return client.get(f'/api/aiops/sessions/{bot_session.id}/bot_analysis_messages/')
 
         self.assertEqual(request_with('ops.alert.view').status_code, 200)
-        self.assertEqual(request_with('aiops.chat.view').status_code, 200)
+        # 仅 aiops.chat.view 不放行：bot 分析会话含告警载荷与全文分析，边界与摘要接口/WS/事件墙一致
+        self.assertEqual(request_with('aiops.chat.view').status_code, 403)
         self.assertEqual(request_with('').status_code, 403, '无任一权限应拒绝')
 
     def ensure_ecommerce_knowledge_environment(self):

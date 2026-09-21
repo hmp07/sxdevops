@@ -876,17 +876,17 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
 
 
 class BotAnalysisMessagesPermission(BasePermission):
-    """受限读取 AI 自动分析 bot 会话：持有 ops.alert.view 或 aiops.chat.view 任一权限。
+    """受限读取 AI 自动分析 bot 会话：仅持有 ops.alert.view 的用户可读。
 
-    rbac_permissions 列表语义为 AND（全满足才放行），无法表达 OR，
-    故本 action 以独立 permission_classes 覆盖（RBACPermission 不参与）。
+    会话内容含告警载荷与全文分析，可见性边界与摘要接口/通知 WS/事件墙
+    保持一致（均为 ops.alert.view）；aiops.chat.view 用户只能访问自己的
+    会话（get_queryset 的 user 过滤），不能借 bot 会话绕过告警边界。
     """
 
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
-        return (user_has_permissions(request.user, ['ops.alert.view'])
-                or user_has_permissions(request.user, ['aiops.chat.view']))
+        return user_has_permissions(request.user, ['ops.alert.view'])
 
 
 class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
@@ -904,7 +904,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'send_message_async': ['aiops.chat.view'],
         'send_message_stream': ['aiops.chat.view'],
         # 实际鉴权由 action 级 permission_classes（BotAnalysisMessagesPermission）完成，此处仅作文档登记
-        'bot_analysis_messages': ['aiops.chat.view'],
+        'bot_analysis_messages': ['ops.alert.view'],
     }
 
     def get_queryset(self):
