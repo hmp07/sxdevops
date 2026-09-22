@@ -1,9 +1,8 @@
-from urllib.parse import quote
-
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone as datetime_timezone
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import requests as http_requests
 from django.conf import settings
@@ -36,6 +35,8 @@ from .tracing_providers import (
     test_tracing_connection,
     tracing_provider_info,
 )
+
+logger = logging.getLogger(__name__)
 
 
 DEMO_GRAFANA_DASHBOARDS = [
@@ -2192,6 +2193,7 @@ def observability_tracing_catalog(request):
             service_id=request.query_params.get('service_id', ''),
         ))
     except ObservabilityError as exc:
+        logger.error('链路追踪后端异常 %s: %s | detail=%s', request.path, exc, exc.detail)
         return Response({'detail': str(exc), 'error': exc.detail}, status=exc.status_code)
 
 
@@ -2204,6 +2206,7 @@ def observability_tracing_search(request):
     try:
         return Response(search_tracing(request.data or {}))
     except ObservabilityError as exc:
+        logger.error('链路追踪后端异常 %s: %s | detail=%s', request.path, exc, exc.detail)
         return Response({'detail': str(exc), 'error': exc.detail}, status=exc.status_code)
 
 
@@ -2221,4 +2224,5 @@ def observability_trace_detail(request, trace_id):
             datasource_id=request.query_params.get('datasource_id', ''),
         ))
     except ObservabilityError as exc:
+        logger.error('链路追踪后端异常 %s: %s | detail=%s', request.path, exc, exc.detail)
         return Response({'detail': str(exc), 'error': exc.detail}, status=exc.status_code)

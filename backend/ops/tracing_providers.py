@@ -1,4 +1,5 @@
 ﻿import os
+import time
 from datetime import datetime, timedelta
 
 import requests as http_requests
@@ -415,12 +416,16 @@ def _request_headers(config=None):
 def _http_get(url, params=None, config=None):
     if not url:
         raise ObservabilityError('链路追踪查询地址未配置', status.HTTP_400_BAD_REQUEST)
-    try:
-        response = http_requests.get(url, params=params, timeout=REQUEST_TIMEOUT, headers=_request_headers(config))
-    except http_requests.Timeout as exc:
-        raise ObservabilityError('链路追踪查询超时', status.HTTP_504_GATEWAY_TIMEOUT, {'detail': str(exc)}) from exc
-    except http_requests.ConnectionError as exc:
-        raise ObservabilityError('无法连接到链路追踪后端', status.HTTP_502_BAD_GATEWAY, {'detail': str(exc)}) from exc
+    for attempt in (1, 2):
+        try:
+            response = http_requests.get(url, params=params, timeout=REQUEST_TIMEOUT, headers=_request_headers(config))
+            break
+        except http_requests.Timeout as exc:
+            raise ObservabilityError('链路追踪查询超时', status.HTTP_504_GATEWAY_TIMEOUT, {'detail': str(exc)}) from exc
+        except http_requests.ConnectionError as exc:
+            if attempt == 2:
+                raise ObservabilityError('无法连接到链路追踪后端', status.HTTP_502_BAD_GATEWAY, {'detail': str(exc)}) from exc
+            time.sleep(0.5)  # 瞬时连接失败重试一次（部署/重启窗口），查询类请求幂等
     payload = _http_json(response)
     if response.status_code >= 400:
         raise ObservabilityError(payload.get('message') or payload.get('error') or '链路追踪查询失败', response.status_code, payload)
@@ -430,12 +435,16 @@ def _http_get(url, params=None, config=None):
 def _http_post(url, payload, config=None):
     if not url:
         raise ObservabilityError('链路追踪查询地址未配置', status.HTTP_400_BAD_REQUEST)
-    try:
-        response = http_requests.post(url, json=payload, timeout=REQUEST_TIMEOUT, headers=_request_headers(config))
-    except http_requests.Timeout as exc:
-        raise ObservabilityError('链路追踪查询超时', status.HTTP_504_GATEWAY_TIMEOUT, {'detail': str(exc)}) from exc
-    except http_requests.ConnectionError as exc:
-        raise ObservabilityError('无法连接到链路追踪后端', status.HTTP_502_BAD_GATEWAY, {'detail': str(exc)}) from exc
+    for attempt in (1, 2):
+        try:
+            response = http_requests.post(url, json=payload, timeout=REQUEST_TIMEOUT, headers=_request_headers(config))
+            break
+        except http_requests.Timeout as exc:
+            raise ObservabilityError('链路追踪查询超时', status.HTTP_504_GATEWAY_TIMEOUT, {'detail': str(exc)}) from exc
+        except http_requests.ConnectionError as exc:
+            if attempt == 2:
+                raise ObservabilityError('无法连接到链路追踪后端', status.HTTP_502_BAD_GATEWAY, {'detail': str(exc)}) from exc
+            time.sleep(0.5)  # 瞬时连接失败重试一次（部署/重启窗口），查询类请求幂等
     body = _http_json(response)
     if response.status_code >= 400:
         raise ObservabilityError(body.get('message') or body.get('error') or '链路追踪查询失败', response.status_code, body)

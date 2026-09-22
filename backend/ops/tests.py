@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import uuid
 
+import requests
+
 from django.contrib.auth import get_user_model
 from rest_framework.authtoken.models import Token
 from django.core.cache import cache
@@ -15,6 +17,7 @@ from django.db import OperationalError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
+from rest_framework import status
 from ops.models import (
     Alert,
     AlertAction,
@@ -36,7 +39,7 @@ from ops.models import (
     ZabbixDataSource,
 )
 from ops.k8s_views import _K8sApiProxy, _prepare_kubeconfig, _resource_stale_cache_key, _summary_stale_cache_key
-from ops.tracing_providers import _build_topology_from_trace_details, _tempo_flatten_trace, _trace_detail_from_spans
+from ops.tracing_providers import ObservabilityError, _build_topology_from_trace_details, _http_get, _tempo_flatten_trace, _trace_detail_from_spans
 
 
 TEST_LOG_PROVIDER_CONFIGS = {
@@ -2237,6 +2240,35 @@ class ObservabilityViewsTests(TestCase):
         # 预热含 provider 配置读取 + 数据源查询；命中缓存后仅剩配置读取（少 1 次）
         self.assertEqual(len(cached_queries.captured_queries), len(warm_queries.captured_queries) - 1,
                          '命中缓存后不再查数据源')
+
+    @patch('ops.tracing_providers.http_requests.get')
+    def test_tracing_http_get_retries_once_on_connection_error(self, mock_get):
+        mock_get.side_effect = [
+            requests.ConnectionError('connection refused'),
+            MockHttpResponse({'data': ['ok']}),
+        ]
+        result = _http_get('http://jaeger-retry.example.com/api/services')
+        self.assertEqual(result, {'data': ['ok']})
+        self.assertEqual(mock_get.call_count, 2, '瞬时连接失败应重试一次后成功')
+
+    @patch('ops.tracing_providers.http_requests.get')
+    def test_tracing_http_get_raises_502_after_connection_error_retries(self, mock_get):
+        mock_get.side_effect = [
+            requests.ConnectionError('connection refused'),
+            requests.ConnectionError('still refused'),
+        ]
+        with self.assertRaises(ObservabilityError) as ctx:
+            _http_get('http://jaeger-retry.example.com/api/services')
+        self.assertEqual(ctx.exception.status_code, status.HTTP_502_BAD_GATEWAY)
+        self.assertEqual(mock_get.call_count, 2, '重试一次后仍失败才报 502')
+
+    @patch('ops.tracing_providers.http_requests.get')
+    def test_tracing_http_get_timeout_stays_504_without_retry(self, mock_get):
+        mock_get.side_effect = requests.Timeout('read timed out')
+        with self.assertRaises(ObservabilityError) as ctx:
+            _http_get('http://jaeger-retry.example.com/api/services')
+        self.assertEqual(ctx.exception.status_code, status.HTTP_504_GATEWAY_TIMEOUT)
+        self.assertEqual(mock_get.call_count, 1, '超时不应重试')
 
     @patch('ops.tracing_providers.http_requests.get')
     def test_tracing_search_uses_requested_datasource_config(self, mock_get):
