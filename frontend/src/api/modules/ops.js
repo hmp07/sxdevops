@@ -188,9 +188,12 @@ export const createTracingDataSource = (data) => request.post('/observability/tr
 export const updateTracingDataSource = (id, data) => request.put(`/observability/tracing/datasources/${id}/`, data)
 export const deleteTracingDataSource = (id) => request.delete(`/observability/tracing/datasources/${id}/`)
 export const testTracingDataSource = (id) => request.post(`/observability/tracing/datasources/${id}/test_connection/`)
-export const getTracingCatalog = (params) => request.get('/observability/tracing/catalog/', { params })
-export const searchTracing = (data) => request.post('/observability/tracing/search/', data)
-export const getTraceDetail = (traceId, params) => request.get(`/observability/tracing/traces/${traceId}/`, { params })
+// 链路追踪接口后端会串行/并发调用外部 Tempo/Jaeger（单次最长 20s），
+// 默认 15s 前端超时会提前中断正常请求：这几个接口单独放宽到 60s（与 daphne --http-timeout 对齐）
+const TRACING_API_TIMEOUT = 60000
+export const getTracingCatalog = (params) => request.get('/observability/tracing/catalog/', { params, timeout: TRACING_API_TIMEOUT })
+export const searchTracing = (data) => request.post('/observability/tracing/search/', data, { timeout: TRACING_API_TIMEOUT })
+export const getTraceDetail = (traceId, params) => request.get(`/observability/tracing/traces/${traceId}/`, { params, timeout: TRACING_API_TIMEOUT })
 
 // Zabbix 数据源管理
 export const getZabbixDataSources = () => request.get('/observability/zabbix/datasources/')

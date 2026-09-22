@@ -2270,6 +2270,23 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(ctx.exception.status_code, status.HTTP_504_GATEWAY_TIMEOUT)
         self.assertEqual(mock_get.call_count, 1, '超时不应重试')
 
+    def test_collect_instance_options_loads_details_for_traces_without_instance(self):
+        from ops.tracing_providers import _collect_instance_options
+        traces = [
+            {'trace_id': f't{i}', 'service_id': 'svc', 'service_name': 'svc'}
+            for i in range(5)
+        ]
+        loaded = []
+
+        def fake_loader(trace):
+            loaded.append(trace['trace_id'])
+            return {'spans': [{'service_instance_name': f'inst-{trace["trace_id"]}', 'service_code': 'svc'}]}
+
+        options = _collect_instance_options(traces, detail_loader=fake_loader)
+        self.assertEqual(len(loaded), 5, '缺失实例名的 trace 应逐个补拉详情')
+        self.assertEqual({item['name'] for item in options}, {f'inst-t{i}' for i in range(5)})
+        self.assertEqual({item['service_name'] for item in options}, {'svc'})
+
     @patch('ops.tracing_providers.http_requests.get')
     def test_tracing_search_uses_requested_datasource_config(self, mock_get):
         create_default = self.client.post(

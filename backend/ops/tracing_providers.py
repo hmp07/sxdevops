@@ -1,5 +1,6 @@
 ﻿import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 import requests as http_requests
@@ -912,14 +913,17 @@ def _collect_instance_options(traces, detail_loader=None):
         add_option(trace.get('instance_name') or '', trace.get('service_name') or '', trace.get('service_id') or '')
 
     if detail_loader:
-        for trace in traces or []:
-            if trace.get('instance_name'):
-                continue
-            detail = detail_loader(trace)
-            if not detail:
-                continue
-            for span in detail.get('spans') or []:
-                add_option(span.get('service_instance_name') or '', span.get('service_code') or '', trace.get('service_id') or '')
+        pending = [trace for trace in (traces or []) if not trace.get('instance_name')]
+        if pending:
+            # 逐 trace 串行拉详情会把整体耗时放大 N 倍（每次外部调用最长 20s）：
+            # 并发拉取（最多 4 路），最坏耗时从 N*20s 降为 ceil(N/4)*20s
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                details = list(pool.map(detail_loader, pending))
+            for trace, detail in zip(pending, details):
+                if not detail:
+                    continue
+                for span in detail.get('spans') or []:
+                    add_option(span.get('service_instance_name') or '', span.get('service_code') or '', trace.get('service_id') or '')
 
     return sorted(
         options.values(),
