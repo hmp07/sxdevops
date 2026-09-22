@@ -602,6 +602,22 @@ router.beforeEach(async (to) => {
   return true
 })
 
+// 部署后旧哈希 chunk 会被移除：跨部署常驻的标签页点击懒加载路由时报
+// "Failed to fetch dynamically imported module"，此时自动刷新一次加载最新
+// index.html（时间窗防循环；非 chunk 类导航错误不触发）
+router.onError((error) => {
+  const message = String(error?.message || '')
+  if (!/dynamically imported module|Importing a module script/i.test(message)) {
+    return
+  }
+  const lastReload = Number(sessionStorage.getItem('sxdevops_chunk_reload_ts') || 0)
+  if (Date.now() - lastReload < 10000) {
+    return
+  }
+  sessionStorage.setItem('sxdevops_chunk_reload_ts', String(Date.now()))
+  window.location.reload()
+})
+
 // 首个可访问页面（按侧边栏菜单顺序），供 403 页"回到首页"与将来复用
 const ACCESSIBLE_ROUTE_TABLE = [
   { path: '/dashboard', permission: 'ops.dashboard.view' },
