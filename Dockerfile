@@ -3,7 +3,8 @@ FROM node:20-alpine AS frontend-builder
 WORKDIR /app/frontend
 
 COPY frontend/package*.json ./
-RUN npm ci
+# 镜像源抖动会导致 npm ci 失败：提高 fetch 重试次数（npm 默认仅 2 次）
+RUN npm ci --fetch-retries=5 --fetch-timeout=300000
 
 COPY frontend/ ./
 RUN npm run build
@@ -20,7 +21,12 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL}
 WORKDIR /app
 
 COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+# 阿里云镜像偶发 Read timed out 会直接中断构建：加长单次超时与重试次数，
+# 并对整步再做最多 3 次重试，避免网络抖动导致整次 build 失败
+RUN for attempt in 1 2 3; do \
+        pip install --no-cache-dir --timeout 120 --retries 10 -r /app/backend/requirements.txt && exit 0 || echo "pip install attempt ${attempt} failed, retrying..."; \
+        sleep 5; \
+    done; exit 1
 
 COPY backend/ /app/backend/
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
