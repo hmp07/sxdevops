@@ -353,14 +353,26 @@ DEBUG = _bool_value(os.getenv('DEBUG'), False)
 # SECURITY WARNING: keep the secret key used in production secret!
 _SECRET_KEY_FALLBACK = 'django-insecure-ag#xxnjm^46$=ye()w$yma8r8oy3&wfq!8_=bm!kwe0e((&y3-'
 _IS_TEST_RUN = 'test' in sys.argv
-SECRET_KEY = os.getenv('SECRET_KEY', '')
-if not SECRET_KEY:
-    # 开发环境（DEBUG=1）与测试运行器允许回退固定密钥；
-    # 生产环境（DEBUG=0）缺失 SECRET_KEY 直接拒绝启动
-    if DEBUG or _IS_TEST_RUN:
-        SECRET_KEY = _SECRET_KEY_FALLBACK
-    else:
+
+
+def _validate_secret_key(secret_key, debug, is_test_run):
+    """SECRET_KEY 守卫：开发/测试允许仓库默认密钥；生产必须注入随机值。
+
+    生产模式同时拒绝"显式配置为仓库默认密钥"的误配置（凭据加密密钥
+    由此派生，误用默认值等于公开加密密钥）。
+    """
+    if not secret_key:
+        # 开发环境（DEBUG=1）与测试运行器允许回退固定密钥；
+        # 生产环境（DEBUG=0）缺失 SECRET_KEY 直接拒绝启动
+        if debug or is_test_run:
+            return _SECRET_KEY_FALLBACK
         raise RuntimeError('SECRET_KEY 未配置：生产环境必须通过环境变量注入随机密钥')
+    if not debug and not is_test_run and secret_key == _SECRET_KEY_FALLBACK:
+        raise RuntimeError('SECRET_KEY 不能使用仓库默认开发密钥：请通过环境变量注入随机密钥（openssl rand -hex 32）')
+    return secret_key
+
+
+SECRET_KEY = _validate_secret_key(os.getenv('SECRET_KEY', ''), DEBUG, _IS_TEST_RUN)
 
 ALLOWED_HOSTS = [
     host.strip()
