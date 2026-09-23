@@ -189,3 +189,15 @@ class NewMetricToolsTests(TestCase):
         forecast_result = query_resource_forecast(
             self.session, None, self.limited, hostname='order-api-ecs-01', metric='disk')
         self.assertEqual(forecast_result, {'sections': [], 'citations': []})
+
+    def test_query_resource_forecast_without_zabbix_datasource_fails_closed(self):
+        # 无任何 Zabbix 数据源时不得静默返回演示曲线（对齐 query_zabbix_history 的 fail-closed 先例）
+        from ops.models import ZabbixDataSource
+        from aiops.tools import query_resource_forecast
+
+        ZabbixDataSource.objects.all().delete()
+        result = query_resource_forecast(
+            self.session, None, self.admin,
+            hostname='order-api-ecs-01', metric='disk')
+        self.assertIn('未找到可用的 Zabbix 数据源', result['summary'].get('error', ''))
+        self.assertNotIn('chart', result)

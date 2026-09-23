@@ -6282,7 +6282,15 @@ def query_resource_forecast(session, user_message, user, query='', hostname='', 
         zabbix_ds = ZabbixDataSource.objects.filter(id=datasource_id, is_enabled=True).first()
     if zabbix_ds is None:
         zabbix_ds = ZabbixDataSource.objects.filter(is_enabled=True).order_by('-is_default').first()
-    is_demo = zabbix_ds is None or str(zabbix_ds.api_url or '') == 'demo://'
+    if zabbix_ds is None:
+        # fail-closed：无 Zabbix 数据源不得静默返回演示曲线（对齐 query_zabbix_history 先例）
+        _finish_tool_invocation(invocation, {'detail': 'no_zabbix_datasource'}, started_at, success=False)
+        return {
+            'summary': {'error': '未找到可用的 Zabbix 数据源'},
+            'sections': [{'title': '资源趋势预测', 'items': ['未找到可用的 Zabbix 数据源，无法获取主机历史数据。']}],
+            'citations': [{'title': '指标查询', 'path': '/observability/metrics'}],
+        }
+    is_demo = str(zabbix_ds.api_url or '') == 'demo://'
 
     host_meta = next((h for h in DEMO_HOSTS if h['host'] == hostname), None)
     if host_meta is None:

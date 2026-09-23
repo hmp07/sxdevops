@@ -1029,6 +1029,22 @@ def execute_promql_query(query, *, range_query=False, start_time=None, end_time=
         results = evaluate_promql(
             query, start_dt.timestamp(), end_dt.timestamp(),
             step_seconds, range_query=bool(range_query))
+        if results['resultType'] == 'scalar':
+            # 顶层标量（如 1+2）：result 为 [ts, 'v']，不走序列采样
+            return {
+                'query': query,
+                'range': bool(range_query),
+                'start': start_dt.isoformat(),
+                'end': end_dt.isoformat(),
+                'step': step_seconds,
+                'source': client.get('source'),
+                'description': client.get('description'),
+                'metric_datasource': client.get('metric_datasource'),
+                'resultType': 'scalar',
+                'result': results['result'],
+                'sample': [],
+                'series_count': 0,
+            }
         return {
             'query': query,
             'range': bool(range_query),
@@ -1591,7 +1607,14 @@ class MetricDataSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, v
             client = _resolve_metric_datasource_client(metric_datasource_id=datasource.id)
             if not client or not client.get('ready'):
                 raise RuntimeError((client or {}).get('warning') or '指标数据源未就绪')
-            results = _prometheus_query(client, request.data.get('query') or 'up')
+            if client.get('demo'):
+                # 演示指标数据源：走离线引擎探测（demo client 无 base_url，不能走 HTTP 路径）
+                from ops.prometheus_demo import evaluate_promql
+                demo_results = evaluate_promql(
+                    request.data.get('query') or 'node_cpu_usage_percent', range_query=False)
+                results = demo_results.get('result') or []
+            else:
+                results = _prometheus_query(client, request.data.get('query') or 'up')
             record_event(
                 request=request,
                 module='ops',

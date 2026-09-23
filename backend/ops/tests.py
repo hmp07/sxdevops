@@ -5435,3 +5435,20 @@ class DemoMetricApiTests(TestCase):
         metrics = response.json()['metrics']
         for expected in ('node_cpu_usage_percent', 'http_requests_total', 'node_disk_usage_percent'):
             self.assertIn(expected, metrics)
+
+    def test_demo_metric_query_scalar_returns_200(self):
+        # 纯标量表达式（无选择器）不应让 _promql_result_sample 崩溃成 502
+        response = self._post_query('1 + 2')
+        self.assertEqual(response.status_code, 200, response.json())
+        body = response.json()
+        self.assertEqual(body['resultType'], 'scalar')
+        self.assertEqual(body['series_count'], 0)
+
+    def test_demo_metric_datasource_test_connection_succeeds(self):
+        ds = MetricDataSource.objects.get(name='Prometheus 演示数据源')
+        with patch('ops.prometheus_demo.time.time', return_value=self.NOW):
+            response = self.client.post(
+                f'/api/observability/metric/datasources/{ds.id}/test_connection/',
+                {'query': 'node_cpu_usage_percent'}, format='json')
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertTrue(response.json().get('success'))

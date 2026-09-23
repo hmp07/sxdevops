@@ -2380,7 +2380,7 @@ class AIOpsApiTests(TestCase):
         result = query_grafana_promql(session, user_message, self.user, query='prod 看 up', promql='up', range_query=True)
 
         self.assertEqual(result['summary']['source'], 'grafana')
-        self.assertIn('Grafana / PromQL 指标结果', result['sections'][0]['title'])
+        self.assertIn('指标查询结果', result['sections'][0]['title'])
         mocked_promql.assert_called_once()
 
     @mock.patch('aiops.services.execute_promql_query')
@@ -9326,6 +9326,20 @@ class DemoSeedTests(TestCase):
         joined = ' | '.join(config.suggested_questions or [])
         for keyword in ('请求量和错误率', '趋势和预测', '统计一下本周', '根因'):
             self.assertIn(keyword, joined)
+
+    def test_clean_demo_data_removes_demo_sources(self):
+        from django.core.management import call_command
+        from ops.management.commands.seed_data import Command as SeedCommand
+        from ops.models import LogDataSource, MetricDataSource
+
+        SeedCommand()._seed_metric_demo_datasource()
+        SeedCommand()._seed_log_demo_datasources()
+        self.assertTrue(MetricDataSource.objects.filter(config__demo_mode=True).exists())
+        call_command('clean_demo_data', '--yes')
+        self.assertFalse(MetricDataSource.objects.filter(config__demo_mode=True).exists(),
+                         '清理后不应残留演示指标数据源')
+        self.assertFalse(LogDataSource.objects.filter(config__demo_mode=True).exists(),
+                         '清理后不应残留演示日志数据源')
 
 
 class ProvisionLLMProviderTests(TestCase):
