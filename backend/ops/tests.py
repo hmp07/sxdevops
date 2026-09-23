@@ -40,6 +40,8 @@ from ops.models import (
 )
 from ops.k8s_views import _K8sApiProxy, _prepare_kubeconfig, _resource_stale_cache_key, _summary_stale_cache_key
 from ops.tracing_providers import ObservabilityError, _build_topology_from_trace_details, _http_get, _tempo_flatten_trace, _trace_detail_from_spans
+from ops.forecast import linear_forecast, moving_average, summarize_series, threshold_eta
+from ops.prometheus_demo import evaluate_promql, list_label_values, list_metric_names
 
 
 TEST_LOG_PROVIDER_CONFIGS = {
@@ -5160,3 +5162,276 @@ class AiAnalysisDetailTextTests(TestCase):
         from ops.alert_ai_analysis import _safe_multiline_text
 
         self.assertLessEqual(len(_safe_multiline_text('x' * 5000, limit=100)), 100)
+
+
+class ForecastTests(TestCase):
+    """ops.forecast 轻量时序预测：线性外推/阈值到达时间/移动平均/摘要。"""
+
+    def _series(self, fn, start_ts=1700000000.0, step=300.0, count=60):
+        return [(start_ts + step * i, fn(start_ts + step * i, i)) for i in range(count)]
+
+    def test_linear_forecast_perfect_line(self):
+        points = self._series(lambda ts, i: i * 1.0)  # y = i, 严格线性
+        result = linear_forecast(points, horizon_points=6)
+        self.assertAlmostEqual(result['slope'] * 300.0, 1.0, places=6, msg='每步斜率为 1')
+        self.assertGreater(result['r2'], 0.999)
+        # 预测首点与历史末点连续
+        last_ts, last_val = points[-1]
+        f_ts, f_val = result['forecast'][0]
+        self.assertAlmostEqual(f_ts, last_ts + 300.0, places=6)
+        self.assertAlmostEqual(f_val, last_val + 1.0, places=6)
+        self.assertEqual(len(result['forecast']), 6)
+        self.assertEqual(len(result['upper']), 6)
+        self.assertEqual(len(result['lower']), 6)
+
+    def test_linear_forecast_noisy_constant(self):
+        points = self._series(lambda ts, i: 50.0 + ((i * 7) % 5) - 2.0)  # 均值 50 的噪声
+        result = linear_forecast(points, horizon_points=12)
+        mean = sum(v for _, v in result['forecast']) / len(result['forecast'])
+        self.assertAlmostEqual(mean, 50.0, delta=5.0)
+        self.assertEqual(result['trend'], 'flat')
+        self.assertGreater(result['rmse'], 0.0, msg='噪声序列带宽应为正')
+
+    def test_threshold_eta_rising_trend(self):
+        points = self._series(lambda ts, i: 50.0 + i * 0.5)  # 末点 79.5，每 5 分钟 +0.5
+        eta = threshold_eta(points, threshold=80.0)
+        self.assertIsNotNone(eta)
+        # 从末点 79.5 到 80 需 1 步 × 300s
+        self.assertAlmostEqual(eta, 300.0, delta=60.0)
+
+    def test_threshold_eta_falling_trend_returns_none(self):
+        points = self._series(lambda ts, i: 80.0 - i * 0.5)
+        self.assertIsNone(threshold_eta(points, threshold=95.0))
+
+    def test_threshold_eta_already_exceeded_returns_zero(self):
+        points = self._series(lambda ts, i: 90.0 + i * 0.5)
+        self.assertEqual(threshold_eta(points, threshold=80.0), 0.0)
+
+    def test_threshold_eta_beyond_max_days_returns_none(self):
+        points = self._series(lambda ts, i: 50.0 + i * 0.001)  # 约 168 天才到 99
+        self.assertIsNone(threshold_eta(points, threshold=99.0, max_days=30))
+
+    def test_moving_average_same_shape(self):
+        points = self._series(lambda ts, i: i * 1.0)
+        smoothed = moving_average(points, window=5)
+        self.assertEqual(len(smoothed), len(points))
+        self.assertAlmostEqual(smoothed[0][1], 0.0, places=6)
+        self.assertAlmostEqual(smoothed[-1][1], sum(range(55, 60)) / 5.0, places=6)
+
+    def test_summarize_series(self):
+        points = self._series(lambda ts, i: 10.0 + i * 0.1)
+        summary = summarize_series(points)
+        self.assertEqual(summary['count'], 60)
+        self.assertEqual(summary['direction'], 'up')
+        self.assertEqual(summary['min'], 10.0)
+        self.assertAlmostEqual(summary['last'], 15.9, places=6)
+        self.assertEqual(summary['start'], points[0][0])
+        self.assertEqual(summary['end'], points[-1][0])
+
+    def test_empty_or_single_point_raises(self):
+        with self.assertRaises(ValueError):
+            linear_forecast([])
+        with self.assertRaises(ValueError):
+            linear_forecast([(1700000000.0, 1.0)])
+        with self.assertRaises(ValueError):
+            threshold_eta([(1700000000.0, 1.0)], threshold=2.0)
+
+
+class PromQLDemoEvaluatorTests(TestCase):
+    """ops.prometheus_demo 确定性演示指标引擎：生成器 + PromQL 子集求值器。"""
+
+    NOW = 1728000000.0  # 固定"当前时刻"，配合 patch 冻结时间
+
+    def _patch_now(self):
+        return patch('ops.prometheus_demo.time.time', return_value=self.NOW)
+
+    def _eval(self, expr, start_ts=None, end_ts=None, step=300, range_query=True):
+        with self._patch_now():
+            return evaluate_promql(expr, start_ts=start_ts, end_ts=end_ts, step=step, range_query=range_query)
+
+    def _values(self, result):
+        return [float(v) for _, v in result['result'][0]['values']]
+
+    # ── 生成器 ────────────────────────────────────────────────
+
+    def test_list_metric_names_covers_specs(self):
+        names = list_metric_names()
+        for expected in [
+            'node_cpu_usage_percent', 'node_memory_usage_percent', 'node_disk_usage_percent',
+            'node_network_receive_bytes_total', 'http_requests_total',
+            'http_request_duration_seconds', 'http_errors_total', 'inventory_check_duration_seconds',
+        ]:
+            self.assertIn(expected, names)
+
+    def test_list_label_values(self):
+        self.assertEqual(len(list_label_values('host')), 6)
+        self.assertIn('order-api-ecs-01', list_label_values('host'))
+        self.assertEqual(len(list_label_values('service')), 4)
+        self.assertIn('order-service', list_label_values('service'))
+        self.assertEqual(list_label_values('code'), ['200', '500'])
+
+    def test_disk_story_ecs01_55_to_92(self):
+        # 故事线：order-api-ecs-01 磁盘 24h 前 55%、现在 92%（对齐 Zabbix trigger 20001）
+        day = 86400.0
+        with self._patch_now():
+            past = evaluate_promql('node_disk_usage_percent{host="order-api-ecs-01"}',
+                                   start_ts=self.NOW - day, end_ts=self.NOW - day, step=60, range_query=False)
+            current = evaluate_promql('node_disk_usage_percent{host="order-api-ecs-01"}',
+                                      start_ts=self.NOW, end_ts=self.NOW, step=60, range_query=False)
+        self.assertAlmostEqual(float(past['result'][0]['value'][1]), 55.0, delta=2.0)
+        self.assertAlmostEqual(float(current['result'][0]['value'][1]), 92.0, delta=2.0)
+
+    def test_memory_leak_story_member_api(self):
+        # 故事线：member-api 内存 7 天 40%→78%（对齐 trigger 20003）
+        week = 7 * 86400.0
+        with self._patch_now():
+            past = evaluate_promql('node_memory_usage_percent{host="member-api"}',
+                                   start_ts=self.NOW - week, end_ts=self.NOW - week, step=60, range_query=False)
+            current = evaluate_promql('node_memory_usage_percent{host="member-api"}',
+                                      start_ts=self.NOW, end_ts=self.NOW, step=60, range_query=False)
+        self.assertAlmostEqual(float(past['result'][0]['value'][1]), 40.0, delta=3.0)
+        self.assertAlmostEqual(float(current['result'][0]['value'][1]), 78.0, delta=3.0)
+
+    # ── 选择器与查询形态 ─────────────────────────────────────
+
+    def test_range_selector_returns_matrix(self):
+        result = self._eval('node_disk_usage_percent{host="order-api-ecs-01"}',
+                            start_ts=self.NOW - 3600, end_ts=self.NOW, step=60)
+        self.assertEqual(result['resultType'], 'matrix')
+        self.assertEqual(len(result['result']), 1)
+        self.assertEqual(len(result['result'][0]['values']), 61)
+        self.assertEqual(result['result'][0]['metric']['host'], 'order-api-ecs-01')
+
+    def test_label_filters(self):
+        self.assertEqual(len(self._eval('node_cpu_usage_percent{host=~"order-api.*"}')['result']), 2)
+        self.assertEqual(len(self._eval('node_cpu_usage_percent{host!="gateway"}')['result']), 5)
+        self.assertEqual(len(self._eval('http_requests_total{service="order-service",code="500"}')['result']), 1)
+
+    def test_instant_query_returns_vector(self):
+        result = self._eval('node_cpu_usage_percent{host="gateway"}', range_query=False)
+        self.assertEqual(result['resultType'], 'vector')
+        self.assertIn('value', result['result'][0])
+
+    # ── 函数与聚合 ────────────────────────────────────────────
+
+    def test_rate_of_counter(self):
+        result = self._eval('rate(http_requests_total{service="order-service",code="200"}[5m])',
+                            start_ts=self.NOW - 3600, end_ts=self.NOW, step=60)
+        values = self._values(result)
+        self.assertEqual(len(result['result']), 1)
+        self.assertTrue(all(v >= 0 for v in values))
+        # 量级约等于基线 QPS（order-service 200 码基线 120，容差放宽）
+        mean = sum(values) / len(values)
+        self.assertGreater(mean, 50)
+        self.assertLess(mean, 300)
+
+    def test_sum_by_and_without(self):
+        by_host = self._eval('sum(node_cpu_usage_percent) by (host)')
+        self.assertEqual(len(by_host['result']), 6)
+        total = self._eval('sum(node_cpu_usage_percent) without (host)')
+        self.assertEqual(len(total['result']), 1)
+        per_host = [float(s['values'][-1][1]) for s in by_host['result']]
+        self.assertAlmostEqual(float(total['result'][0]['values'][-1][1]), sum(per_host), delta=0.01)
+
+    def test_avg_aggregation(self):
+        result = self._eval('avg(node_cpu_usage_percent)')
+        value = float(result['result'][0]['values'][-1][1])
+        self.assertGreater(value, 20)
+        self.assertLess(value, 90)
+
+    # ── 算术与比较 ────────────────────────────────────────────
+
+    def test_arithmetic_scalar_broadcast(self):
+        raw = self._eval('node_cpu_usage_percent{host="gateway"}', step=300)
+        doubled = self._eval('node_cpu_usage_percent{host="gateway"} * 2', step=300)
+        raw_val = float(raw['result'][0]['values'][-1][1])
+        doubled_val = float(doubled['result'][0]['values'][-1][1])
+        self.assertAlmostEqual(doubled_val, raw_val * 2, places=4)
+
+    def test_comparison_filter(self):
+        # 磁盘故事线：仅 order-api-ecs-01（92%）超过 50%，其它主机 ≤20%
+        high = self._eval('node_disk_usage_percent > 50')
+        self.assertEqual([s['metric']['host'] for s in high['result']], ['order-api-ecs-01'])
+        empty = self._eval('node_disk_usage_percent > 999')
+        self.assertEqual(empty['result'], [])
+
+    # ── 不支持语法钉死 ───────────────────────────────────────
+
+    def test_unsupported_expressions_raise(self):
+        unsupported = [
+            'topk(3, node_cpu_usage_percent)',
+            'bottomk(3, node_cpu_usage_percent)',
+            'histogram_quantile(0.9, node_cpu_usage_percent)',
+            'avg_over_time(node_cpu_usage_percent[5m])',
+            'node_cpu_usage_percent offset 5m',
+            'node_cpu_usage_percent[5m]',
+            'node_cpu_usage_percent and node_memory_usage_percent',
+            'node_cpu_usage_percent unless node_memory_usage_percent',
+            'quantile(0.9, node_cpu_usage_percent)',
+            'node_cpu_usage_percent[5m:1m]',
+        ]
+        for expr in unsupported:
+            with self.assertRaises(ValueError, msg=expr) as ctx:
+                self._eval(expr)
+            self.assertIn('不支持', str(ctx.exception), msg=expr)
+
+    # ── 确定性 ────────────────────────────────────────────────
+
+    def test_deterministic_output(self):
+        with self._patch_now():
+            first = evaluate_promql('sum by (host) (node_cpu_usage_percent)',
+                                    start_ts=self.NOW - 3600, end_ts=self.NOW, step=60)
+            second = evaluate_promql('sum by (host) (node_cpu_usage_percent)',
+                                     start_ts=self.NOW - 3600, end_ts=self.NOW, step=60)
+        self.assertEqual(first, second)
+
+
+class DemoMetricApiTests(TestCase):
+    """演示指标数据源 API：/observability/metrics/query/ 走 ops.prometheus_demo 离线引擎。"""
+
+    NOW = 1728000000.0
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = get_user_model().objects.create_superuser('ops-admin', 'ops@example.com', 'Admin@123456')
+        self.client.force_authenticate(user=self.user)
+        MetricDataSource.objects.create(
+            name='Prometheus 演示数据源', provider='prometheus', tsdb_type='prometheus',
+            environment='', cluster_name='', description='离线模拟',
+            config={'demo_mode': True}, is_enabled=True, is_default=True)
+        cache.clear()
+
+    def _post_query(self, promql, **extra):
+        payload = {'promql': promql, 'range_query': True, 'step': 60, **extra}
+        with patch('ops.prometheus_demo.time.time', return_value=self.NOW):
+            return self.client.post('/api/observability/metrics/query/', payload, format='json')
+
+    def test_demo_metric_query_returns_matrix(self):
+        response = self._post_query('node_disk_usage_percent{host="order-api-ecs-01"}')
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['resultType'], 'matrix')
+        self.assertEqual(body['series_count'], 1)
+        self.assertEqual(body['source'], 'prometheus_demo')
+        values = body['result'][0]['values']
+        self.assertGreater(len(values), 5)
+        self.assertAlmostEqual(float(values[-1][1]), 92.0, delta=2.0, msg='故事线末值 92%')
+
+    def test_demo_metric_query_default_datasource_resolution(self):
+        # 不传 metric_datasource_id：按 is_default 解析到演示源
+        response = self._post_query('node_cpu_usage_percent{host="gateway"}')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['series_count'], 1)
+
+    def test_demo_metric_query_unsupported_returns_400(self):
+        response = self._post_query('topk(3, node_cpu_usage_percent)')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('不支持', response.json()['detail'])
+
+    def test_demo_series_names(self):
+        with patch('ops.prometheus_demo.time.time', return_value=self.NOW):
+            response = self.client.get('/api/observability/metrics/series-names/')
+        self.assertEqual(response.status_code, 200)
+        metrics = response.json()['metrics']
+        for expected in ('node_cpu_usage_percent', 'http_requests_total', 'node_disk_usage_percent'):
+            self.assertIn(expected, metrics)

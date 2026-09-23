@@ -36,6 +36,12 @@ services:
       SXDEVOPS_SEED_TEMPLATES: "1"
       # 离线演示模式：内置模拟模型引擎（AI 问答无需 API Key）
       SXDEVOPS_DEMO_MODE: "1"
+      # 可选：真实 DeepSeek 大模型（设置 DEEPSEEK_API_KEY 后 entrypoint 自动接入并
+      # 切换真实模型；不设置则使用内置离线模拟模型）
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      # SXDEVOPS_LLM_DEMO_MOCK: "0"  # 有 key 时 entrypoint 自动置 0；=1 强制模拟模型
       DEEPAGENTS_FALLBACK_ON_ERROR: "0"
       # 安全与跨域（演示环境）：全模拟数据的离线演示，固定值即可用；
       # 如需自定义可通过 .env 注入 SECRET_KEY

@@ -96,10 +96,12 @@ class Command(BaseCommand):
         env.zabbix_datasource_ids = _ids(ZabbixDataSource.objects.filter(is_enabled=True))
         env.k8s_cluster_ids = _ids(K8sCluster.objects.all())
         env.docker_host_ids = _ids(DockerHost.objects.filter(status='connected'))
-        # 演示环境不绑定外部日志/指标/链路数据源：
-        # 日志查询回落到平台 LogEntry（种子故事日志），避免离线环境查询空数据源
-        env.metric_datasource_ids = []
-        env.log_datasource_ids = []
+        # 绑定演示指标/日志数据源（demo_mode=True 走离线引擎/内置生成器）：
+        # AI 查询指标走 ops.prometheus_demo、日志走 log_views 内置演示数据
+        demo_metrics = MetricDataSource.objects.filter(is_enabled=True, config__demo_mode=True)
+        demo_logs = LogDataSource.objects.filter(is_enabled=True, config__demo_mode=True)
+        env.metric_datasource_ids = _ids(demo_metrics)
+        env.log_datasource_ids = _ids(demo_logs)
         env.tracing_datasource_ids = []
         env.observability_link_ids = []
         env.save(update_fields=[
@@ -108,15 +110,29 @@ class Command(BaseCommand):
             'metric_datasource_ids', 'log_datasource_ids', 'tracing_datasource_ids',
             'observability_link_ids',
         ])
-        # 停用外部日志/指标/链路数据源（离线演示无法连接真实系统）：
-        # 停用后 AI 查询自动回落平台 LogEntry / 本地数据
-        LogDataSource.objects.filter(is_enabled=True).update(is_enabled=False)
-        MetricDataSource.objects.filter(is_enabled=True).update(is_enabled=False)
+        # 只停用非演示源（真实系统离线演示无法连接）；演示源保留供 AI 查询离线数据。
+        # 注意：本命令仅由演示 seed 链调用（生产不走 seed_data），反转停用逻辑无生产影响。
+        # 用 id__in 排除（SQLite 上 JSONField exclude(key=True) 对缺键行有 NULL 传播问题）
+        LogDataSource.objects.filter(is_enabled=True).exclude(id__in=list(demo_logs.values_list('id', flat=True))).update(is_enabled=False)
+        MetricDataSource.objects.filter(is_enabled=True).exclude(id__in=list(demo_metrics.values_list('id', flat=True))).update(is_enabled=False)
         TracingDataSource.objects.filter(is_enabled=True).update(is_enabled=False)
         stdout.write(
             f'知识环境绑定完成: zabbix={len(env.zabbix_datasource_ids or [])}, '
+            f'metric_demo={len(env.metric_datasource_ids or [])}, log_demo={len(env.log_datasource_ids or [])}, '
             f'k8s={len(env.k8s_cluster_ids or [])}, docker={len(env.docker_host_ids or [])}'
         )
+
+        # 建议问题覆盖四类演示能力：智能问数 / 趋势预测 / 告警统计 / 根因分析
+        from aiops.models import AIOpsAgentConfig
+        config, _ = AIOpsAgentConfig.objects.get_or_create(name='default')
+        config.suggested_questions = [
+            '生产环境 order 服务的请求量和错误率是多少',
+            'order-api-ecs-01 磁盘使用率趋势和预测',
+            '统计一下本周生产环境的告警',
+            '分析 order-center 库存校验超时的根因',
+            'Zabbix 上有哪些严重级别的磁盘问题',
+        ]
+        config.save(update_fields=['suggested_questions'])
 
     # ── 演示模型 provider ────────────────────────────────────────────
 

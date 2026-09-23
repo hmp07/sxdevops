@@ -917,6 +917,68 @@ BUILTIN_SKILLS = [
 - ApplicationSolution 在 CMDB 中对应"应用方案"CI 类型，business_line 字段即业务线""",
         'allowed_role_codes': [],
     },
+    {
+        'name': '资源趋势与容量预测',
+        'slug': 'sx-resource-trend-forecast',
+        'description': '主机资源（CPU/内存/磁盘）历史趋势分析与未来容量预测 SOP',
+        'category': '容量分析',
+        'source_type': AIOpsSkill.SOURCE_INLINE,
+        'applicable_actions': ['zabbix.problem_analysis', 'alert.root_cause'],
+        'examples': ['order-api-ecs-01 磁盘使用率趋势和预测', 'order-api-ecs-01 的磁盘什么时候会满'],
+        'builtin_tools': ['query_resource_forecast'],
+        'recommended_tools': ['query_metrics_promql', 'query_zabbix_host_metrics'],
+        'risk_level': AIOpsSkill.RISK_READ_ONLY,
+        'output_contract': {
+            'sections': ['结论', '历史趋势', '预测与置信区间', '建议动作'],
+            'blocks': ['risk_notice'],
+        },
+        'content': """# 资源趋势与容量预测 SOP
+
+## 适用场景
+用户询问主机磁盘/内存/CPU 的使用趋势、容量预测、"什么时候满/爆"等问题。
+
+## 工作流程
+1. 用 query_resource_forecast 拉取主机历史数据与预测（指定 hostname 与 metric）
+2. 结论必须引用工具返回的 trend（上升/下降/平稳）、slope_per_hour、threshold_eta_text 数值
+3. 预测必须同时给出置信区间与阈值到达时间，禁止只报单点
+4. 数据适合可视化时输出 ```chart 折线图（历史+预测合成一条线）
+5. 预测数据不足（<6 点）时说明原因，禁止编造
+
+## 输出要求
+- 先给文字结论，再给图表
+- 阈值到达时间按小时（<48h）或天（>=48h）表述
+- 建议动作必须可执行（扩容/清理/告警升级等）""",
+        'allowed_role_codes': [],
+    },
+    {
+        'name': '告警统计分析',
+        'slug': 'sx-alert-statistics',
+        'description': '告警统计口径与分析 SOP：总量、级别/状态/来源分布、Top 问题',
+        'category': '告警分析',
+        'source_type': AIOpsSkill.SOURCE_INLINE,
+        'applicable_actions': ['alert.root_cause', 'zabbix.problem_analysis'],
+        'examples': ['统计一下本周生产环境的告警', '这个月严重告警有多少'],
+        'builtin_tools': ['query_alerts'],
+        'recommended_tools': ['query_alert_root_cause'],
+        'risk_level': AIOpsSkill.RISK_READ_ONLY,
+        'output_contract': {
+            'sections': ['统计口径', '总量与分布', 'Top 问题', '建议'],
+            'blocks': ['risk_notice'],
+        },
+        'content': """# 告警统计分析 SOP
+
+## 工作流程
+1. 统计口径必须显式声明（时间窗口/环境/级别/状态过滤条件）
+2. 用 query_alerts 查询（date_filter 传 today/week 等），数字只能来自工具返回的
+   summary/total 与结果条目，禁止估计
+3. 按级别、状态、来源、环境分组计数，用 ```chart bar 展示级别分布
+4. 对 Top 活跃告警给出根因分析入口（可追问用 query_alert_root_cause 深入）
+
+## 输出要求
+- 先给统计结论（总量 + 分布），再给图表
+- 对数量最多的告警类别点出可能共性原因""",
+        'allowed_role_codes': [],
+    },
 ]
 
 BUILTIN_ACTION_REGISTRY = [
@@ -6073,7 +6135,7 @@ def _promql_items_from_results(results):
     return items
 
 
-def query_grafana_promql(session, user_message, user, query='', promql='', range_query=True, duration_minutes=30, step=60, limit=6, metric_datasource_id=''):
+def _run_promql_query_tool(session, user_message, user, *, tool_name, query='', promql='', range_query=True, duration_minutes=30, step=60, limit=6, metric_datasource_id=''):
     started_at = time.time()
     knowledge_environment = _resolve_knowledge_environment_for_query(query)
     metric_datasource_ids = (knowledge_environment.get('metric_datasource_ids') or []) if knowledge_environment else []
@@ -6089,7 +6151,7 @@ def query_grafana_promql(session, user_message, user, query='', promql='', range
             continue
         if zabbix_ds:
             invocation = _create_tool_invocation(
-                session, user_message, 'query_grafana_promql_zabbix',
+                session, user_message, f'{tool_name}_zabbix',
                 {'query': query, 'promql': expression, 'zabbix_datasource_id': ds_id},
             )
             return _query_zabbix_metric_proxy(
@@ -6099,7 +6161,7 @@ def query_grafana_promql(session, user_message, user, query='', promql='', range
     invocation = _create_tool_invocation(
         session,
         user_message,
-        'query_grafana_promql',
+        tool_name,
         {
             'query': query,
             'promql': expression,
@@ -6115,7 +6177,7 @@ def query_grafana_promql(session, user_message, user, query='', promql='', range
         return {'sections': [], 'citations': []}
     if not expression:
         _finish_tool_invocation(invocation, {'detail': 'empty_promql'}, started_at, success=False)
-        return {'sections': [{'title': 'Grafana PromQL', 'items': ['未提供 PromQL 表达式。']}], 'citations': [{'title': '监控看板', 'path': '/observability/grafana'}]}
+        return {'sections': [{'title': '指标查询', 'items': ['未提供 PromQL 表达式。']}], 'citations': [{'title': '监控看板', 'path': '/observability/grafana'}]}
     end_time = timezone.now()
     duration = max(5, min(int(duration_minutes or 30), 1440))
     start_time = end_time - timedelta(minutes=duration)
@@ -6143,7 +6205,7 @@ def query_grafana_promql(session, user_message, user, query='', promql='', range
         _finish_tool_invocation(invocation, summary, started_at, success=True)
         return {
             'summary': summary,
-            'sections': [{'title': 'Grafana / PromQL 指标结果', 'items': items}],
+            'sections': [{'title': '指标查询结果', 'items': items}],
             'citations': [{'title': '指标查询', 'path': '/observability/metrics'}],
             'promql': payload,
         }
@@ -6151,9 +6213,197 @@ def query_grafana_promql(session, user_message, user, query='', promql='', range
         _finish_tool_invocation(invocation, {'error': str(exc)}, started_at, success=False)
         return {
             'summary': {'error': str(exc)},
-            'sections': [{'title': 'Grafana / PromQL 查询失败', 'items': [str(exc)]}],
+            'sections': [{'title': '指标查询失败', 'items': [str(exc)]}],
             'citations': [{'title': '指标查询', 'path': '/observability/metrics'}],
         }
+
+
+def query_grafana_promql(session, user_message, user, query='', promql='', range_query=True, duration_minutes=30, step=60, limit=6, metric_datasource_id=''):
+    return _run_promql_query_tool(
+        session, user_message, user, tool_name='query_grafana_promql',
+        query=query, promql=promql, range_query=range_query,
+        duration_minutes=duration_minutes, step=step, limit=limit,
+        metric_datasource_id=metric_datasource_id)
+
+
+def query_metrics_promql(session, user_message, user, query='', promql='', range_query=True, duration_minutes=60, step=60, limit=6, metric_datasource_id=''):
+    """执行 PromQL 指标查询（智能问数工具）：返回时间序列与最新值。
+
+    用于：资源使用率、QPS、错误率、延迟等指标问数与趋势查看。
+    演示环境命中 config.demo_mode 的指标数据源时走离线演示引擎。
+    """
+    return _run_promql_query_tool(
+        session, user_message, user, tool_name='query_metrics_promql',
+        query=query, promql=promql, range_query=range_query,
+        duration_minutes=duration_minutes, step=step, limit=limit,
+        metric_datasource_id=metric_datasource_id)
+
+
+def query_resource_forecast(session, user_message, user, query='', hostname='', metric='disk', lookback_hours=24, horizon_hours=6, datasource_id=''):
+    """主机资源趋势分析与预测：历史线性回归 + 置信区间 + 阈值到达时间。
+
+    用于："磁盘什么时候满""内存会不会涨爆""CPU 趋势"类问题。
+    演示环境（Zabbix api_url='demo://'）直接使用确定性模拟历史数据。
+    """
+    started_at = time.time()
+    invocation = _create_tool_invocation(
+        session, user_message, 'query_resource_forecast',
+        {'query': query, 'hostname': hostname, 'metric': metric,
+         'lookback_hours': lookback_hours, 'horizon_hours': horizon_hours},
+    )
+    if not user_has_permissions(user, ['ops.metric.query']):
+        _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
+        return {'sections': [], 'citations': []}
+    metric = str(metric or '').strip().lower()
+    if metric not in ('cpu', 'memory', 'disk'):
+        metric = 'disk'
+    lookback_hours = max(6, min(int(lookback_hours or 24), 168))
+    horizon_hours = max(1, min(int(horizon_hours or 6), 24))
+    hostname = str(hostname or '').strip()
+    if not hostname:
+        from ops.zabbix_demo_data import DEMO_HOSTS
+        text = str(query or '')
+        hostname = next((h['host'] for h in DEMO_HOSTS if h['host'] in text), '')
+    if not hostname:
+        _finish_tool_invocation(invocation, {'detail': 'missing_hostname'}, started_at, success=False)
+        return {
+            'summary': {'error': '请指定要分析的主机'},
+            'sections': [{'title': '资源趋势预测', 'items': ['未指定主机名，请提供主机名（如 order-api-ecs-01）。']}],
+            'citations': [{'title': '指标查询', 'path': '/observability/metrics'}],
+        }
+
+    from ops.models import ZabbixDataSource
+    from ops.zabbix_client import ZabbixClient
+    from ops.zabbix_demo_data import DEMO_HOSTS, DEMO_ITEMS, generate_history
+    from ops.forecast import linear_forecast, summarize_series, threshold_eta
+
+    zabbix_ds = None
+    if datasource_id:
+        zabbix_ds = ZabbixDataSource.objects.filter(id=datasource_id, is_enabled=True).first()
+    if zabbix_ds is None:
+        zabbix_ds = ZabbixDataSource.objects.filter(is_enabled=True).order_by('-is_default').first()
+    is_demo = zabbix_ds is None or str(zabbix_ds.api_url or '') == 'demo://'
+
+    host_meta = next((h for h in DEMO_HOSTS if h['host'] == hostname), None)
+    if host_meta is None:
+        _finish_tool_invocation(invocation, {'detail': 'unknown_hostname'}, started_at, success=False)
+        return {
+            'summary': {'error': f'未找到主机 {hostname}'},
+            'sections': [{'title': '资源趋势预测', 'items': [f'未找到主机 {hostname}（可用：order-api-ecs-01/02、k8s-node-01、member-api、payment-worker、gateway）。']}],
+            'citations': [{'title': '指标查询', 'path': '/observability/metrics'}],
+        }
+    key_map = {'cpu': 'system.cpu.util', 'memory': 'vm.memory[used]', 'disk': 'vfs.fs.size[/,used]'}
+    item = next((it for it in DEMO_ITEMS if it['hostid'] == host_meta['hostid'] and it['key_'] == key_map[metric]), None)
+    if item is None:
+        _finish_tool_invocation(invocation, {'detail': 'missing_item'}, started_at, success=False)
+        return {
+            'summary': {'error': '未找到对应监控项'},
+            'sections': [{'title': '资源趋势预测', 'items': [f'{hostname} 上未找到 {key_map[metric]} 监控项。']}],
+            'citations': [{'title': '指标查询', 'path': '/observability/metrics'}],
+        }
+
+    history = []
+    if is_demo:
+        history = generate_history(item['itemid'], hours=lookback_hours, step=300)
+    else:
+        end = timezone.now()
+        start = end - timedelta(hours=lookback_hours)
+        try:
+            if lookback_hours > 48:
+                history = ZabbixClient(zabbix_ds).get_trends(
+                    [item['itemid']], time_from=int(start.timestamp()), time_to=int(end.timestamp()), limit=2000)
+            else:
+                history = ZabbixClient(zabbix_ds).get_history(
+                    [item['itemid']], time_from=int(start.timestamp()), time_to=int(end.timestamp()), limit=2000)
+        except Exception as exc:
+            _finish_tool_invocation(invocation, {'error': str(exc)}, started_at, success=False)
+            return {
+                'summary': {'error': str(exc)},
+                'sections': [{'title': '资源趋势预测失败', 'items': [f'Zabbix 历史数据查询失败：{exc}']}],
+                'citations': [{'title': '指标查询', 'path': '/observability/metrics'}],
+            }
+
+    points = []
+    for entry in history or []:
+        try:
+            ts = int(entry.get('clock'))
+            val = float(entry.get('value'))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        points.append((ts, val * 100.0 if is_demo else val))
+    points.sort(key=lambda p: p[0])
+    if len(points) < 6:
+        _finish_tool_invocation(invocation, {'detail': 'insufficient_history'}, started_at, success=False)
+        return {
+            'summary': {'error': '历史数据不足'},
+            'sections': [{'title': '资源趋势预测', 'items': [f'历史数据不足（仅 {len(points)} 个点），无法可靠预测。']}],
+            'citations': [{'title': '指标查询', 'path': '/observability/metrics'}],
+        }
+
+    stats = summarize_series(points)
+    horizon_points = max(6, horizon_hours * 12)  # 5min 粒度
+    fc = linear_forecast(points, horizon_points=horizon_points)
+    thresholds = {'cpu': 85.0, 'memory': 90.0, 'disk': 95.0}
+    eta = threshold_eta(points, thresholds[metric])
+    metric_label = {'cpu': 'CPU 使用率', 'memory': '内存使用率', 'disk': '磁盘使用率'}[metric]
+    trend_label = {'up': '上升', 'down': '下降', 'flat': '平稳'}.get(stats['direction'], stats['direction'])
+
+    if eta is None:
+        eta_text = ('趋势下降，不会达到告警阈值' if stats['direction'] == 'down'
+                    else '按当前增速，预测期内不会达到告警阈值')
+    elif eta == 0:
+        eta_text = f'当前值已超过 {thresholds[metric]:.0f}% 告警阈值'
+    else:
+        eta_hours = eta / 3600
+        eta_text = (f'按当前增速约 {eta_hours:.1f} 小时后达到 {thresholds[metric]:.0f}%'
+                    if eta_hours < 48 else
+                    f'按当前增速约 {eta_hours / 24:.1f} 天后达到 {thresholds[metric]:.0f}%')
+
+    chart_categories = (
+        [time.strftime('%m-%d %H:%M', time.localtime(ts)) for ts, _ in points]
+        + [time.strftime('%m-%d %H:%M', time.localtime(ts)) for ts, _ in fc['forecast']]
+    )
+    result = {
+        'summary': {
+            'hostname': hostname,
+            'metric': metric,
+            'metric_label': metric_label,
+            'lookback_hours': lookback_hours,
+            'horizon_hours': horizon_hours,
+            'trend': trend_label,
+            'slope_per_hour': round(fc['slope'] * 3600, 4),
+            'r2': round(fc['r2'], 3),
+            'current': round(stats['last'], 1),
+            'min': round(stats['min'], 1),
+            'max': round(stats['max'], 1),
+            'threshold': thresholds[metric],
+            'threshold_eta_hours': None if eta is None else round(eta / 3600, 1),
+            'threshold_eta_text': eta_text,
+            'source': 'zabbix_demo' if is_demo else 'zabbix',
+        },
+        'sections': [
+            {'title': '历史数据摘要', 'items': [
+                f'当前{metric_label} {stats["last"]:.1f}%（近 {lookback_hours}h 最低 {stats["min"]:.1f}%、最高 {stats["max"]:.1f}%）',
+                f'整体趋势：{trend_label}（回归斜率 {fc["slope"] * 3600:+.3f}%/小时，R²={fc["r2"]:.2f}）',
+            ]},
+            {'title': '预测结论', 'items': [
+                eta_text,
+                f'未来 {horizon_hours} 小时预测：{fc["forecast"][0][1]:.1f}% → {fc["forecast"][-1][1]:.1f}%（置信带宽 ±{fc["rmse"] * 1.96:.1f}%）',
+            ]},
+        ],
+        'chart': {
+            'type': 'line',
+            'title': f'{hostname} {metric_label}趋势与预测',
+            'categories': chart_categories,
+            'values': [round(v, 1) for _, v in points],
+            'forecast': [round(v, 1) for _, v in fc['forecast']],
+            'upper': [round(v, 1) for _, v in fc['upper']],
+            'lower': [round(v, 1) for _, v in fc['lower']],
+        },
+        'citations': [{'title': '主机指标', 'path': '/observability/metrics'}],
+    }
+    _finish_tool_invocation(invocation, result['summary'], started_at, success=True)
+    return result
 
 
 def query_dashboard_panel_data(session, user_message, user, query='', dashboard_key='', panel_title='', panel_id='', variables=None, duration_minutes=30, step=60, limit=3):

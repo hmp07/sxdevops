@@ -42,6 +42,19 @@ def is_demo_mode() -> bool:
     return os.environ.get('SXDEVOPS_DEMO_MODE') == '1'
 
 
+def llm_demo_mock_enabled() -> bool:
+    """LLM 离线模拟开关（唯一事实来源）。
+
+    SXDEVOPS_LLM_DEMO_MOCK 显式设置时以其为准（1=模拟模型, 0=真实模型）；
+    未设置时回落 SXDEVOPS_DEMO_MODE，保证默认行为与历史完全一致。
+    演示环境接入真实大模型时设置 SXDEVOPS_LLM_DEMO_MOCK=0 即可，
+    观测侧演示数据（指标/日志/链路/Zabbix）不受影响。
+    """
+    if 'SXDEVOPS_LLM_DEMO_MOCK' in os.environ:
+        return os.environ['SXDEVOPS_LLM_DEMO_MOCK'] == '1'
+    return os.environ.get('SXDEVOPS_DEMO_MODE') == '1'
+
+
 class DemoMockChatModel(BaseChatModel):
     """确定性模拟模型 — 驱动真实 DeepAgents 工具循环。"""
 
@@ -324,6 +337,26 @@ DEMO_QUESTION_OVERRIDES = {
     '查询生产环境当前有哪些告警': {
         'tool': 'query_alerts_tool',
         'args': {'query': '生产环境', 'date_filter': 'today', 'limit': 10},
+    },
+    '生产环境 order 服务的请求量和错误率是多少': {
+        'tool': 'query_metrics_promql_tool',
+        'args': {'promql': 'sum by (service) (rate(http_requests_total[5m]))', 'range_query': True, 'duration_minutes': 60, 'limit': 6},
+    },
+    'order-api-ecs-01 磁盘使用率趋势和预测': {
+        'tool': 'query_resource_forecast_tool',
+        'args': {'hostname': 'order-api-ecs-01', 'metric': 'disk', 'lookback_hours': 24, 'horizon_hours': 6},
+    },
+    'order-api-ecs-01 的磁盘什么时候会满': {
+        'tool': 'query_resource_forecast_tool',
+        'args': {'hostname': 'order-api-ecs-01', 'metric': 'disk', 'horizon_hours': 24},
+    },
+    'member-api 内存使用趋势': {
+        'tool': 'query_resource_forecast_tool',
+        'args': {'hostname': 'member-api', 'metric': 'memory', 'lookback_hours': 168, 'horizon_hours': 12},
+    },
+    '统计一下本周生产环境的告警': {
+        'tool': 'query_alerts_tool',
+        'args': {'query': '生产环境', 'date_filter': 'week', 'limit': 20},
     },
 }
 
@@ -648,6 +681,80 @@ def _render_generic(data: dict) -> str:
     return '\n'.join(lines)
 
 
+def _render_metrics(data: dict, question: str = '') -> str:
+    """指标问数渲染：结论 + 各序列最新值与趋势 + ```chart 折线。"""
+    import json as _json
+    summary = data.get('summary') or {}
+    payload = data.get('promql') or {}
+    lines = ['## 结论']
+    lines.append(
+        f"指标查询完成：{summary.get('series_count', 0)} 个时间序列"
+        f"（数据源 {summary.get('source') or '指标数据源'}，窗口 {summary.get('range') and '区间' or '瞬时'}）。"
+    )
+    for item in _first_items(data, 5):
+        title = _item_title(item)
+        detail = _item_detail(item)
+        line = f'- **{title}**' + (f'：{detail}' if detail else '')
+        lines.append(line)
+    chart = payload.get('result') or []
+    if chart and chart[0].get('values'):
+        series = chart[0]
+        values = series.get('values') or []
+        step = max(1, len(values) // 12)
+        sampled = values[::step]
+        categories = []
+        import time as _time
+        for ts, _ in sampled:
+            categories.append(_time.strftime('%H:%M', _time.localtime(float(ts))))
+        numbers = [round(float(v), 1) for _, v in sampled]
+        label = ' / '.join(f'{k}={v}' for k, v in (series.get('metric') or {}).items() if k != '__name__')
+        chart_json = {
+            'type': 'line',
+            'title': f"指标趋势 {label}"[:15],
+            'data': {'categories': categories, 'values': numbers},
+        }
+        lines.append('```chart')
+        lines.append(_json.dumps(chart_json, ensure_ascii=False))
+        lines.append('```')
+    lines.append('## 建议操作')
+    lines.append('- 如需更细粒度趋势，可指定时间窗口或改用资源趋势预测工具')
+    return '\n'.join(lines)
+
+
+def _render_forecast(data: dict, question: str = '') -> str:
+    """资源趋势预测渲染：结论含阈值 ETA + 置信区间 + ```chart 历史与预测合成折线。"""
+    import json as _json
+    summary = data.get('summary') or {}
+    chart = data.get('chart') or {}
+    lines = ['## 结论']
+    lines.append(
+        f"{summary.get('hostname')} {summary.get('metric_label') or '指标'}当前 "
+        f"{summary.get('current')}%（趋势{summary.get('trend')}）。"
+        f"{summary.get('threshold_eta_text') or ''}"
+    )
+    lines.append('## 预测与置信区间')
+    for section in (data.get('sections') or []):
+        for item in section.get('items') or []:
+            lines.append(f'- {item}')
+    categories = chart.get('categories') or []
+    values = (chart.get('values') or []) + (chart.get('forecast') or [])
+    if categories and values and len(categories) == len(values):
+        # 抽稀避免图表过密
+        step = max(1, len(values) // 16)
+        chart_json = {
+            'type': 'line',
+            'title': (chart.get('title') or '趋势预测')[:15],
+            'data': {'categories': categories[::step], 'values': values[::step]},
+        }
+        lines.append('```chart')
+        lines.append(_json.dumps(chart_json, ensure_ascii=False))
+        lines.append('```')
+    lines.append('## 建议操作')
+    lines.append('- 关注阈值到达时间，提前扩容或清理磁盘/内存')
+    lines.append('- 如需其它主机或 CPU/内存/磁盘维度，直接告诉我')
+    return '\n'.join(lines)
+
+
 _ANSWER_RENDERERS = {
     'query_alerts_tool': _render_alert_list,
     'query_alert_root_cause_tool': _render_root_cause,
@@ -665,6 +772,8 @@ _ANSWER_RENDERERS = {
     'query_device_detail_tool': _render_generic,
     'query_k8s_cluster_summary_tool': _render_generic,
     'query_recent_changes_tool': _render_generic,
+    'query_metrics_promql_tool': _render_metrics,
+    'query_resource_forecast_tool': _render_forecast,
 }
 
 

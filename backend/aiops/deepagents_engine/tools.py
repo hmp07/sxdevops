@@ -639,6 +639,80 @@ def query_cmdb_topology_tool(
     return _safe_json(result)
 
 
+@tool
+def query_metrics_promql_tool(
+    query: str = "",
+    promql: str = "",
+    range_query: bool = True,
+    duration_minutes: int = 60,
+    step: int = 60,
+    limit: int = 6,
+    metric_datasource_id: int = 0,
+    config: RunnableConfig = None,
+) -> str:
+    """执行 PromQL 指标查询，返回时间序列与最新值。
+
+    用于：资源使用率、QPS、错误率、延迟等指标问数与趋势查看。
+    用户询问指标数值、请求量、错误率、CPU/内存/磁盘使用率、延迟时必须使用本工具。
+
+    Args:
+        query: 用户问题或补充说明
+        promql: PromQL 表达式
+        range_query: 是否区间查询（趋势），默认 True
+        duration_minutes: 时间范围（分钟），默认 60，最大 1440
+        step: 采样步长（秒），默认 60
+        limit: 返回序列数上限，默认 6
+        metric_datasource_id: 指标数据源 ID（0 表示默认数据源）
+    """
+    close_old_connections()
+    from aiops.tools import query_metrics_promql as _impl
+    user = _get_user_from_config(config)
+    session = _get_session_from_config(config)
+    result = _impl(
+        session, None, user,
+        query=query, promql=promql, range_query=range_query,
+        duration_minutes=duration_minutes, step=step, limit=limit,
+        metric_datasource_id=str(metric_datasource_id or ''),
+    )
+    return _safe_json(result)
+
+
+@tool
+def query_resource_forecast_tool(
+    query: str = "",
+    hostname: str = "",
+    metric: str = "disk",
+    lookback_hours: int = 24,
+    horizon_hours: int = 6,
+    datasource_id: int = 0,
+    config: RunnableConfig = None,
+) -> str:
+    """主机资源（CPU/内存/磁盘）历史趋势分析与未来预测。
+
+    用于："磁盘什么时候满""内存会不会涨爆""CPU 趋势""使用率预测"等问题。
+    返回线性回归趋势、置信区间、阈值到达时间与图表数据。
+
+    Args:
+        query: 用户问题（可从中提取主机名）
+        hostname: 主机名，如 order-api-ecs-01
+        metric: 指标类型 cpu / memory / disk
+        lookback_hours: 回看窗口（小时），默认 24，最大 168
+        horizon_hours: 预测时长（小时），默认 6，最大 24
+        datasource_id: Zabbix 数据源 ID（0 表示默认数据源）
+    """
+    close_old_connections()
+    from aiops.tools import query_resource_forecast as _impl
+    user = _get_user_from_config(config)
+    session = _get_session_from_config(config)
+    result = _impl(
+        session, None, user,
+        query=query, hostname=hostname, metric=metric,
+        lookback_hours=lookback_hours, horizon_hours=horizon_hours,
+        datasource_id=str(datasource_id or ''),
+    )
+    return _safe_json(result)
+
+
 # ── 统一工具注册表（唯一的工具注册点）──────────────────────────────────────
 
 
@@ -656,12 +730,14 @@ SXDEVOPS_TOOLS = [
     query_zabbix_items_tool,
     query_zabbix_history_tool,
     query_zabbix_host_metrics_tool,
+    query_metrics_promql_tool,
     # P2 — 专用
     query_alert_root_cause_tool,
     query_alert_metrics_tool,
     query_recent_changes_tool,
     query_device_detail_tool,
     query_cmdb_topology_tool,
+    query_resource_forecast_tool,
 ]
 
 

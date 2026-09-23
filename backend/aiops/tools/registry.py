@@ -277,6 +277,45 @@ TOOL_REGISTRY: list[dict] = [
             },
         },
     },
+    {
+        'name': 'sxdevops.query_metrics_promql',
+        'title': '查询指标（PromQL）',
+        'description': '执行 PromQL 查询指标数据源，返回时间序列与最新值。用于资源使用率、QPS、错误率、延迟等指标问数与趋势查看。用户询问指标数值、请求量、错误率、CPU/内存/磁盘使用率、延迟时必须使用本工具。',
+        'permission': 'ops.metric.query',
+        'handler': 'query_metrics_promql',
+        'deepagents_name': 'query_metrics_promql_tool',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'promql': {'type': 'string'},
+                'range_query': {'type': 'boolean'},
+                'duration_minutes': {'type': 'integer', 'minimum': 5, 'maximum': 1440},
+                'step': {'type': 'integer', 'minimum': 15, 'maximum': 3600},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10},
+                'metric_datasource_id': {'type': 'integer', 'minimum': 1},
+            },
+        },
+    },
+    {
+        'name': 'sxdevops.query_resource_forecast',
+        'title': '资源趋势分析与预测',
+        'description': '拉取主机 CPU/内存/磁盘历史数据，输出趋势分析与未来预测（线性回归、置信区间、阈值到达时间）。适用于"磁盘什么时候满""内存会不会涨爆""CPU 趋势""使用率预测"等问题。',
+        'permission': 'ops.metric.query',
+        'handler': 'query_resource_forecast',
+        'deepagents_name': 'query_resource_forecast_tool',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'hostname': {'type': 'string'},
+                'metric': {'type': 'string', 'enum': ['cpu', 'memory', 'disk']},
+                'lookback_hours': {'type': 'integer', 'minimum': 6, 'maximum': 168},
+                'horizon_hours': {'type': 'integer', 'minimum': 1, 'maximum': 24},
+                'datasource_id': {'type': 'integer', 'minimum': 1},
+            },
+        },
+    },
 ]
 
 

@@ -1,5 +1,6 @@
 import json
 import importlib
+import os
 from datetime import timedelta
 from decimal import Decimal
 from unittest import mock
@@ -9261,3 +9262,130 @@ class ZabbixIntegrationTests(TestCase):
         from django.db.models import Q
         qs = Alert.objects.filter(Q(environment__in=envs) | Q(host__environment__in=envs))
         self.assertTrue(qs.filter(title='zbx可见告警').exists())
+
+
+class DemoSeedTests(TestCase):
+    """演示种子：指标/日志演示数据源 + 知识环境绑定 + 建议问题。"""
+
+    def test_seed_metric_demo_datasource(self):
+        from ops.management.commands.seed_data import Command
+        from ops.models import MetricDataSource
+
+        MetricDataSource.objects.create(
+            name='真实 Prometheus', provider='prometheus', tsdb_type='prometheus',
+            config={'query_url': 'http://prom.example:9090'}, is_enabled=True, is_default=True)
+        ds = Command()._seed_metric_demo_datasource()
+        self.assertTrue(ds.config.get('demo_mode'))
+        self.assertTrue(ds.is_default)
+        self.assertFalse(MetricDataSource.objects.exclude(id=ds.id).filter(is_default=True).exists(),
+                         '非演示源应降级')
+        self.assertEqual(MetricDataSource.objects.filter(name='Prometheus 演示数据源').count(), 1)
+
+    def test_seed_log_demo_datasources(self):
+        from ops.management.commands.seed_data import Command
+        from ops.models import LogDataSource
+
+        # 未跑迁移的兜底：无演示源时手动建 Loki 演示
+        LogDataSource.objects.create(
+            name='真实 Loki', provider='loki',
+            config={'endpoint': 'http://loki.example:3100'}, is_enabled=True, is_default=True)
+        ds = Command()._seed_log_demo_datasources()
+        self.assertTrue(ds.config.get('demo_mode'))
+        self.assertTrue(ds.is_default)
+        self.assertFalse(LogDataSource.objects.exclude(id=ds.id).filter(is_default=True).exists())
+
+    def test_seed_aiops_demo_binds_demo_sources_and_questions(self):
+        from django.core.management import call_command
+        from aiops.models import AIOpsAgentConfig, AIOpsKnowledgeEnvironment
+        from ops.models import LogDataSource, MetricDataSource
+
+        metric_demo, _ = MetricDataSource.objects.update_or_create(
+            name='Prometheus 演示数据源',
+            defaults={'provider': 'prometheus', 'config': {'demo_mode': True},
+                      'is_enabled': True, 'is_default': True})
+        # 迁移 0012 已播种同名 Loki 演示源（测试库同样生效），用 update_or_create 对齐
+        log_demo, _ = LogDataSource.objects.update_or_create(
+            name='Loki 演示（免连接）',
+            defaults={'provider': 'loki', 'config': {'demo_mode': True},
+                      'is_enabled': True, 'is_default': True})
+        MetricDataSource.objects.create(
+            name='真实 Prometheus', provider='prometheus',
+            config={'query_url': 'http://prom.example:9090'}, is_enabled=True)
+
+        call_command('seed_aiops_demo')
+
+        env = AIOpsKnowledgeEnvironment.objects.filter(is_default=True).first()
+        self.assertIsNotNone(env)
+        self.assertIn(metric_demo.id, env.metric_datasource_ids or [])
+        self.assertIn(log_demo.id, env.log_datasource_ids or [])
+        # 非演示源被停用，演示源保留
+        self.assertFalse(MetricDataSource.objects.filter(name='真实 Prometheus', is_enabled=True).exists())
+        self.assertTrue(MetricDataSource.objects.filter(id=metric_demo.id, is_enabled=True).exists())
+        self.assertTrue(LogDataSource.objects.filter(id=log_demo.id, is_enabled=True).exists())
+        config = AIOpsAgentConfig.objects.get(name='default')
+        joined = ' | '.join(config.suggested_questions or [])
+        for keyword in ('请求量和错误率', '趋势和预测', '统计一下本周', '根因'):
+            self.assertIn(keyword, joined)
+
+
+class ProvisionLLMProviderTests(TestCase):
+    """provision_llm_provider：真实 DeepSeek 自动接入与引擎模型解析优先级。"""
+
+    def test_provision_creates_deepseek_provider_and_sets_default(self):
+        from django.core.management import call_command
+        from aiops.models import AIOpsAgentConfig, AIOpsModelProvider
+
+        with mock.patch.dict(os.environ, {'DEEPSEEK_API_KEY': 'sk-test-deepseek-key', 'DEEPSEEK_MODEL': 'deepseek-custom-model'}):
+            call_command('provision_llm_provider')
+        provider = AIOpsModelProvider.objects.get(name='DeepSeek（演示环境）')
+        self.assertEqual(provider.provider_preset, 'deepseek')
+        self.assertEqual(provider.get_api_key(), 'sk-test-deepseek-key', msg='API Key 应加密后往返一致')
+        self.assertNotEqual(provider.api_key_encrypted, 'sk-test-deepseek-key', msg='落库必须是密文')
+        self.assertEqual(provider.default_model, 'deepseek-custom-model')
+        self.assertTrue(provider.is_enabled)
+        config = AIOpsAgentConfig.objects.get(name='default')
+        self.assertEqual(config.default_provider_id, provider.id)
+
+        # 幂等：重跑仍只有一行且不丢 key
+        with mock.patch.dict(os.environ, {'DEEPSEEK_API_KEY': 'sk-test-deepseek-key'}):
+            call_command('provision_llm_provider')
+        self.assertEqual(AIOpsModelProvider.objects.filter(provider_preset='deepseek').count(), 1)
+
+    def test_provision_without_key_is_noop(self):
+        from django.core.management import call_command
+        from aiops.models import AIOpsModelProvider
+
+        before = AIOpsModelProvider.objects.count()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            call_command('provision_llm_provider')
+        self.assertEqual(AIOpsModelProvider.objects.count(), before, msg='无 key 不应建行')
+
+    def test_resolve_model_prefers_default_provider(self):
+        from aiops.deepagents_engine.agent import resolve_model_from_provider
+        from aiops.models import AIOpsAgentConfig, AIOpsModelProvider
+
+        # 占位行（按名称排序在前且启用），但无 key —— 不应被选中
+        AIOpsModelProvider.objects.create(
+            name='离线演示模型', provider_type='openai_compatible', base_url='demo://offline',
+            provider_preset='custom_openai_compatible', default_model='sxdevops-demo-mock', is_enabled=True)
+        deepseek = AIOpsModelProvider.objects.create(
+            name='DeepSeek（演示环境）', provider_type='openai_compatible', base_url='https://api.deepseek.com',
+            provider_preset='deepseek', default_model='deepseek-v4-flash', is_enabled=True)
+        deepseek.set_api_key('sk-resolve-key')
+        deepseek.save(update_fields=['api_key_encrypted'])
+        config, _ = AIOpsAgentConfig.objects.get_or_create(name='default')
+        config.default_provider = deepseek
+        config.save(update_fields=['default_provider'])
+
+        resolved = resolve_model_from_provider()
+        self.assertEqual(resolved, 'deepseek:deepseek-v4-flash')
+        self.assertEqual(os.environ.get('DEEPSEEK_API_KEY'), 'sk-resolve-key', msg='key 应注入环境变量')
+
+    def test_resolve_model_without_provider_falls_back(self):
+        from unittest.mock import patch as _patch
+        from aiops.deepagents_engine.agent import resolve_model_from_provider
+        from aiops.models import AIOpsModelProvider
+
+        AIOpsModelProvider.objects.all().delete()
+        with _patch('aiops.deepagents_engine.agent._default_model', return_value='anthropic:claude-test'):
+            self.assertEqual(resolve_model_from_provider(), 'anthropic:claude-test')

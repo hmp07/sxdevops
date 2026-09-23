@@ -14,6 +14,7 @@ import os
 from typing import Optional
 
 from deepagents import create_deep_agent
+from .demo_mock_model import llm_demo_mock_enabled
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph
 from langgraph.store.memory import InMemoryStore
@@ -56,9 +57,26 @@ def resolve_model_from_provider(user=None):
         return env_model
 
     try:
-        from aiops.models import AIOpsModelProvider
+        from aiops.models import AIOpsAgentConfig, AIOpsModelProvider
 
-        provider = AIOpsModelProvider.objects.filter(is_enabled=True).first()
+        provider = None
+        # default_provider 优先（与 get_active_provider 口径对齐），
+        # 但要求真正就绪（启用 + 有默认模型 + 已配置 API Key），
+        # 防止"智能助手体验版/离线演示模型"等占位行抢占真实模型
+        try:
+            agent_config = AIOpsAgentConfig.objects.select_related('default_provider').first()
+            candidate = agent_config.default_provider if agent_config else None
+            if candidate and candidate.is_enabled and candidate.default_model and (candidate.get_api_key() or ''):
+                provider = candidate
+        except Exception:
+            provider = None
+        if provider is None:
+            for p in AIOpsModelProvider.objects.filter(is_enabled=True).order_by('name'):
+                if p.default_model and (p.get_api_key() or ''):
+                    provider = p
+                    break
+        if provider is None:
+            provider = AIOpsModelProvider.objects.filter(is_enabled=True).first()
         if not provider:
             logger.warning("无活跃的 AIOpsModelProvider，使用默认模型")
             return _default_model()
@@ -152,7 +170,8 @@ def create_sxdevops_agent(
         model = resolve_model_from_provider(user=user)
 
     # 离线演示模式：使用确定性模拟模型驱动真实工具循环（生产路径不受影响）
-    if os.environ.get('SXDEVOPS_DEMO_MODE') == '1':
+    # 开关由 SXDEVOPS_LLM_DEMO_MOCK / SXDEVOPS_DEMO_MODE 解耦控制，见 demo_mock_model.llm_demo_mock_enabled
+    if llm_demo_mock_enabled():
         from .demo_mock_model import DemoMockChatModel
 
         model = DemoMockChatModel()

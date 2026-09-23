@@ -11,9 +11,9 @@ from aiops.deepagents_engine.fastpath import (
 class FastpathPatternTest(TestCase):
     """验证快速路由模式匹配。"""
 
-    def test_seven_patterns_defined(self):
-        self.assertGreaterEqual(len(FASTPATH_PATTERNS), 7,
-                                "fastpath 至少应有 7 个模式（扩展后为 13 个）")
+    def test_patterns_defined(self):
+        self.assertGreaterEqual(len(FASTPATH_PATTERNS), 8,
+                                "fastpath 至少应有 8 个模式（含资源趋势预测）")
 
     def test_alert_list_matches(self):
         tool, params = fastpath_router('查询今天的告警')
@@ -48,3 +48,19 @@ class FastpathPatternTest(TestCase):
     def test_extract_hostname(self):
         self.assertEqual(_extract_hostname('Dataease1的CPU使用率'), 'Dataease1')
         self.assertEqual(_extract_hostname('192.168.1.1的状态'), '192.168.1.1')
+
+    def test_resource_forecast_matches_disk(self):
+        tool, params = fastpath_router('order-api-ecs-01 磁盘什么时候满')
+        self.assertEqual(tool, 'query_resource_forecast_tool')
+        self.assertEqual(params.get('metric'), 'disk')
+        self.assertEqual(params.get('hostname'), 'order-api-ecs-01')
+
+    def test_resource_forecast_matches_memory(self):
+        tool, params = fastpath_router('member-api 内存使用趋势')
+        self.assertEqual(tool, 'query_resource_forecast_tool')
+        self.assertEqual(params.get('metric'), 'memory')
+
+    def test_resource_forecast_no_false_positive_on_alert_trend(self):
+        # "告警趋势"不含资源词（磁盘/内存/cpu/使用率/容量），不应命中预测模式
+        tool, _ = fastpath_router('告警趋势怎么样')
+        self.assertIsNone(tool)

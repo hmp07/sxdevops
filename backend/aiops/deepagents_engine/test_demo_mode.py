@@ -22,6 +22,19 @@ class DemoMockModelUnitTests(TestCase):
         with patch.dict(os.environ, {'SXDEVOPS_DEMO_MODE': '1'}):
             self.assertTrue(is_demo_mode())
 
+    def test_llm_demo_mock_flag_combinations(self):
+        """SXDEVOPS_LLM_DEMO_MOCK 优先，未设置时回落 SXDEVOPS_DEMO_MODE。"""
+        from aiops.deepagents_engine.demo_mock_model import llm_demo_mock_enabled
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(llm_demo_mock_enabled())
+        with patch.dict(os.environ, {'SXDEVOPS_DEMO_MODE': '1'}):
+            self.assertTrue(llm_demo_mock_enabled())
+        with patch.dict(os.environ, {'SXDEVOPS_DEMO_MODE': '1', 'SXDEVOPS_LLM_DEMO_MOCK': '0'}):
+            self.assertFalse(llm_demo_mock_enabled(), msg='真实模型开关应压过 DEMO_MODE')
+        with patch.dict(os.environ, {'SXDEVOPS_LLM_DEMO_MOCK': '1'}):
+            self.assertTrue(llm_demo_mock_enabled())
+
     def test_question_override_routing(self):
         """演示问题精确覆盖表优先命中。"""
         from aiops.deepagents_engine.demo_mock_model import DemoMockChatModel
@@ -31,6 +44,67 @@ class DemoMockModelUnitTests(TestCase):
         self.assertEqual(tool, 'query_zabbix_hosts_tool')
         self.assertEqual(args['search'], 'order')
         self.assertIsNotNone(pending)
+
+    def test_question_override_routing_new_capabilities(self):
+        """新增演示问题覆盖：智能问数 / 趋势预测 / 告警统计。"""
+        from aiops.deepagents_engine.demo_mock_model import DemoMockChatModel
+
+        model = DemoMockChatModel()
+        tool, args, pending = model._build_tool_plan('生产环境 order 服务的请求量和错误率是多少')
+        self.assertEqual(tool, 'query_metrics_promql_tool')
+        self.assertIn('rate(http_requests_total', args['promql'])
+        self.assertIsNone(pending)
+
+        tool, args, _ = model._build_tool_plan('order-api-ecs-01 磁盘使用率趋势和预测')
+        self.assertEqual(tool, 'query_resource_forecast_tool')
+        self.assertEqual(args['hostname'], 'order-api-ecs-01')
+        self.assertEqual(args['metric'], 'disk')
+
+        tool, args, _ = model._build_tool_plan('统计一下本周生产环境的告警')
+        self.assertEqual(tool, 'query_alerts_tool')
+        self.assertEqual(args['date_filter'], 'week')
+
+    def test_render_metrics_chart_block(self):
+        """指标问数渲染包含结论与 ```chart 折线。"""
+        from aiops.deepagents_engine.demo_mock_model import render_answer
+
+        data = {
+            'summary': {'series_count': 1, 'source': 'prometheus_demo', 'range': True},
+            'sections': [{'title': '指标查询结果', 'items': ['http_requests_total: 120 req/s']}],
+            'promql': {
+                'result': [{'metric': {'service': 'order-service'},
+                            'values': [[1728000000.0 + i * 60, str(100 + i)] for i in range(24)]}],
+            },
+        }
+        answer = render_answer('query_metrics_promql_tool', data)
+        self.assertIn('## 结论', answer)
+        self.assertIn('```chart', answer)
+        self.assertIn('http_requests_total', answer)
+
+    def test_render_forecast_threshold_text(self):
+        """趋势预测渲染包含阈值到达时间与置信区间说明。"""
+        from aiops.deepagents_engine.demo_mock_model import render_answer
+
+        data = {
+            'summary': {
+                'hostname': 'order-api-ecs-01', 'metric_label': '磁盘使用率',
+                'current': 92.0, 'trend': '上升',
+                'threshold_eta_text': '按当前增速约 3 天后达到 95%',
+            },
+            'sections': [{'title': '预测结论', 'items': ['未来 6 小时预测：92.0% → 94.5%（置信带宽 ±1.2%）']}],
+            'chart': {
+                'type': 'line', 'title': 'order-api-ecs-01 磁盘使用率趋势与预测',
+                'categories': ['09-22 10:00', '09-22 11:00', '09-22 12:00', '09-22 13:00', '09-22 14:00'],
+                'values': [90.0, 91.0, 92.0],
+                'forecast': [92.5, 93.0],
+                'upper': [93.5, 94.0],
+                'lower': [91.5, 92.0],
+            },
+        }
+        answer = render_answer('query_resource_forecast_tool', data)
+        self.assertIn('92.0%', answer)
+        self.assertIn('3 天后达到 95%', answer)
+        self.assertIn('```chart', answer)
 
     def test_greeting_answer(self):
         """无工具路由的寒暄问题返回引导语。"""

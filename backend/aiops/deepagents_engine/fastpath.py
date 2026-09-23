@@ -92,6 +92,22 @@ FASTPATH_PATTERNS = [
         },
     },
     {
+        'name': 'resource_forecast',
+        'tool': 'query_resource_forecast_tool',
+        # 置于 host_metrics（多步、tool=None）之前，避免"磁盘什么时候满"被其拦截
+        'matcher': lambda q: (
+            _question_contains_any(q, ['趋势', '预测', '什么时候', '何时', '涨', '满', '不够用', '爆'])
+            and _question_contains_any(q, ['磁盘', '内存', 'cpu', '使用率', '容量'])
+        ),
+        'params': lambda q: {
+            'query': _strip_noise(q),
+            'hostname': _extract_hostname(q),
+            'metric': 'memory' if _question_contains_any(q, ['内存']) else ('cpu' if _question_contains_any(q, ['cpu']) else 'disk'),
+            'lookback_hours': 168 if _question_contains_any(q, ['月', '周']) else 24,
+            'horizon_hours': 12,
+        },
+    },
+    {
         'name': 'host_metrics',
         'tool': None,  # 需要两步：先查 hostid，再查指标
         'matcher': lambda q: (

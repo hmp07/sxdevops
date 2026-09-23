@@ -730,6 +730,15 @@ def _resolve_metric_datasource_client(metric_datasource_id='', environment=''):
             'metric_datasource': _metric_datasource_payload(datasource),
         }
     config = datasource.config if isinstance(datasource.config, dict) else {}
+    if config.get('demo_mode'):
+        # 演示指标数据源：走 ops.prometheus_demo 离线引擎（确定性模拟时序 + PromQL 子集）
+        return {
+            'ready': True,
+            'demo': True,
+            'source': 'prometheus_demo',
+            'description': f'{datasource.name}（离线模拟）',
+            'metric_datasource': _metric_datasource_payload(datasource),
+        }
     query_url = str(_metric_config_value(
         config,
         'query_url',
@@ -881,6 +890,13 @@ def _prometheus_query_range(client, query, start_time, end_time, step):
 
 
 def _prometheus_label_values(client, label_name, *, match_expr='', start_time=None, end_time=None, limit=2000):
+    if client.get('demo'):
+        from ops.prometheus_demo import list_label_values, list_metric_names
+        if str(label_name or '') == '__name__':
+            values = list_metric_names()
+        else:
+            values = list_label_values(str(label_name or ''))
+        return values[:limit]
     params = {}
     if match_expr:
         params['match[]'] = match_expr
@@ -1007,6 +1023,26 @@ def execute_promql_query(query, *, range_query=False, start_time=None, end_time=
     if start_dt >= end_dt:
         start_dt = end_dt - timedelta(minutes=30)
     step_seconds = _normalize_promql_step(step)
+
+    if client.get('demo'):
+        from ops.prometheus_demo import evaluate_promql
+        results = evaluate_promql(
+            query, start_dt.timestamp(), end_dt.timestamp(),
+            step_seconds, range_query=bool(range_query))
+        return {
+            'query': query,
+            'range': bool(range_query),
+            'start': start_dt.isoformat(),
+            'end': end_dt.isoformat(),
+            'step': step_seconds,
+            'source': client.get('source'),
+            'description': client.get('description'),
+            'metric_datasource': client.get('metric_datasource'),
+            'resultType': results['resultType'],
+            'result': results['result'],
+            'sample': _promql_result_sample(results['result']),
+            'series_count': len(results['result'] or []),
+        }
 
     if client.get('zabbix'):
         return _execute_zabbix_metric_query(

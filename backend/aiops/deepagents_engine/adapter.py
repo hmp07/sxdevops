@@ -20,6 +20,7 @@ from aiops.models import (
     AIOpsChatSession,
     AIOpsPendingAction,
 )
+from .demo_mock_model import llm_demo_mock_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -68,13 +69,14 @@ def dispatch_chat_deepagents(
     provider = get_active_provider(config)
 
     # -- 模型可用性检查 --
-    demo_mode = os.environ.get('SXDEVOPS_DEMO_MODE') == '1'
+    # llm_mock：离线模拟模型开关（SXDEVOPS_LLM_DEMO_MOCK 优先，回落 SXDEVOPS_DEMO_MODE）
+    llm_mock = llm_demo_mock_enabled()
     try:
         from aiops.services import _provider_is_ready
         provider_ready = _provider_is_ready(provider)
     except Exception:
         provider_ready = bool(provider)
-    if not demo_mode and not provider_ready:
+    if not llm_mock and not provider_ready:
         logger.warning("无可用 AIOpsModelProvider")
         return _build_no_model_response(session)
 
@@ -172,7 +174,7 @@ def dispatch_chat_deepagents(
     # 前端可见工具调用事件与审计记录，演示效果更完整。
     from .fastpath import fastpath_router
 
-    fastpath_tool, fastpath_params = (None, None) if demo_mode else fastpath_router(question)
+    fastpath_tool, fastpath_params = (None, None) if llm_mock else fastpath_router(question)
     fastpath_result = None
 
     if fastpath_tool:
@@ -261,8 +263,8 @@ def dispatch_chat_deepagents(
             {'messages': effective_messages},
             config=config,
         )
-        if demo_mode:
-            # 演示模式：将巡检任务类问题的待确认动作附着到结果
+        if llm_mock:
+            # 离线模拟模型：将巡检任务类问题的待确认动作附着到结果
             from .demo_mock_model import attach_demo_pending_action
             attach_demo_pending_action(result, question)
         tool_calls_data = _extract_tool_calls(result)

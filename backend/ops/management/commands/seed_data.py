@@ -25,7 +25,9 @@ from ops.models import (
     HostTaskScheduleExecution,
     HostTaskTemplate,
     K8sCluster,
+    LogDataSource,
     LogEntry,
+    MetricDataSource,
     ZabbixDataSource,
 )
 
@@ -1138,6 +1140,50 @@ class Command(BaseCommand):
         )
         return ds
 
+    def _seed_metric_demo_datasource(self):
+        """创建指标演示数据源（config.demo_mode=True 走 ops.prometheus_demo 离线引擎）。"""
+        ds, created = MetricDataSource.objects.update_or_create(
+            name='Prometheus 演示数据源',
+            defaults={
+                'provider': 'prometheus',
+                'tsdb_type': 'prometheus',
+                'environment': '',
+                'cluster_name': '',
+                'description': '离线模拟 Prometheus 指标（演示引擎）',
+                'config': {'demo_mode': True, 'demo_source': 'prometheus_demo'},
+                'is_enabled': True,
+                'is_default': True,
+            },
+        )
+        MetricDataSource.objects.exclude(id=ds.id).update(is_default=False)
+        self.stdout.write(
+            f'指标演示数据源: {"created" if created else "updated"} '
+            f'(demo_mode=True, 离线模拟时序 + PromQL 子集)'
+        )
+        return ds
+
+    def _seed_log_demo_datasources(self):
+        """启用迁移播种的演示日志源，并把 Loki 演示源设为默认。"""
+        demo_qs = LogDataSource.objects.filter(config__demo_mode=True)
+        demo_qs.update(is_enabled=True)
+        loki = demo_qs.filter(provider='loki').first()
+        if loki is None:
+            # 兜底：迁移未跑（如直接拷库），手动建一条演示源
+            loki, _ = LogDataSource.objects.update_or_create(
+                name='Loki 演示（免连接）',
+                defaults={
+                    'provider': 'loki',
+                    'description': '离线演示日志',
+                    'config': {'demo_mode': True},
+                    'is_enabled': True,
+                },
+            )
+        LogDataSource.objects.exclude(id=loki.id).update(is_default=False)
+        loki.is_default = True
+        loki.save(update_fields=['is_default'])
+        self.stdout.write(f'日志演示源: {demo_qs.count()} 个启用, 默认 {loki.name}')
+        return loki
+
     def handle(self, *args, **options):
 
         self.stdout.write('\u6b63\u5728\u6e05\u7406\u65e7\u6570\u636e...')
@@ -1441,6 +1487,8 @@ class Command(BaseCommand):
         call_command('seed_multicloud_demo')
         sync_current_deployments_to_cmdb()
         self._seed_zabbix_demo_datasource()
+        self._seed_metric_demo_datasource()
+        self._seed_log_demo_datasources()
         call_command('seed_eventwall_demo')
         call_command('seed_aiops_demo')
 

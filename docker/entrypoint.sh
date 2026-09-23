@@ -60,4 +60,13 @@ if [ "$RUN_SEED" = "1" ]; then
   touch "$SEED_MARKER" 2>/dev/null || true
 fi
 
+# 演示环境真实 LLM：配置 DEEPSEEK_API_KEY 时自动接入 DeepSeek 并默认切换真实模型。
+# SXDEVOPS_LLM_DEMO_MOCK=1 可显式强制回离线模拟模型（0 表示真实模型）。
+if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+  python manage.py provision_llm_provider
+  if [ -z "${SXDEVOPS_LLM_DEMO_MOCK:-}" ]; then
+    export SXDEVOPS_LLM_DEMO_MOCK=0
+  fi
+fi
+
 exec "$@"
