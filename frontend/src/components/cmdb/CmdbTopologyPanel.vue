@@ -222,9 +222,15 @@
         </el-form-item>
         <el-form-item :label="labels.relationType">
           <el-select v-model="relationForm.relation_type" style="width: 100%">
-            <el-option :label="labels.dependsOn" value="depends_on" />
-            <el-option :label="labels.runsOn" value="runs_on" />
-            <el-option :label="labels.connectsTo" value="connects_to" />
+            <el-option
+              v-for="rt in relationTypes"
+              :key="rt.code"
+              :label="rt.display_name || rt.name"
+              :value="rt.code"
+            >
+              <span style="float: left">{{ rt.display_name || rt.name }}</span>
+              <span style="float: right; color: #64748b; font-size: 12px">{{ rt.code }}</span>
+            </el-option>
           </el-select>
         </el-form-item>
         <el-form-item :label="labels.targetCi">
@@ -252,7 +258,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Delete, Edit, Link } from '@element-plus/icons-vue'
 import CmdbTopologyCanvas from './CmdbTopologyCanvas.vue'
-import { deleteCIRelation, createCIRelation, getCmdbTopology, getConfigItems, updateCIRelation } from '@/api/modules/cmdb'
+import { deleteCIRelation, createCIRelation, getCmdbTopology, getConfigItems, getRelationTypes, updateCIRelation } from '@/api/modules/cmdb'
 import { buildBusinessOptions, buildEnvironmentOptions, envLabel } from './useTopologyGraph'
 
 const labels = {
@@ -343,6 +349,7 @@ const topoFilterType = ref(null)
 const topologyScope = ref('neighbors')
 const topology = ref({ nodes: [], edges: [], meta: { matched_node_ids: [] } })
 const allCiList = ref([])
+const relationTypes = ref([])
 const selectedNodeId = ref(null)
 const selectedEdgeId = ref(null)
 const relationForm = ref({ source: null, target: null, relation_type: 'depends_on', description: '' })
@@ -593,7 +600,17 @@ watch(
   },
 )
 
+async function loadRelationTypes() {
+  try {
+    const response = await getRelationTypes()
+    relationTypes.value = response || []
+  } catch (error) {
+    relationTypes.value = []  // 注册表不可用时下拉回退为空，保存逻辑仍按 code 直传
+  }
+}
+
 onMounted(() => {
+  loadRelationTypes()
   if (props.canManage) {
     ensureAllCiList().catch(() => {})
   }

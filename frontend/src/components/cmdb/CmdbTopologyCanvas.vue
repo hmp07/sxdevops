@@ -832,13 +832,14 @@ function drawGraph() {
     if (!source || !target) return
 
     const emphasized = isEdgeEmphasized(edge)
-    const color = EDGE_COLORS[edge.type] || EDGE_COLORS.connects_to
+    const color = edge.color || EDGE_COLORS[edge.type] || EDGE_COLORS.connects_to
     ctx.save()
     ctx.strokeStyle = color
     ctx.globalAlpha = emphasized ? 0.88 : 0.18
     ctx.lineWidth = props.selectedEdgeId === edge.id ? 3 : 1.7
-    if (edge.type === 'connects_to') ctx.setLineDash([6, 6])
-    if (edge.type === 'runs_on') ctx.setLineDash([10, 4])
+    const lineStyle = edge.line_style || edge.type
+    if (lineStyle === 'dotted' || lineStyle === 'connects_to') ctx.setLineDash([6, 6])
+    if (lineStyle === 'dashed' || lineStyle === 'runs_on') ctx.setLineDash([10, 4])
     ctx.beginPath()
     ctx.moveTo(source.x, source.y)
     ctx.lineTo(target.x, target.y)

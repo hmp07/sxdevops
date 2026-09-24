@@ -76,6 +76,7 @@
             @input="handleFilterChange"
           />
           <el-segmented v-model="eventMode" size="small" :options="eventModeOptions" @change="refreshEvents" />
+          <el-switch v-if="eventMode === 'list'" v-model="foldDerived" size="small" active-text="折叠派生" inactive-text="全部" @change="refreshEvents" />
           <el-button size="small" :icon="Refresh" :loading="loading" @click="refreshEvents">&#x5237;&#x65B0;</el-button>
           <div class="toolbar-spacer" />
           <el-button
@@ -117,6 +118,30 @@
           <el-table-column prop="status" label="&#x72B6;&#x6001;" width="80">
             <template #default="{ row }">
               <el-tag :type="statusType(row.status)" size="small">{{ row.status_display || statusText(row.status) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column type="expand" width="36">
+            <template #default="{ row }">
+              <div v-if="row.evidence_chain?.length" class="causal-chain-panel">
+                <div class="chain-title">L1 因果证据链</div>
+                <div v-for="(item, idx) in row.evidence_chain" :key="idx" class="chain-item">
+                  规则 {{ item.rule_code || '-' }}：{{ (item.path || []).join(' → ') }} → {{ item.root_code || '-' }}
+                </div>
+              </div>
+              <div v-else class="causal-chain-panel">无 L1 因果标记</div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="alert_code" label="告警码" width="120">
+            <template #default="{ row }">
+              <el-tag v-if="row.alert_code" size="small" type="info">{{ row.alert_code }}</el-tag>
+              <span v-else>-</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="causal_level" label="因果层级" width="90">
+            <template #default="{ row }">
+              <el-tag v-if="row.causal_level === 'root'" size="small" type="danger">根因</el-tag>
+              <el-tag v-else-if="row.causal_level === 'derived'" size="small" type="warning">派生</el-tag>
+              <span v-else>-</span>
             </template>
           </el-table-column>
           <el-table-column prop="source_type" label="&#x63A5;&#x5165;" width="120">
@@ -982,6 +1007,7 @@ const filters = reactive({
 const loading = ref(false)
 const configLoading = ref(false)
 const alerts = ref([])
+const foldDerived = ref(false)
 const selectedAlerts = ref([])
 const groups = ref([])
 const summary = ref({})
@@ -1319,6 +1345,7 @@ function buildAlertParams() {
   if (filters.claimed) params.claimed = filters.claimed
   if (filters.source_type) params.source_type = filters.source_type
   if (filters.environment) params.environment = filters.environment
+  if (foldDerived.value) params.fold_derived = 1
   return params
 }
 
@@ -2574,5 +2601,19 @@ onMounted(async () => {
     min-width: 0;
     width: 100%;
   }
+}
+
+.causal-chain-panel {
+  padding: 6px 12px;
+  color: #606266;
+  font-size: 12px;
+}
+.chain-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.chain-item {
+  padding: 2px 0;
+  line-height: 1.5;
 }
 </style>

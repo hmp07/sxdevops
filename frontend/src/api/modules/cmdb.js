@@ -2,6 +2,7 @@ import request from '../request'
 
 // CI 类型
 export const getCITypes = () => request.get('/cmdb/ci-types/')
+export const getRelationTypes = () => request.get('/cmdb/ci-relation-types/')
 export const createCIType = (data) => request.post('/cmdb/ci-types/', data)
 export const updateCIType = (id, data) => request.put(`/cmdb/ci-types/${id}/`, data)
 export const deleteCIType = (id) => request.delete(`/cmdb/ci-types/${id}/`)

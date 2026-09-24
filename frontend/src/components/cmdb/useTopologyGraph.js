@@ -7,6 +7,20 @@ export const EDGE_COLORS = {
   connects_to: '#94a3b8',
 }
 
+export function edgeVisuals(relationTypes = []) {
+  // 注册表驱动的边视觉映射；无注册表数据时回退内置 EDGE_COLORS
+  const visuals = {}
+  ;(relationTypes || []).forEach(item => {
+    if (item && item.code) {
+      visuals[item.code] = {
+        color: item.color || EDGE_COLORS[item.code] || '#94a3b8',
+        line_style: item.line_style || 'solid',
+      }
+    }
+  })
+  return visuals
+}
+
 export function envLabel(env) {
   return {
     prod: '\u751f\u4ea7',
