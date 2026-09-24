@@ -276,6 +276,34 @@ class OracleDemoQuestionTests(TestCase):
         self.assertIn('TS_ORDER', text)
         self.assertIn('1 条依赖路径', text)
 
+    def test_closure_renderer_via_render_answer_accepts_question_kwarg(self):
+        # 回归：render_answer 统一以 question= 关键字调用渲染器，
+        # _render_closure 缺形参导致 TypeError → 引擎重试死循环
+        from aiops.deepagents_engine.demo_mock_model import render_answer
+
+        data = {
+            'summary': {'path_count': 1, 'node_count': 3, 'truncated': False, 'cycle_detected': False},
+            'sections': [{'title': '因果闭包（≤5 跳）', 'content': 'TS_ORDER --包含--> ts_order_01.dbf'}],
+        }
+        text = render_answer(
+            'query_knowledge_graph_closure_tool', data, question='TS_ORDER 影响哪些下游',
+        )
+        self.assertIn('TS_ORDER', text)
+        self.assertIn('1 条依赖路径', text)
+
+    def test_generic_renderer_via_render_answer_accepts_question_kwarg(self):
+        # 同类回归：_render_generic 亦经 render_answer 以 question= 调用，
+        # 缺形参同样会触发 TypeError → 引擎重试死循环
+        from aiops.deepagents_engine.demo_mock_model import render_answer
+
+        data = {
+            'summary': {'summary': '共 3 条链路'},
+            'sections': [{'title': '链路', 'items': [{'name': 'trace-1'}]}],
+        }
+        text = render_answer('query_traces_tool', data, question='查一下链路')
+        self.assertIn('共 3 条链路', text)
+        self.assertIn('trace-1', text)
+
     def test_fastpath_closure_routing(self):
         from aiops.deepagents_engine.fastpath import fastpath_router
 

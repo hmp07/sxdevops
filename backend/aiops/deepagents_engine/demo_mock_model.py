@@ -680,7 +680,7 @@ def _render_topology(data: dict, question: str = '') -> str:
     return '\n'.join(lines)
 
 
-def _render_generic(data: dict) -> str:
+def _render_generic(data: dict, question: str = '') -> str:
     summary = data.get('summary') or {}
     lines = ['## 结论', str(summary.get('summary') or summary.get('conclusion') or '查询完成。'), '## 关键证据']
     for i, item in enumerate(_first_items(data, 5), 1):
@@ -769,7 +769,7 @@ def _render_forecast(data: dict, question: str = '') -> str:
     return '\n'.join(lines)
 
 
-def _render_closure(data):
+def _render_closure(data, question: str = ''):
     """因果闭包查询渲染：结论 + 依赖路径列表。"""
     summary = data.get('summary') or {}
     sections = data.get('sections') or []
