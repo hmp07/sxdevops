@@ -10120,6 +10120,116 @@ def query_knowledge_graph(session, user_message, user, query='', environment='',
     return result
 
 
+
+def query_knowledge_graph_closure(session, user_message, user, query='', node_id='', node_name='', environment='', max_hops=5, limit=20):
+    """知识图谱因果闭包查询：返回从指定节点出发 ≤max_hops 跳的依赖/影响路径。
+
+    供 LLM 回答"X 影响哪些下游 / X 依赖哪些上游 / 因果链"类问题；节点名模糊匹配图谱节点 label。
+    """
+    started_at = time.time()
+    query = str(query or '').strip()
+    node_id = str(node_id or '').strip()
+    node_name = str(node_name or '').strip()
+    try:
+        max_hops = max(1, min(int(max_hops or 5), 5))
+        limit = max(1, min(int(limit or 20), 20))
+    except (TypeError, ValueError):
+        max_hops, limit = 5, 20
+    invocation = _create_tool_invocation(
+        session,
+        user_message,
+        'query_knowledge_graph_closure',
+        {
+            'query': query,
+            'node_id': node_id,
+            'node_name': node_name,
+            'max_hops': max_hops,
+            'limit': limit,
+        },
+    )
+    empty_result = {
+        'summary': {'path_count': 0, 'detail': 'missing_permission'},
+        'sections': [],
+        'citations': [],
+        'paths': [],
+    }
+    if not user_has_permissions(user, ['aiops.knowledge.view']):
+        _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
+        return empty_result
+
+    params = _querydict_for_knowledge_graph(environment or _extract_environment(query), '', '')
+    graph = build_knowledge_graph(params)
+    nodes = graph.get('nodes') or []
+    node_map = {node.get('id'): node for node in nodes if isinstance(node, dict)}
+
+    # 解析起点：优先 node_id，其次 node_name/query 模糊匹配节点 label
+    start_id = node_id
+    keyword = (node_name or query).lower()
+    if not start_id and keyword:
+        matches = [
+            n for n in nodes
+            if keyword and keyword in str(n.get('label') or n.get('name') or n.get('id') or '').lower()
+        ]
+        if len(matches) == 1:
+            start_id = matches[0].get('id')
+        elif len(matches) > 1:
+            start_id = matches[0].get('id')
+
+    if not start_id:
+        _finish_tool_invocation(
+            invocation, {'detail': 'node_not_found', 'keyword': keyword}, started_at, success=True)
+        return {
+            'summary': {'path_count': 0, 'error': f'未找到节点：{keyword or node_id or ""}，请提供精确的节点 ID 或名称'},
+            'sections': [{'title': '因果闭包', 'content': '知识图谱中未找到匹配节点。'}],
+            'citations': [{'title': 'AIOps 知识图谱', 'path': '/aiops/knowledge'}],
+            'paths': [],
+        }
+
+    from aiops.knowledge_graph._impl import find_graph_paths_cached
+    closure = find_graph_paths_cached(graph, start_id, max_hops=max_hops, max_paths=limit)
+    paths = closure.get('paths') or []
+
+    def node_text(node_id_value):
+        node = node_map.get(node_id_value) or {}
+        return str(node.get('label') or node.get('name') or node_id_value)
+
+    path_lines = []
+    for path in paths[:limit]:
+        if not path:
+            continue
+        first_src = path[0].get('source')
+        parts = [node_text(first_src)]
+        for edge in path:
+            parts.append(f" --{edge.get('label') or '关联'}--> {node_text(edge.get('target'))}")
+        path_lines.append(''.join(parts))
+
+    sections = [{
+        'title': f'因果闭包（≤{max_hops} 跳）',
+        'content': '\n'.join(path_lines) if path_lines else f'起点「{node_text(start_id)}」无出边。',
+    }]
+    if closure.get('truncated'):
+        sections.append({'title': '结果截断', 'content': '路径数或深度超过上限，结果已截断。'})
+    if closure.get('cycle_detected'):
+        sections.append({'title': '环路提示', 'content': '依赖图中存在环，已按环检测剪枝。'})
+
+    summary = {
+        'path_count': len(paths),
+        'node_count': len(closure.get('node_ids') or []),
+        'start_node': node_text(start_id),
+        'truncated': bool(closure.get('truncated')),
+        'cycle_detected': bool(closure.get('cycle_detected')),
+    }
+    _finish_tool_invocation(invocation, {'path_count': len(paths), 'start': start_id}, started_at, success=True)
+    return {
+        'summary': summary,
+        'sections': sections,
+        'citations': [{'title': 'AIOps 知识图谱', 'path': '/aiops/knowledge'}],
+        'paths': paths,
+        'node_ids': closure.get('node_ids') or [],
+    }
+
+
+
 def query_cmdb_items(session, user_message, user, query='', environment='', limit=6):
     started_at = time.time()
     tokens = _clean_cmdb_query_tokens(query)

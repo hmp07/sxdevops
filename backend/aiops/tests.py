@@ -9403,3 +9403,163 @@ class ProvisionLLMProviderTests(TestCase):
         AIOpsModelProvider.objects.all().delete()
         with _patch('aiops.deepagents_engine.agent._default_model', return_value='anthropic:claude-test'):
             self.assertEqual(resolve_model_from_provider(), 'anthropic:claude-test')
+
+
+class KnowledgeGraphClosureTests(TestCase):
+    """知识图谱因果闭包 find_graph_paths：深度截断、环检测、分支熔断、缓存。"""
+
+    def _graph(self, edges, nodes=None):
+        node_ids = set()
+        for e in edges:
+            node_ids.add(e['source'])
+            node_ids.add(e['target'])
+        return {
+            'nodes': [{'id': n, 'label': n} for n in sorted(node_ids)],
+            'edges': edges,
+        }
+
+    def _chain(self, n_nodes):
+        """A -> B -> C ... 共 n_nodes 个节点（n_nodes-1 条边）。"""
+        names = [chr(ord('A') + i) for i in range(n_nodes)]
+        return [{'source': names[i], 'target': names[i + 1], 'relation': 'depends_on',
+                 'label': '依赖'} for i in range(n_nodes - 1)], names
+
+    def test_full_chain_within_max_hops(self):
+        from aiops.knowledge_graph._impl import find_graph_paths
+
+        edges, names = self._chain(6)
+        result = find_graph_paths(self._graph(edges), 'A', max_hops=5, max_paths=20)
+        self.assertFalse(result['truncated'])
+        self.assertFalse(result['cycle_detected'])
+        self.assertEqual(len(result['paths']), 1)
+        self.assertEqual(len(result['paths'][0]), 5)
+        self.assertEqual(result['paths'][0][-1]['target'], names[5])
+
+    def test_chain_beyond_max_hops_truncated(self):
+        from aiops.knowledge_graph._impl import find_graph_paths
+
+        edges, names = self._chain(8)
+        result = find_graph_paths(self._graph(edges), 'A', max_hops=5, max_paths=20)
+        self.assertTrue(result['truncated'])
+        self.assertEqual(len(result['paths'][0]), 5, '超过跳数的部分应被截断')
+
+    def test_cycle_detected_without_infinite_loop(self):
+        from aiops.knowledge_graph._impl import find_graph_paths
+
+        edges = [
+            {'source': 'A', 'target': 'B', 'relation': 'depends_on', 'label': '依赖'},
+            {'source': 'B', 'target': 'C', 'relation': 'depends_on', 'label': '依赖'},
+            {'source': 'C', 'target': 'A', 'relation': 'depends_on', 'label': '依赖'},
+        ]
+        result = find_graph_paths(self._graph(edges), 'A', max_hops=5, max_paths=20)
+        self.assertTrue(result['cycle_detected'])
+        self.assertTrue(result['paths'], '环内路径应被记录')
+
+    def test_branch_explosion_truncated_at_max_paths(self):
+        from aiops.knowledge_graph._impl import find_graph_paths
+
+        edges = []
+        for i in range(30):
+            edges.append({'source': 'A', 'target': f'N{i}', 'relation': 'connects_to', 'label': '连接'})
+        result = find_graph_paths(self._graph(edges), 'A', max_hops=5, max_paths=20)
+        self.assertTrue(result['truncated'])
+        self.assertLessEqual(len(result['paths']), 20)
+
+    def test_cached_wrapper_returns_same_result(self):
+        from unittest import mock
+        from django.core.cache import cache
+        from aiops.knowledge_graph import _impl
+
+        edges, _ = self._chain(4)
+        graph = self._graph(edges)
+        cache.clear()
+
+        inner = _impl.find_graph_paths
+        with mock.patch.object(_impl, '_cache_enabled', return_value=True):
+            with mock.patch.object(_impl, 'find_graph_paths', wraps=inner) as spied:
+                first = _impl.find_graph_paths_cached(graph, 'A', max_hops=3, max_paths=10)
+                second = _impl.find_graph_paths_cached(graph, 'A', max_hops=3, max_paths=10)
+        self.assertEqual(first, second)
+        self.assertEqual(spied.call_count, 1, '相同入参第二次应命中缓存')
+
+
+class KnowledgeGraphClosureServiceTests(TestCase):
+    """query_knowledge_graph_closure 服务：权限、节点解析、结构、CMDB 类型化边。"""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.admin = get_user_model().objects.create_superuser('closure-admin', 'a@example.com', 'Admin@123456')
+        self.limited = get_user_model().objects.create_user('closure-limited', 'b@example.com', 'User@123456')
+        from aiops.models import AIOpsChatSession
+        self.session = AIOpsChatSession.objects.create(user=self.admin, title='闭包测试会话')
+
+    def _synthetic_graph(self):
+        return {
+            'nodes': [
+                {'id': 'A', 'label': '应用A'},
+                {'id': 'B', 'label': '数据库B'},
+                {'id': 'C', 'label': '主机C'},
+            ],
+            'edges': [
+                {'id': 'e1', 'source': 'A', 'target': 'B', 'label': '依赖', 'relation': 'cmdb_relation:depends_on', 'weight': 1},
+                {'id': 'e2', 'source': 'B', 'target': 'C', 'label': '承载于', 'relation': 'cmdb_relation:hosted_on', 'weight': 1},
+            ],
+        }
+
+    def test_denied_without_permission(self):
+        from aiops.services import query_knowledge_graph_closure
+        result = query_knowledge_graph_closure(
+            self.session, None, self.limited, node_id='A')
+        self.assertEqual(result, {'summary': {'path_count': 0, 'detail': 'missing_permission'}, 'sections': [], 'citations': [], 'paths': []})
+
+    def test_node_not_found_hint(self):
+        from aiops.services import query_knowledge_graph_closure
+        result = query_knowledge_graph_closure(
+            self.session, None, self.admin, node_name='no-such-node-xyz')
+        self.assertIn('未找到节点', result['summary'].get('error', ''))
+
+    def test_returns_paths_and_sections(self):
+        from unittest import mock
+        from aiops.services import query_knowledge_graph_closure
+        graph = self._synthetic_graph()
+        with mock.patch('aiops.services.build_knowledge_graph', return_value=graph):
+            result = query_knowledge_graph_closure(
+                self.session, None, self.admin, node_id='A')
+        self.assertEqual(result['summary']['path_count'], 1)
+        self.assertEqual(result['summary']['node_count'], 3)
+        self.assertTrue(result['paths'])
+        self.assertTrue(any('因果闭包' in s.get('title', '') for s in result['sections']))
+        content = result['sections'][0]['content']
+        self.assertIn('应用A', content)
+        self.assertIn('数据库B', content)
+        self.assertIn('主机C', content)
+
+    def test_cmdb_edges_typed_by_relation_registry(self):
+        from cmdb.models import CIType, CIRelation, ConfigItem, RelationType
+        from aiops.models import AIOpsKnowledgeEnvironment
+
+        app_type = CIType.objects.create(name='应用方案')
+        host_type = CIType.objects.create(name='云主机(ECS)')
+        app_ci = ConfigItem.objects.create(
+            name='pay-app', ci_type=app_type, business_line='core', environment='closure-env',
+            status='active', attributes={})
+        host_ci = ConfigItem.objects.create(
+            name='pay-db-host', ci_type=host_type, business_line='core', environment='closure-env',
+            status='active', attributes={'ip_address': '10.0.0.9'})
+        CIRelation.objects.create(
+            source=app_ci, target=host_ci, relation_type_id='contains',
+            description='实例包含')
+        RelationType.objects.filter(code='contains').update(display_name='包含')
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='closure-env', is_enabled=True, created_by='aiops_user', updated_by='aiops_user')
+
+        from rest_framework.test import APIClient
+        client = APIClient()
+        client.force_login(self.admin)
+        response = client.get('/api/aiops/knowledge-graph/', {'environment': 'closure-env'})
+        self.assertEqual(response.status_code, 200)
+        edges = response.data['edges']
+        typed = [e for e in edges if e.get('relation_code') == 'cmdb_relation:contains'
+                 or e.get('relation', '').startswith('cmdb_relation') and e.get('label') == '包含']
+        self.assertTrue(typed, f'未找到类型化 CMDB 边，现有边: {[e.get("relation") for e in edges]}')

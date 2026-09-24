@@ -1710,6 +1710,7 @@ def build_knowledge_graph(params=None):
     })
 
     def add_node(node_id, label, kind, category='', route='', status='', metric=0, description='', **extra):
+
         existing = nodes.get(node_id)
         if existing:
             existing['metric'] = max(existing.get('metric') or 0, metric or 0)
@@ -1732,14 +1733,14 @@ def build_knowledge_graph(params=None):
         }
         return nodes[node_id]
 
-    def add_edge(source, target, label, relation='related', weight=1):
+    def add_edge(source, target, label, relation='related', weight=1, extra=None):
         if not source or not target or source == target:
             return
         edge_id = f'{source}->{target}:{relation}:{label}'
         if edge_id in edges:
             edges[edge_id]['weight'] += weight
             return
-        edges[edge_id] = {
+        edge = {
             'id': edge_id,
             'source': source,
             'target': target,
@@ -1747,6 +1748,9 @@ def build_knowledge_graph(params=None):
             'relation': relation,
             'weight': weight,
         }
+        if extra:
+            edge.update(extra)
+        edges[edge_id] = edge
 
     def add_capability_context(capability, system_name='', environment='', service='', count=1, example=''):
         system_name = _clean(system_name, UNKNOWN_SYSTEM)
@@ -2648,6 +2652,7 @@ def build_knowledge_graph(params=None):
 
     if _cmdb_enabled:
         _cmdb_ci_covered = set(_cmdb_mapping_by_ci_id.keys())  # 已有 Zabbix 映射的 CI，不重复创建主机节点
+
         # 默认环境节点名（CI 自身未标环境时回退到筛选环境；均无则不建环境边）
         _default_env_name = _clean(next(iter(selected_env))) if selected_env else ''
 
@@ -2656,7 +2661,9 @@ def build_knowledge_graph(params=None):
             is_itop_ci = ci_id in _cmdb_itop_ci_ids
             bl = _cmdb_business_line.get(ci_id, ci.business_line or '') if is_itop_ci else (ci.business_line or '')
 
+
             # -- ApplicationSolution → system 节点 --
+
             if ci_type_name == '应用方案':
                 node_id = _node_key('cmdb_system', ci.name)
                 if node_id not in nodes:
@@ -2748,11 +2755,11 @@ def build_knowledge_graph(params=None):
                     if env_name:
                         add_edge(_node_key('environment', env_name), node_id, '孤立主机', 'environment_infrastructure')
 
-        # -- 加载 CIRelation 作为图谱边 --
+        # -- 加载 CIRelation 作为图谱边（关系类型注册表驱动：display_name/颜色/线型） --
         ci_ids = set(_cmdb_ci_lookup.keys())
         for rel in CIRelation.objects.filter(
             source_id__in=ci_ids, target_id__in=ci_ids
-        ).select_related('source', 'target'):
+        ).select_related('source', 'target', 'relation_type'):
             src_ci = _cmdb_ci_lookup.get(rel.source_id)
             tgt_ci = _cmdb_ci_lookup.get(rel.target_id)
             if not src_ci or not tgt_ci:
@@ -2764,12 +2771,18 @@ def build_knowledge_graph(params=None):
                 # 区分基础设施关系 vs 业务关系
                 src_is_infra = _is_infra_ci(src_ci)
                 tgt_is_infra = _is_infra_ci(tgt_ci)
-                if src_is_infra and tgt_is_infra:
-                    # 基础设施层：物理设备之间的拓扑
-                    add_edge(src_node_id, tgt_node_id, rel.relation_type_id, 'infrastructure_relation')
-                else:
-                    # 业务层：系统/服务/组件之间的依赖
-                    add_edge(src_node_id, tgt_node_id, rel.relation_type_id, 'cmdb_relation')
+                rt = rel.relation_type
+                label = (rt.display_name or rt.name) if rt else rel.relation_type_id
+                big_cat = 'infrastructure_relation' if (src_is_infra and tgt_is_infra) else 'cmdb_relation'
+                relation_code = f'{big_cat}:{rel.relation_type_id}' if rel.relation_type_id else big_cat
+                extra = {}
+                if rt:
+                    extra = {
+                        'relation_code': relation_code,
+                        'color': rt.color,
+                        'line_style': rt.line_style,
+                    }
+                add_edge(src_node_id, tgt_node_id, label, relation_code, extra=extra)
 
     # === 连接 Zabbix infrastructure → CMDB system 边 ===
     if _cmdb_enabled and _cmdb_system_nodes:
@@ -3312,6 +3325,7 @@ def build_knowledge_graph(params=None):
                     if str(endpoint or '').startswith('capability:'):
                         visible_capability_ids.add(endpoint)
 
+
     filtered_nodes = sorted(
         [
             node for node in nodes.values()
@@ -3398,4 +3412,79 @@ def build_knowledge_graph(params=None):
         ],
     }
     _cache_set(cache_key, result, GRAPH_RESPONSE_CACHE_TTL)
+    return result
+
+
+def find_graph_paths(graph, start_id, max_hops=5, max_paths=20):
+    """从 start_id 出发做 ≤max_hops 深度优先遍历，返回因果路径闭包。
+
+    入参 graph 为 build_knowledge_graph 的结果结构（nodes/edges）。
+    返回 {'paths': [[edge, ...]], 'node_ids': [...], 'truncated': bool, 'cycle_detected': bool}
+    - 路径内节点重复（回边）即剪枝并标记 cycle_detected（环路安全）
+    - 到达 max_hops 仍存在未遍历分支、或路径总数达到 max_paths 时 truncated=True（熔断）
+    """
+    adjacency = defaultdict(list)
+    for e in (graph.get('edges') or []):
+        src = e.get('source')
+        if src:
+            adjacency[src].append(e)
+
+    paths = []
+    node_ids = set()
+    truncated = False
+    cycle_detected = False
+
+    def record(path_edges):
+        if not path_edges:
+            return
+        paths.append(path_edges)
+        node_ids.update(e['source'] for e in path_edges)
+        node_ids.add(path_edges[-1]['target'])
+
+    def walk(node, path_edges, visited):
+        nonlocal truncated, cycle_detected
+        if len(paths) >= max_paths:
+            truncated = True
+            return
+        outgoing = adjacency.get(node, [])
+        unvisited = [e for e in outgoing if e.get('target') not in visited]
+        if len(unvisited) != len(outgoing):
+            cycle_detected = True
+        if not outgoing or not unvisited:
+            record(path_edges)
+            return
+        if len(path_edges) >= max_hops:
+            record(path_edges)
+            truncated = True
+            return
+        for e in unvisited:
+            nxt = e.get('target')
+            walk(nxt, path_edges + [e], visited | {nxt})
+
+    walk(start_id, [], {start_id})
+    if not node_ids:
+        node_ids = {start_id}
+    return {
+        'paths': paths,
+        'node_ids': sorted(node_ids),
+        'truncated': truncated,
+        'cycle_detected': cycle_detected,
+    }
+
+
+def find_graph_paths_cached(graph, start_id, max_hops=5, max_paths=20):
+    """find_graph_paths 的缓存包装：键 = aiops:kg:closure:{md5(边集+起点+参数)}，TTL 复用图谱缓存。"""
+    edges = sorted(
+        ((e.get('source'), e.get('target'), e.get('relation')) for e in (graph.get('edges') or [])),
+    )
+    payload = json.dumps(
+        {'edges': edges, 'start': start_id, 'hops': max_hops, 'paths': max_paths},
+        ensure_ascii=False, sort_keys=True,
+    )
+    key = f'aiops:kg:closure:{hashlib.md5(payload.encode("utf-8")).hexdigest()}'
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    result = find_graph_paths(graph, start_id, max_hops=max_hops, max_paths=max_paths)
+    _cache_set(key, result, GRAPH_RESPONSE_CACHE_TTL)
     return result
