@@ -912,3 +912,113 @@ class OracleCITypeSeedTests(TestCase):
         for name in ['存储系统', '存储卷', 'Oracle监听', 'Oracle实例', '表空间', '数据文件', '归档日志']:
             self.assertEqual(normalize_ci_type_name(name), name)
             self.assertFalse(is_placeholder_ci_type_name(name))
+
+
+class iTopRelationSyncTests(TestCase):
+    """itop_sync.sync_relations 引擎级测试（mock _call_itop_api）。"""
+
+    def setUp(self):
+        from unittest import mock
+        from cmdb.itop_sync import sync_relations
+
+        self.mock = mock
+        self.sync_relations = sync_relations
+        self.server_type = CIType.objects.create(name='Server')
+        self.app_type = CIType.objects.create(name='ApplicationSolution')
+        self.group_type = CIType.objects.create(name='Group')
+        self.ds = None
+        # iTopDataSource 需要密码字段，直接建
+        from .models import iTopDataSource
+        self.ds = iTopDataSource.objects.create(
+            name='itop-rel-test', api_url='http://itop.example/rest.php',
+            auth_user='u', auth_password='p',
+            config={'ci_class_map': {'Server': 'Server', 'ApplicationSolution': 'ApplicationSolution',
+                                     'Group': 'Group'}},
+        )
+        self.server1 = ConfigItem.objects.create(
+            name='srv-1', ci_type=self.server_type, external_id='itop:Server:1', itop_datasource=self.ds)
+        self.server2 = ConfigItem.objects.create(
+            name='srv-2', ci_type=self.server_type, external_id='itop:Server:2', itop_datasource=self.ds)
+        self.group1 = ConfigItem.objects.create(
+            name='grp-1', ci_type=self.group_type, external_id='itop:Group:1', itop_datasource=self.ds)
+
+    def _mock_itop(self, relation_returns):
+        """core/get 返回 Server::1；core/get_related 按 relation 名返回给定结果。"""
+        import json
+
+        def side_effect(ds, payload):
+            data = json.loads(payload)
+            op = data.get('operation')
+            if op == 'core/get_related':
+                rel_name = data.get('relation')
+                payload_direction = data.get('direction')
+                return {'code': 0, 'relations': relation_returns.get(
+                    (rel_name, payload_direction), {})}
+            if op == 'core/get':
+                return {'code': 0, 'objects': {'Server::1': {'key': '1'}}}
+            return {'code': 1, 'message': 'unexpected op'}
+
+        patch = self.mock.patch('cmdb.itop_sync._call_itop_api', side_effect=side_effect)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return side_effect
+
+    def test_lnk_relation_mapped_to_registry_code(self):
+        self._mock_itop({('impacts', 'down'): {'Server::1': [{'key': 'Server::2'}]}})
+        self.ds.config['ci_classes'] = ['Server']
+        self.ds.config['relation_types'] = ['impacts']
+        self.ds.save()
+
+        stats = self.sync_relations(self.ds)
+        self.assertEqual(stats['created'], 1)
+        rel = CIRelation.objects.get(source=self.server1, target=self.server2)
+        self.assertEqual(rel.relation_type_id, 'depends_on')
+
+    def test_dict_config_direction_up_swaps_source_target(self):
+        self._mock_itop({('impacts', 'up'): {'Server::1': [{'key': 'Server::2'}]}})
+        self.ds.config['ci_classes'] = ['Server']
+        self.ds.config['relation_types'] = {'impacts': {'code': 'depends_on', 'direction': 'up'}}
+        self.ds.save()
+
+        self.sync_relations(self.ds)
+        rel = CIRelation.objects.get(source=self.server2, target=self.server1)
+        self.assertEqual(rel.relation_type_id, 'depends_on')
+
+    def test_attributes_mode_writes_owner_attribute(self):
+        self._mock_itop({('lnkGroupToCI', 'down'): {'Server::1': [{'key': 'Group::1'}]}})
+        self.ds.config['ci_classes'] = ['Server']
+        self.ds.config['relation_types'] = {'lnkGroupToCI': {
+            'code': 'depends_on', 'direction': 'down', 'mode': 'attributes', 'attribute': 'owner_group',
+        }}
+        self.ds.save()
+
+        self.sync_relations(self.ds)
+        self.assertFalse(CIRelation.objects.filter(source=self.server1).exists())
+        self.server1.refresh_from_db()
+        self.assertIn('Group::1', self.server1.attributes.get('owner_group', []))
+
+    def test_cleanup_disabled_by_default_and_enabled_removes_stale(self):
+        stale = CIRelation.objects.create(
+            source=self.server1, target=self.server2, relation_type_id='depends_on')
+        self._mock_itop({('impacts', 'down'): {}})
+        self.ds.config['ci_classes'] = ['Server']
+        self.ds.config['relation_types'] = ['impacts']
+        self.ds.save()
+
+        # 默认不清理：iTop 已消失的关系保留
+        self.sync_relations(self.ds)
+        self.assertTrue(CIRelation.objects.filter(id=stale.id).exists())
+
+        # 开启清理：消失关系被删除并计数
+        self.ds.config['relation_cleanup'] = True
+        self.ds.save()
+        stats = self.sync_relations(self.ds)
+        self.assertFalse(CIRelation.objects.filter(id=stale.id).exists())
+        self.assertEqual(stats['removed'], 1)
+
+    def test_relation_map_covers_all_lnk_classes(self):
+        from cmdb.itop_sync import ITOP_LNK_CLASSES, ITOP_RELATION_MAP
+
+        self.assertEqual(len(ITOP_LNK_CLASSES), 13)
+        missing = set(ITOP_LNK_CLASSES) - set(ITOP_RELATION_MAP.keys())
+        self.assertFalse(missing, f'映射表缺少: {missing}')

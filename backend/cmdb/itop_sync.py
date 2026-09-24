@@ -32,6 +32,59 @@ TICKET_TYPE_MAP = {
     'Problem': TransactionTicket.TYPE_INCIDENT,
 }
 
+# iTop 3.0.4 itop-config-mgmt 数据模型全部 lnk 关系类（盘点清单，映射完整性由测试锁死）
+# 来源：Combodo/iTop tag 3.0.4 datamodels/2.x/itop-config-mgmt/datamodel.itop-config-mgmt.xml
+ITOP_LNK_CLASSES = [
+    'lnkApplicationSolutionToFunctionalCI',
+    'lnkApplicationSolutionToBusinessProcess',
+    'lnkConnectableCIToNetworkDevice',
+    'lnkSubnetToVLAN',
+    'lnkPhysicalInterfaceToVLAN',
+    'lnkGroupToCI',
+    'lnkContactToFunctionalCI',
+    'lnkDocumentToFunctionalCI',
+    'lnkDocumentToSoftware',
+    'lnkDocumentToLicence',
+    'lnkDocumentToPatch',
+    'lnkSoftwareInstanceToSoftwarePatch',
+    'lnkFunctionalCIToOSPatch',
+]
+
+# iTop 关系名 → 平台落点映射（V2.0 本体属性映射）
+#   code: CIRelation 注册表关系码（RelationType.code）
+#   direction: get_related 方向；'up' 表示返回上游，写 CIRelation 时交换 source/target
+#   mode: relation=建 CIRelation；attributes=写 ConfigItem.attributes[attribute]；skip=不建模（最小本体）
+# LinkedSet 关系（DBServer.dbschema_list 等）经 core/get 属性读取，暂不在 sync_relations 拉取路径，
+#   映射见 ITOP_LINKSET_MAP（供后续扩展与文档对照）
+ITOP_RELATION_MAP = {
+    # 通用虚拟关系（core/get_related 聚合关系）
+    'impacts': {'code': 'depends_on', 'direction': 'down', 'mode': 'relation'},
+    'depends on': {'code': 'depends_on', 'direction': 'up', 'mode': 'relation'},
+    # lnk 关系类
+    'lnkApplicationSolutionToFunctionalCI': {'code': 'depends_on', 'direction': 'down', 'mode': 'relation'},
+    'lnkApplicationSolutionToBusinessProcess': {'code': 'depends_on', 'direction': 'down', 'mode': 'relation'},
+    'lnkConnectableCIToNetworkDevice': {'code': 'connects_to', 'direction': 'down', 'mode': 'relation'},
+    'lnkSubnetToVLAN': {'code': 'connects_to', 'direction': 'down', 'mode': 'relation'},
+    'lnkPhysicalInterfaceToVLAN': {'code': 'connects_to', 'direction': 'down', 'mode': 'relation'},
+    'lnkGroupToCI': {'code': 'depends_on', 'direction': 'down', 'mode': 'attributes', 'attribute': 'owner_group'},
+    'lnkContactToFunctionalCI': {'code': 'depends_on', 'direction': 'down', 'mode': 'attributes', 'attribute': 'owner_contact'},
+    'lnkDocumentToFunctionalCI': {'code': 'depends_on', 'direction': 'down', 'mode': 'attributes', 'attribute': 'document_refs'},
+    'lnkDocumentToSoftware': {'code': 'connects_to', 'direction': 'down', 'mode': 'skip'},
+    'lnkDocumentToLicence': {'code': 'connects_to', 'direction': 'down', 'mode': 'skip'},
+    'lnkDocumentToPatch': {'code': 'connects_to', 'direction': 'down', 'mode': 'skip'},
+    'lnkSoftwareInstanceToSoftwarePatch': {'code': 'connects_to', 'direction': 'down', 'mode': 'skip'},
+    'lnkFunctionalCIToOSPatch': {'code': 'connects_to', 'direction': 'down', 'mode': 'skip'},
+}
+
+# LinkedSet 链接集映射（n-n 属性实现，经 core/get 读取；本期仅落映射常量供文档对照）
+ITOP_LINKSET_MAP = {
+    'DBServer.dbschema_list': {'code': 'contains', 'direction': 'down', 'mode': 'relation'},
+    'WebServer.webapp_list': {'code': 'depends_on', 'direction': 'down', 'mode': 'relation'},
+    'Middleware.middlewareinstance_list': {'code': 'hosted_on', 'direction': 'down', 'mode': 'relation'},
+    'VirtualizationSystem.virtualmachines_list': {'code': 'hosted_on', 'direction': 'down', 'mode': 'relation'},
+    'ConnectableCI.physicalinterface_list': {'code': 'connects_to', 'direction': 'down', 'mode': 'attributes', 'attribute': 'interfaces'},
+}
+
 
 def _call_itop_api(ds, json_data, timeout=60):
     """调用 iTop REST API（同步引擎独立实现，不依赖 MCP Server）"""
@@ -146,11 +199,25 @@ def sync_cis(ds):
 
 
 def sync_relations(ds):
-    """同步 CI 关系 → CIRelation"""
+    """同步 CI 关系 → CIRelation（映射表驱动：ITOP_RELATION_MAP）。
+
+    ds.config 支持：
+      relation_types: str 列表（旧形态，兼容）或 {iTop关系名: {code, direction, mode, attribute}} dict
+      relation_cleanup: True 时删除 iTop 已消失的本地关系（默认关）
+    """
     class_map = ds.config.get('ci_class_map', DEFAULT_CI_CLASS_MAP) if ds.config else DEFAULT_CI_CLASS_MAP
     ci_classes = ds.config.get('ci_classes', list(class_map.keys())) if ds.config else list(class_map.keys())
-    relation_types = ds.config.get('relation_types', ['impacts']) if ds.config else ['impacts']
-    stats = {'created': 0, 'skipped': 0}
+    raw_relation_types = ds.config.get('relation_types', list(ITOP_RELATION_MAP.keys())) if ds.config else list(ITOP_RELATION_MAP.keys())
+    stats = {'created': 0, 'skipped': 0, 'removed': 0}
+    seen_relation_ids = []
+
+    # 归一化：str 列表 → 按映射表展开为 spec dict
+    relation_specs = {}
+    if isinstance(raw_relation_types, dict):
+        relation_specs = dict(raw_relation_types)
+    else:
+        for rel_name in raw_relation_types:
+            relation_specs[rel_name] = dict(ITOP_RELATION_MAP.get(rel_name, {}))
 
     for itop_class in ci_classes:
         result = _call_itop_api(ds, '{"operation":"core/get","class":"%s","key":"SELECT %s","output_fields":"id"}' % (
@@ -163,53 +230,67 @@ def sync_relations(ds):
             obj_id = obj.get('key')
             if not obj_id:
                 continue
-            for rel_type in relation_types:
+            for rel_name, spec in relation_specs.items():
+                mode = spec.get('mode', 'relation')
+                if mode == 'skip':
+                    continue
+                direction = spec.get('direction', 'down')
                 rel_result = _call_itop_api(ds,
-                    '{"operation":"core/get_related","class":"%s","key":%s,"relation":"%s","depth":1,"direction":"down"}' % (
-                        itop_class, obj_id, rel_type
+                    '{"operation":"core/get_related","class":"%s","key":%s,"relation":"%s","depth":1,"direction":"%s"}' % (
+                        itop_class, obj_id, rel_name, direction
                     ))
                 if rel_result.get('code') != 0:
                     continue
                 relations = rel_result.get('relations') or {}
                 if isinstance(relations, list):
                     # iTop returns relations as a flat list; treat source==obj, target from list
-                    for rel in relations:
-                        src_key = key
-                        src_ci = _ensure_ci_from_itop(src_key, ds)
-                        if not src_ci:
-                            continue
-                        tgt_key = rel.get('key', '')
+                    relations = {key: relations}
+                for src_key, targets in relations.items():
+                    src_ci = _ensure_ci_from_itop(src_key, ds)
+                    if not src_ci:
+                        continue
+                    for target in (targets if isinstance(targets, list) else [targets]):
+                        tgt_key = target.get('key', '')
                         tgt_ci = _ensure_ci_from_itop(tgt_key, ds)
                         if not tgt_ci:
                             continue
-                        _, created = CIRelation.objects.get_or_create(
-                            source=src_ci,
-                            target=tgt_ci,
-                            relation_type_id=_map_relation_type(rel_type),
+                        if mode == 'attributes':
+                            # 数据属性模式：负责人/联系人/接口清单等，写入 ConfigItem.attributes
+                            attribute = spec.get('attribute', 'related_refs')
+                            refs = list(src_ci.attributes.get(attribute) or [])
+                            if tgt_key not in refs:
+                                refs.append(tgt_key)
+                                src_ci.attributes[attribute] = refs
+                                src_ci.save(update_fields=['attributes'])
+                                stats['created'] += 1
+                            else:
+                                stats['skipped'] += 1
+                            continue
+                        code = spec.get('code') or _map_relation_type(rel_name)
+                        # direction=up 表示 iTop 返回的是上游（被依赖方）→ 上游影响本对象，交换方向
+                        if direction == 'up':
+                            source_ci, target_ci = tgt_ci, src_ci
+                        else:
+                            source_ci, target_ci = src_ci, tgt_ci
+                        rel, created = CIRelation.objects.get_or_create(
+                            source=source_ci,
+                            target=target_ci,
+                            relation_type_id=code,
                         )
+                        seen_relation_ids.append(rel.id)
                         if created:
                             stats['created'] += 1
                         else:
                             stats['skipped'] += 1
-                else:
-                    for src_key, targets in relations.items():
-                        src_ci = _ensure_ci_from_itop(src_key, ds)
-                        if not src_ci:
-                            continue
-                        for target in (targets if isinstance(targets, list) else [targets]):
-                            tgt_key = target.get('key', '')
-                            tgt_ci = _ensure_ci_from_itop(tgt_key, ds)
-                            if not tgt_ci:
-                                continue
-                            _, created = CIRelation.objects.get_or_create(
-                                source=src_ci,
-                                target=tgt_ci,
-                                relation_type_id=_map_relation_type(rel_type),
-                            )
-                            if created:
-                                stats['created'] += 1
-                            else:
-                                stats['skipped'] += 1
+
+    # 清理 iTop 已消失的关系（默认关；仅影响两端均属本数据源的 CIRelation）
+    if ds.config.get('relation_cleanup'):
+        stale_qs = CIRelation.objects.filter(
+            source__itop_datasource=ds,
+            target__itop_datasource=ds,
+        ).exclude(id__in=seen_relation_ids)
+        stats['removed'] = stale_qs.count()
+        stale_qs.delete()
 
     return stats
 
