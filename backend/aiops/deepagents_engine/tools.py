@@ -188,6 +188,41 @@ def query_alerts_tool(
 
 
 @tool
+def query_knowledge_graph_closure_tool(
+    query: str = "",
+    node_id: str = "",
+    node_name: str = "",
+    environment: str = "",
+    max_hops: int = 5,
+    limit: int = 20,
+    config: RunnableConfig = None,
+) -> str:
+    """查询知识图谱因果闭包：从指定节点出发，返回 ≤5 跳的依赖/影响路径。
+
+    用于：回答某资源影响哪些下游、依赖哪些上游、依赖链路/因果链类问题。
+    需要指定 node_id 或 node_name（或由 query 关键词模糊匹配节点名）。
+
+    Args:
+        query: 节点名关键词（与 node_name 二选一即可）
+        node_id: 图谱节点 ID
+        node_name: 节点名称
+        environment: 环境过滤
+        max_hops: 最大跳数，默认 5
+        limit: 路径数量上限，默认 20
+    """
+    close_old_connections()
+    from aiops.tools import query_knowledge_graph_closure as _impl
+    user = _get_user_from_config(config)
+    session = _get_session_from_config(config)
+    result = _impl(
+        session, None, user,
+        query=query, node_id=node_id, node_name=node_name,
+        environment=environment, max_hops=max_hops, limit=limit,
+    )
+    return _safe_json(result)
+
+
+@tool
 def query_knowledge_graph_tool(
     query: str = "",
     environment: str = "",
@@ -720,6 +755,7 @@ SXDEVOPS_TOOLS = [
     # P0 — 最常用
     query_alerts_tool,
     query_knowledge_graph_tool,
+    query_knowledge_graph_closure_tool,
     query_cmdb_items_tool,
     query_zabbix_hosts_tool,
     query_zabbix_problems_tool,

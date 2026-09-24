@@ -17,7 +17,7 @@ from .alerts import query_alerts, query_alert_root_cause, query_alert_metrics
 from .changes import query_recent_changes, query_device_detail
 from .cmdb import query_cmdb_items, query_cmdb_topology
 from .infrastructure import query_k8s_cluster_summary
-from .knowledge import query_knowledge_graph
+from .knowledge import query_knowledge_graph, query_knowledge_graph_closure
 from .observability import query_logs, query_metrics_promql, query_resource_forecast, query_traces
 from .registry import TOOL_REGISTRY, get_tool_by_handler, list_tool_handlers
 from .zabbix import (
@@ -40,6 +40,7 @@ __all__ = [
     'query_device_detail',
     'query_k8s_cluster_summary',
     'query_knowledge_graph',
+    'query_knowledge_graph_closure',
     'query_logs',
     'query_metrics_promql',
     'query_recent_changes',

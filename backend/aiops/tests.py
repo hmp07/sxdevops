@@ -9563,3 +9563,67 @@ class KnowledgeGraphClosureServiceTests(TestCase):
         typed = [e for e in edges if e.get('relation_code') == 'cmdb_relation:contains'
                  or e.get('relation', '').startswith('cmdb_relation') and e.get('label') == '包含']
         self.assertTrue(typed, f'未找到类型化 CMDB 边，现有边: {[e.get("relation") for e in edges]}')
+
+
+class AlertRootCauseCausalInjectionTests(TestCase):
+    """L1 因果链与受影响范围注入 query_alert_root_cause（只加键不改既有语义）。"""
+
+    def setUp(self):
+        from aiops.models import AIOpsChatSession
+        from ops.models import Alert
+
+        cache.clear()
+        self.admin = get_user_model().objects.create_superuser('rca-admin', 'r@example.com', 'Admin@123456')
+        self.session = AIOpsChatSession.objects.create(user=self.admin, title='RCA 测试会话')
+        self.Alert = Alert
+
+    def _alert(self, code='TABLESPACE_FULL', level='critical', **kwargs):
+        import uuid
+        return self.Alert.objects.create(
+            title=f'{code} 测试', level=level, status='active',
+            source='test', source_type='generic', fingerprint=uuid.uuid4().hex[:32],
+            alert_code=code, **kwargs)
+
+    def test_derived_alert_injects_causal_chain(self):
+        from aiops.services import query_alert_root_cause
+
+        root = self._alert('TABLESPACE_FULL')
+        derived = self._alert('ORA-01653', level='warning',
+                              causal_level='derived', derived_from=[root.id],
+                              evidence_chain=[{
+                                  'rule_code': 'D1', 'relation_code': 'contains',
+                                  'path': ['ORCL01', 'TS_ORDER'], 'root_code': 'TABLESPACE_FULL',
+                              }])
+        result = query_alert_root_cause(self.session, None, self.admin, alert_id=derived.id)
+        analysis = result.get('analysis') or {}
+        self.assertIn('causal_chain', analysis)
+        self.assertTrue(analysis['causal_chain'], '派生告警应携带 L1 因果链')
+        titles = [s.get('title', '') for s in result.get('sections') or []]
+        self.assertTrue(any('L1 确定性因果链' in t for t in titles))
+
+    def test_root_alert_injects_hypotheses(self):
+        from aiops.services import query_alert_root_cause
+
+        root = self._alert('TABLESPACE_FULL', causal_level='root')
+        self._alert('ORA-01653', level='warning',
+                    causal_level='derived', derived_from=[root.id])
+        result = query_alert_root_cause(self.session, None, self.admin, alert_id=root.id)
+        analysis = result.get('analysis') or {}
+        self.assertIn('hypotheses', analysis)
+        self.assertTrue(analysis['hypotheses'], '根因告警应汇总已知派生告警')
+        titles = [s.get('title', '') for s in result.get('sections') or []]
+        self.assertTrue(any('受影响范围' in t for t in titles))
+
+    def test_unmarked_alert_keeps_existing_semantics(self):
+        from aiops.services import query_alert_root_cause
+
+        plain = self._alert('HOST_DOWN')
+        result = query_alert_root_cause(self.session, None, self.admin, alert_id=plain.id)
+        analysis = result.get('analysis') or {}
+        self.assertIn('causal_chain', analysis)
+        self.assertIn('hypotheses', analysis)
+        self.assertEqual(analysis['causal_chain'], [])
+        self.assertEqual(analysis['hypotheses'], [])
+        # 既有键语义不变
+        for key in ('evidence', 'causes', 'pending'):
+            self.assertIn(key, analysis)

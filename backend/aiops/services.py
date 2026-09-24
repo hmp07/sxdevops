@@ -5883,7 +5883,46 @@ def _infer_alert_root_cause(
         )
     if not causes:
         causes.append('证据不足，不能仅凭告警标题或描述推断根因；需要继续补齐运行态、事件、日志、链路或指标证据。')
-    return {'evidence': evidence, 'causes': causes[:5], 'pending': pending[:8]}
+    causal_chain = []
+    hypotheses = []
+    if alert.causal_level == 'derived':
+        relation_label = ''
+        for entry in (alert.evidence_chain or [])[:8]:
+            path = entry.get('path') or []
+            relation = entry.get('relation_code') or '依赖'
+            rule_code = entry.get('rule_code') or ''
+            if not path:
+                continue
+            parts = [str(path[0])]
+            for name in path[1:]:
+                parts.append(f' --{relation}--> {name}')
+            causal_chain.append(f"{' -> '.join(parts)}（规则 {rule_code}）")
+        if alert.derived_from:
+            from ops.models import Alert as _Alert
+            for root in _Alert.objects.filter(id__in=list(alert.derived_from))[:3]:
+                causal_chain.append(f"根因告警：[{root.alert_code}] {root.title}（ID {root.id}）")
+    elif alert.causal_level == 'root':
+        from ops.models import Alert as _Alert
+        recent = _Alert.objects.filter(
+            status='active',
+        ).exclude(id=alert.id).filter(
+            created_at__gte=timezone.now() - timedelta(hours=1),
+        )[:200]
+        seen = 0
+        for cand in recent:
+            if alert.id in (cand.derived_from or []):
+                hypotheses.append(f"[{cand.alert_code}] {cand.title}（ID {cand.id}）")
+                seen += 1
+                if seen >= 5:
+                    break
+
+    return {
+        'evidence': evidence,
+        'causes': causes[:5],
+        'pending': pending[:8],
+        'causal_chain': causal_chain,
+        'hypotheses': hypotheses,
+    }
 
 
 def query_alert_root_cause(session, user_message, user, query='', fingerprint='', alert_id=None, latest=False, limit=6):
@@ -6027,6 +6066,12 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
                 f"详情：{(alert.message or '-')[:180]}",
             ],
         },
+        *([
+            {'title': 'L1 确定性因果链', 'items': analysis.get('causal_chain') or ['平台规则引擎未确认确定性因果链。']},
+        ] if analysis.get('causal_chain') else []),
+        *([
+            {'title': '受影响范围（L1 已知）', 'items': analysis.get('hypotheses')},
+        ] if analysis.get('hypotheses') else []),
         {'title': '关联证据', 'items': analysis.get('evidence') or ['未查询到可支撑根因判断的关联证据。']},
         {'title': '可能原因（基于证据）', 'items': analysis.get('causes') or ['证据不足，不能直接给出根因。']},
         {'title': '证据不足/待确认项', 'items': analysis.get('pending') or ['当前关联证据已列出，仍需结合现场处置结果最终确认。']},
@@ -6060,6 +6105,8 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
         'status': alert.status,
         'evidence_count': len(analysis.get('evidence') or []),
         'cause_count': len(analysis.get('causes') or []),
+        'alert_code': alert.alert_code,
+        'causal_level': alert.causal_level,
     }
     _finish_tool_invocation(invocation, summary, started_at, success=True)
     return {

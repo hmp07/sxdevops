@@ -33,6 +33,25 @@ TOOL_REGISTRY: list[dict] = [
         },
     },
     {
+        'name': 'sxdevops.query_knowledge_graph_closure',
+        'title': '查询知识图谱因果闭包',
+        'description': '从指定节点出发查询 ≤5 跳的依赖/影响路径，用于回答某资源影响哪些下游、依赖哪些上游、因果链类问题。',
+        'permission': 'aiops.knowledge.view',
+        'handler': 'query_knowledge_graph_closure',
+        'deepagents_name': 'query_knowledge_graph_closure_tool',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string'},
+                'node_id': {'type': 'string'},
+                'node_name': {'type': 'string'},
+                'environment': {'type': 'string'},
+                'max_hops': {'type': 'integer', 'minimum': 1, 'maximum': 5},
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
+            },
+        },
+    },
+    {
         'name': 'sxdevops.query_alerts',
         'title': '查询告警',
         'description': '查询告警中心只读告警事实。',

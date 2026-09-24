@@ -289,6 +289,12 @@ def _run_single_analysis(alert):
 
     try:
         question = f'分析告警 ID {alert.id} 的根因，并给出处置建议。'
+        if getattr(alert, 'alert_code', ''):
+            question += (
+                f'L1 确定性因果信息（平台规则引擎输出，不得推翻，仅可补充概率假设）：'
+                f'告警码 {alert.alert_code}，因果层级 {alert.causal_level}，'
+                f'证据链 {_safe_text(str(alert.evidence_chain or []), 300)}'
+            )
         session, assistant_message = _create_session_and_ask(
             question, f'自动分析: {_safe_text(alert.title, 80)}'
         )
@@ -364,6 +370,7 @@ def _run_correlation_analysis(alerts):
         lines.append(
             f'- ID {alert.id}：{_safe_text(alert.title, 160)}'
             f'（级别 {_safe_text(alert.level, 16)}，主机 {_safe_text(alert.resource, 80)}，'
+            f'告警码 {getattr(alert, "alert_code", "") or "-"}，因果层级 {getattr(alert, "causal_level", "none")}，'
             f'开始 {alert.starts_at or "-"}）'
         )
     question = (

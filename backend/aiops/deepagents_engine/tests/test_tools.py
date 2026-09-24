@@ -15,11 +15,11 @@ from aiops.deepagents_engine.tools import (
 class ToolRegistryTest(TestCase):
     """验证统一工具注册表的完整性和一致性。"""
 
-    def test_all_18_tools_registered(self):
-        """验证全部 18 个平台工具已注册。"""
+    def test_all_19_tools_registered(self):
+        """验证全部 19 个平台工具已注册。"""
         self.assertEqual(
-            len(SXDEVOPS_TOOLS), 18,
-            f"期望 18 个工具，实际 {len(SXDEVOPS_TOOLS)} 个"
+            len(SXDEVOPS_TOOLS), 19,
+            f"期望 19 个工具，实际 {len(SXDEVOPS_TOOLS)} 个"
         )
 
     def test_tool_names_are_unique(self):
@@ -72,10 +72,10 @@ class ToolRegistryTest(TestCase):
                 f"当前参数: {params}"
             )
 
-    def test_get_tool_names_returns_18(self):
-        """验证 get_tool_names() 返回完整的 18 个名称。"""
+    def test_get_tool_names_returns_19(self):
+        """验证 get_tool_names() 返回完整的 19 个名称。"""
         names = get_tool_names()
-        self.assertEqual(len(names), 18)
+        self.assertEqual(len(names), 19)
 
     def test_get_tools_for_action_known_actions(self):
         """验证已知 action 返回合集的工具子集。"""
@@ -97,18 +97,29 @@ class ToolRegistryTest(TestCase):
     def test_get_tools_for_action_unknown_returns_all(self):
         """验证未知 action 返回全部工具。"""
         tools = get_tools_for_action('nonexistent.action')
-        self.assertEqual(len(tools), 18)
+        self.assertEqual(len(tools), 19)
 
     def test_new_metric_tools_registered_in_registry(self):
         """TOOL_REGISTRY 包含智能问数与资源预测两个新工具。"""
         from aiops.tools.registry import TOOL_REGISTRY
-        self.assertEqual(len(TOOL_REGISTRY), 18)
+        self.assertEqual(len(TOOL_REGISTRY), 19)
         handlers = {t['handler'] for t in TOOL_REGISTRY}
         self.assertIn('query_metrics_promql', handlers)
         self.assertIn('query_resource_forecast', handlers)
         by_name = {t['deepagents_name'] for t in TOOL_REGISTRY}
         self.assertIn('query_metrics_promql_tool', by_name)
         self.assertIn('query_resource_forecast_tool', by_name)
+
+    def test_closure_tool_registered(self):
+        """闭包查询工具在 TOOL_REGISTRY 与 SXDEVOPS_TOOLS 双向注册。"""
+        from aiops.tools.registry import TOOL_REGISTRY
+
+        handlers = {t['handler'] for t in TOOL_REGISTRY}
+        self.assertIn('query_knowledge_graph_closure', handlers)
+        by_name = {t['deepagents_name'] for t in TOOL_REGISTRY}
+        self.assertIn('query_knowledge_graph_closure_tool', by_name)
+        tool_names = {t.name for t in SXDEVOPS_TOOLS}
+        self.assertIn('query_knowledge_graph_closure_tool', tool_names)
 
     def test_parity_with_platform_mcp_definitions(self):
         """验证工具列表与 PLATFORM_MCP_TOOL_DEFINITIONS 保持一致。"""
