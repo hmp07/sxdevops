@@ -5903,11 +5903,15 @@ def _infer_alert_root_cause(
                 causal_chain.append(f"根因告警：[{root.alert_code}] {root.title}（ID {root.id}）")
     elif alert.causal_level == 'root':
         from ops.models import Alert as _Alert
-        recent = _Alert.objects.filter(
+        recent_qs = _Alert.objects.filter(
             status='active',
         ).exclude(id=alert.id).filter(
             created_at__gte=timezone.now() - timedelta(hours=1),
-        )[:200]
+        )
+        if alert.environment:
+            # 与告警同环境的候选扫描（可见性边界：不跨环境泄露告警标题）
+            recent_qs = recent_qs.filter(environment=alert.environment)
+        recent = recent_qs[:200]
         seen = 0
         for cand in recent:
             if alert.id in (cand.derived_from or []):

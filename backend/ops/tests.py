@@ -5761,6 +5761,58 @@ class AlertCausalityMountTests(TestCase):
         from ops.models import Alert
         self.assertTrue(Alert.objects.filter(message__icontains='causal probe').exists())
 
+class OracleDemoStorylineTests(TestCase):
+    """Oracle 域演示故事线：CI 链种子与 Zabbix 演示问题（时钟差 ≤5min）。"""
+
+    def test_seed_oracle_domain_creates_ci_chain_and_relations(self):
+        from cmdb.oracle_demo_seed import seed_oracle_ci_types, seed_oracle_domain
+        from cmdb.models import CIRelation, ConfigItem
+
+        seed_oracle_ci_types()
+        seed_oracle_domain()
+
+        for name in ['orcl-db-01', 'ORCL01', 'TS_ORDER', 'ts_order_01.dbf',
+                     'lun-orders-01', 'san-orders', 'listener-01', 'arch-01']:
+            self.assertTrue(ConfigItem.objects.filter(name=name).exists(), f'{name} 缺失')
+        self.assertGreaterEqual(CIRelation.objects.count(), 6)
+        # 关键因果边：实例 contains 表空间
+        orcl = ConfigItem.objects.get(name='ORCL01')
+        ts = ConfigItem.objects.get(name='TS_ORDER')
+        self.assertTrue(CIRelation.objects.filter(
+            source=orcl, target=ts, relation_type_id='contains').exists())
+
+    def test_seed_oracle_domain_idempotent(self):
+        from cmdb.oracle_demo_seed import seed_oracle_ci_types, seed_oracle_domain
+        from cmdb.models import ConfigItem
+
+        seed_oracle_ci_types()
+        seed_oracle_domain()
+        count = ConfigItem.objects.count()
+        seed_oracle_domain()
+        self.assertEqual(ConfigItem.objects.count(), count)
+
+    def test_demo_problems_include_oracle_storyline(self):
+        from ops.zabbix_demo_data import dispatch_demo_call
+
+        result = dispatch_demo_call('problem.get', {})
+        names = {p.get('name', '') for p in result}
+        self.assertTrue(any('TABLESPACE_FULL' in n for n in names), names)
+        self.assertTrue(any('ORA-01653' in n for n in names), names)
+        self.assertTrue(any('LISTENER_DOWN' in n for n in names), names)
+        self.assertTrue(any('ORA-12541' in n for n in names), names)
+        self.assertTrue(any('STORAGE_FULL' in n for n in names), names)
+
+    def test_demo_problem_clock_deltas_within_window(self):
+        from ops.zabbix_demo_data import DEMO_PROBLEMS
+
+        oracle = [p for p in DEMO_PROBLEMS if any(
+            code in p.get('name', '') for code in
+            ['TABLESPACE_FULL', 'ORA-01653', 'STORAGE_FULL', 'LISTENER_DOWN', 'ORA-12541'])]
+        self.assertEqual(len(oracle), 5)
+        clocks = sorted(int(p['clock']) for p in oracle)
+        self.assertLessEqual(clocks[-1] - clocks[0], 300, '演示告警时钟差应落在 ±5min 时间窗内')
+
+
     def test_summaries_include_causality_counts(self):
         from ops.alerting import alert_group_summary, alert_summary
         from ops.models import Alert

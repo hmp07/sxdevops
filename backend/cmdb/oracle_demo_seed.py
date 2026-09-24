@@ -45,3 +45,63 @@ def seed_oracle_ci_types(stdout=None):
     if stdout is not None and created:
         stdout.write(f"Oracle 域 CI 类型：新增 {', '.join(created)}")
     return created
+
+
+def seed_oracle_domain(stdout=None, business_line='交易平台', environment='prod'):
+    """幂等创建 Oracle 域演示实例链与依赖关系（对应 V2.0 用例 04/05）。
+
+    实例链：orcl-db-01(云主机) ← ORCL01(实例) ← TS_ORDER(表空间) ← ts_order_01.dbf(数据文件) ← lun-orders-01(存储卷) ← san-orders(存储系统)
+    + listener-01(监听) + arch-01(归档存储卷)
+    """
+    from .models import CIRelation, ConfigItem
+
+    seed_oracle_ci_types(stdout)
+
+    host_type, _ = CIType.objects.get_or_create(
+        name='云主机(ECS)', defaults={'icon': 'Monitor', 'color': '#3f51b5'})
+    type_names = {entry['name'] for entry in ORACLE_CI_TYPES}
+    types = {t.name: t for t in CIType.objects.filter(name__in=type_names)}
+    types['云主机(ECS)'] = host_type
+
+    def ensure_ci(ci_type_name, name, attributes=None):
+        ci, _ = ConfigItem.objects.get_or_create(
+            name=name,
+            defaults={
+                'ci_type': types[ci_type_name],
+                'business_line': business_line,
+                'environment': environment,
+                'status': 'active',
+                'attributes': attributes or {},
+            },
+        )
+        return ci
+
+    orcl_host = ensure_ci('云主机(ECS)', 'orcl-db-01', {'ip_address': '10.40.1.10'})
+    orcl = ensure_ci('Oracle实例', 'ORCL01', {'instance_name': 'ORCL', 'oracle_version': '11g'})
+    ts = ensure_ci('表空间', 'TS_ORDER', {'tablespace_used_pct': 99.5})
+    df = ensure_ci('数据文件', 'ts_order_01.dbf')
+    lun = ensure_ci('存储卷', 'lun-orders-01', {'volume_util_pct': 85})
+    san = ensure_ci('存储系统', 'san-orders')
+    listener = ensure_ci('Oracle监听', 'listener-01', {'listener_port': 1521})
+    arch = ensure_ci('存储卷', 'arch-01')
+
+    relations = [
+        (orcl, ts, 'contains', '实例包含表空间'),
+        (ts, df, 'contains', '表空间包含数据文件'),
+        (df, lun, 'depends_on', '数据文件存储于卷'),
+        (lun, san, 'hosted_on', '存储卷承载于存储系统'),
+        (orcl, orcl_host, 'hosted_on', '实例运行于主机'),
+        (listener, orcl_host, 'hosted_on', '监听运行于主机'),
+        (arch, san, 'hosted_on', '归档存储卷承载于存储系统'),
+    ]
+    created = 0
+    for source, target, rel_code, desc in relations:
+        _, is_new = CIRelation.objects.get_or_create(
+            source=source, target=target, relation_type_id=rel_code,
+            defaults={'description': desc},
+        )
+        if is_new:
+            created += 1
+    if stdout is not None:
+        stdout.write(f'Oracle 域演示：8 个 CI，关系新增 {created} 条。')
+    return {'cis': 8, 'relations_created': created}

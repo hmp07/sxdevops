@@ -93,6 +93,7 @@ class Command(BaseCommand):
         env.aliases = ['生产环境', '生产', 'prod', '默认']
         env.event_environments = ['prod', 'staging', 'shared']
         env.alert_environments = ['prod', 'staging']
+        env.causal_rule_set = {'enabled': True, 'rules': ['B3', 'D1', 'D2', 'D2b', 'D3']}
         env.zabbix_datasource_ids = _ids(ZabbixDataSource.objects.filter(is_enabled=True))
         env.k8s_cluster_ids = _ids(K8sCluster.objects.all())
         env.docker_host_ids = _ids(DockerHost.objects.filter(status='connected'))
@@ -105,7 +106,7 @@ class Command(BaseCommand):
         env.tracing_datasource_ids = []
         env.observability_link_ids = []
         env.save(update_fields=[
-            'aliases', 'event_environments', 'alert_environments',
+            'aliases', 'event_environments', 'alert_environments', 'causal_rule_set',
             'zabbix_datasource_ids', 'k8s_cluster_ids', 'docker_host_ids',
             'metric_datasource_ids', 'log_datasource_ids', 'tracing_datasource_ids',
             'observability_link_ids',

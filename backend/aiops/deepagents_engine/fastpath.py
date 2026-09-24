@@ -222,6 +222,19 @@ FASTPATH_PATTERNS = [
             'limit': 10,
         },
     },
+    {
+        'name': 'knowledge_closure_lookup',
+        'tool': 'query_knowledge_graph_closure_tool',
+        'matcher': lambda q: (
+            _question_contains_any(q, ['依赖闭包', '影响哪些下游', '上游依赖', '因果链', '影响链路', '依赖哪些'])
+            and not _question_contains_any(q, ['告警', '报警'])
+        ),
+        'params': lambda q: {
+            'query': _strip_noise(q),
+            'max_hops': 5,
+            'limit': 20,
+        },
+    },
 ]
 
 

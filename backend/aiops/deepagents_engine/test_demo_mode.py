@@ -246,3 +246,38 @@ class DemoMockModelIntegrationTests(TransactionTestCase):
         pa = result2['pending_actions'][0]
         self.assertEqual(pa['type'], 'execute_host_task')
         self.assertEqual(pa['risk_level'], 'low')
+
+
+class OracleDemoQuestionTests(TestCase):
+    """Oracle 域演示问答：覆盖表路由、闭包渲染器、fastpath 路由。"""
+
+    def test_oracle_override_routing(self):
+        from aiops.deepagents_engine.demo_mock_model import DemoMockChatModel
+
+        model = DemoMockChatModel()
+        tool, args, _ = model._build_tool_plan('ORCL01 为什么报 ORA-01653')
+        self.assertEqual(tool, 'query_alert_root_cause_tool')
+        self.assertIn('ORA-01653', args.get('query', ''))
+
+        tool, args, _ = model._build_tool_plan('ORCL01 表空间满影响了哪些下游')
+        self.assertEqual(tool, 'query_knowledge_graph_closure_tool')
+        self.assertEqual(args.get('node_name'), 'TS_ORDER')
+
+    def test_closure_renderer_registered_and_outputs_paths(self):
+        from aiops.deepagents_engine.demo_mock_model import _ANSWER_RENDERERS
+
+        renderer = _ANSWER_RENDERERS.get('query_knowledge_graph_closure_tool')
+        self.assertIsNotNone(renderer, '闭包工具应注册渲染器')
+        data = {
+            'summary': {'path_count': 1, 'node_count': 3, 'truncated': False, 'cycle_detected': False},
+            'sections': [{'title': '因果闭包（≤5 跳）', 'content': 'TS_ORDER --包含--> ts_order_01.dbf'}],
+        }
+        text = renderer(data)
+        self.assertIn('TS_ORDER', text)
+        self.assertIn('1 条依赖路径', text)
+
+    def test_fastpath_closure_routing(self):
+        from aiops.deepagents_engine.fastpath import fastpath_router
+
+        tool, params = fastpath_router('TS_ORDER 影响哪些下游')
+        self.assertEqual(tool, 'query_knowledge_graph_closure_tool')

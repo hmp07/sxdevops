@@ -358,6 +358,20 @@ DEMO_QUESTION_OVERRIDES = {
         'tool': 'query_alerts_tool',
         'args': {'query': '生产环境', 'date_filter': 'week', 'limit': 20},
     },
+    'ORCL01 为什么报 ORA-01653': {
+        'tool': 'query_alert_root_cause_tool',
+        'args': {'query': 'ORA-01653'},
+        'alert_keywords': ['ORA-01653'],
+    },
+    'ORCL01 表空间满影响了哪些下游': {
+        'tool': 'query_knowledge_graph_closure_tool',
+        'args': {'query': 'TS_ORDER', 'node_name': 'TS_ORDER'},
+    },
+    '最近一条 ORA-12541 的根因是什么': {
+        'tool': 'query_alert_root_cause_tool',
+        'args': {'query': 'ORA-12541'},
+        'alert_keywords': ['ORA-12541'],
+    },
 }
 
 
@@ -755,6 +769,33 @@ def _render_forecast(data: dict, question: str = '') -> str:
     return '\n'.join(lines)
 
 
+def _render_closure(data):
+    """因果闭包查询渲染：结论 + 依赖路径列表。"""
+    summary = data.get('summary') or {}
+    sections = data.get('sections') or []
+    path_count = summary.get('path_count', 0)
+    node_count = summary.get('node_count', 0)
+    status_parts = [f'共 {path_count} 条依赖路径、覆盖 {node_count} 个节点']
+    if summary.get('truncated'):
+        status_parts.append('结果已截断')
+    if summary.get('cycle_detected'):
+        status_parts.append('图中存在环')
+    lines = ['## 结论', '，'.join(status_parts) + '。', '', '## 依赖路径']
+    found = False
+    for section in sections:
+        if '因果闭包' in (section.get('title') or ''):
+            content = section.get('content') or ''
+            if content and content != '起点无出边。':
+                for item in content.split('\n'):
+                    if item.strip():
+                        lines.append(f'- {item}')
+                found = True
+            break
+    if not found:
+        lines.append('- 起点无出边。')
+    return '\n'.join(lines)
+
+
 _ANSWER_RENDERERS = {
     'query_alerts_tool': _render_alert_list,
     'query_alert_root_cause_tool': _render_root_cause,
@@ -774,6 +815,7 @@ _ANSWER_RENDERERS = {
     'query_recent_changes_tool': _render_generic,
     'query_metrics_promql_tool': _render_metrics,
     'query_resource_forecast_tool': _render_forecast,
+    'query_knowledge_graph_closure_tool': _render_closure,
 }
 
 
