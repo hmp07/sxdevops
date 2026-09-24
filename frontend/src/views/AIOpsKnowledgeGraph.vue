@@ -572,6 +572,7 @@ const categoryIndex = {
   service: 3,
   infrastructure: 4,
   runtime_component: 5,
+  component: 7,
   datasource: 0,
   event_source: 6,
 }
@@ -589,6 +590,7 @@ const palette = {
   service: '#0f766e',
   infrastructure: '#f97316',
   runtime_component: '#0891b2',
+  component: '#9333ea',
   datasource: '#7c3aed',
   event_source: '#db2777',
 }
@@ -611,6 +613,7 @@ const laneDefinitions = [
   { kind: 'system', label: '系统' },
   { kind: 'service', label: '服务' },
   { kind: 'runtime_component', label: '中间件 / DB' },
+  { kind: 'component', label: '组件' },
   { kind: 'observability', label: '可观测性', kinds: ['datasource', 'dashboard', 'logs', 'tracing'] },
   { kind: 'alert', label: '告警' },
   { kind: 'event_source', label: '事件源' },
@@ -654,6 +657,7 @@ function nodeKindLabel(value) {
     service: '服务',
     infrastructure: '基础设施',
     runtime_component: '中间件 / DB',
+    component: '组件',
     datasource: '数据源',
     event_source: '事件源',
   }[value] || value || '-'
@@ -669,6 +673,8 @@ function edgeRelationLabel(value) {
     environment_system: '环境包含系统',
     environment_observability: '环境关联可观测性',
     environment_infrastructure: '环境运行于基础设施',
+    system_component: '系统包含组件',
+    environment_component: '环境孤立组件',
   }[value] || value || '关联'
 }
 
@@ -1791,7 +1797,9 @@ onBeforeUnmount(() => {
 
 /* CMDB / iTop 拓扑关系 */
 .board-edge.is-cmdb_relation,
-.board-edge.is-system_runtime_component {
+.board-edge.is-system_runtime_component,
+.board-edge.is-system_component,
+.board-edge.is-environment_component {
   stroke: rgba(139, 92, 246, 0.58);
   stroke-width: 1.8;
 }

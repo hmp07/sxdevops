@@ -2683,7 +2683,7 @@ def build_knowledge_graph(params=None):
                             {'label': '状态', 'value': ci.status},
                         ],
                     )
-                    env_name = graph_environment(ci.environment) or _default_env_name
+                    env_name = graph_environment(ci.environment) if _clean(ci.environment) else _default_env_name
                     if env_name:
                         add_edge(_node_key('environment', env_name), node_id, '包含系统', 'environment_system')
                 _cmdb_system_nodes[ci.name] = node_id
@@ -2707,7 +2707,7 @@ def build_knowledge_graph(params=None):
                 if sys_node:
                     add_edge(sys_node, node_id, '包含流程', 'system_service')
                 elif bl:
-                    env_name = graph_environment(ci.environment) or _default_env_name
+                    env_name = graph_environment(ci.environment) if _clean(ci.environment) else _default_env_name
                     if env_name:
                         add_edge(_node_key('environment', env_name), node_id, '业务流程', 'environment_service')
 
@@ -2755,7 +2755,7 @@ def build_knowledge_graph(params=None):
                 if sys_node:
                     add_edge(sys_node, node_id, '包含主机', 'system_infrastructure')
                 else:
-                    env_name = graph_environment(ci.environment) or _default_env_name
+                    env_name = graph_environment(ci.environment) if _clean(ci.environment) else _default_env_name
                     if env_name:
                         add_edge(_node_key('environment', env_name), node_id, '孤立主机', 'environment_infrastructure')
 
@@ -2782,7 +2782,7 @@ def build_knowledge_graph(params=None):
                 if sys_node:
                     add_edge(sys_node, node_id, '包含组件', 'system_component')
                 else:
-                    env_name = graph_environment(ci.environment) or _default_env_name
+                    env_name = graph_environment(ci.environment) if _clean(ci.environment) else _default_env_name
                     if env_name:
                         add_edge(_node_key('environment', env_name), node_id, '孤立组件', 'environment_component')
 
@@ -3413,6 +3413,7 @@ def build_knowledge_graph(params=None):
             'capability_count': len(CAPABILITY_DEFS),
             'infrastructure_count': kind_counts.get('infrastructure', 0),
             'runtime_component_count': kind_counts.get('runtime_component', 0),
+            'component_count': kind_counts.get('component', 0),
         },
         'filters': {
             'systems': system_options,
@@ -3435,6 +3436,8 @@ def build_knowledge_graph(params=None):
             {'key': 'infrastructure_relation', 'label': '基础设施拓扑（物理设备依赖）'},
             {'key': 'system_infrastructure', 'label': '系统包含主机'},
             {'key': 'system_runtime_component', 'label': '系统依赖组件'},
+            {'key': 'system_component', 'label': '系统包含组件'},
+            {'key': 'environment_component', 'label': '环境孤立组件'},
             {'key': 'service_infrastructure', 'label': '服务运行在主机'},
             {'key': 'service_deployment', 'label': '组件部署在'},
             {'key': 'service_runtime', 'label': '服务依赖运行组件'},

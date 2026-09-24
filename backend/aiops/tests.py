@@ -9623,6 +9623,78 @@ class KnowledgeGraphClosureServiceTests(TestCase):
             'CI 间关系边应渲染且两端可达',
         )
 
+    def test_token_fallback_prefers_exact_label_token(self):
+        """分词回退：token 精确命中节点 label 应优先于词频计分，
+        避免告警/指标节点（label 含多个 token）抢占同名资源节点。"""
+        from unittest import mock
+        from aiops.services import query_knowledge_graph_closure
+
+        graph = {
+            'nodes': [
+                {'id': 'alert1', 'label': '表空间使用率超过 99% TABLESPACE_FULL（TS_ORDER）'},
+                {'id': 'A', 'label': 'TS_ORDER'},
+                {'id': 'B', 'label': 'ts_order_01.dbf'},
+            ],
+            'edges': [
+                {'id': 'e1', 'source': 'A', 'target': 'B', 'label': '包含',
+                 'relation': 'cmdb_relation:contains', 'weight': 1},
+            ],
+        }
+        with mock.patch('aiops.services.build_knowledge_graph', return_value=graph):
+            result = query_knowledge_graph_closure(
+                self.session, None, self.admin, query='TS_ORDER 表空间')
+        self.assertEqual(result['summary']['path_count'], 1, '精确 token 命中的 CI 节点应胜出')
+        content = result['sections'][0]['content']
+        self.assertIn('ts_order_01.dbf', content)
+        self.assertNotIn('表空间使用率', content)
+
+    def test_empty_environment_ci_falls_back_to_selected_env(self):
+        """environment 为空的 CI 应回退连接到选中知识环境节点，不被可达性剪枝剪掉。"""
+        from cmdb.models import CIType, ConfigItem
+        from aiops.models import AIOpsKnowledgeEnvironment
+
+        ts_type = CIType.objects.create(name='表空间', layer=3)
+        ConfigItem.objects.create(
+            name='TS_ORDER', ci_type=ts_type, status='active',
+            environment='', attributes={})
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='默认环境', is_enabled=True, event_environments=['prod'],
+            created_by='aiops_user', updated_by='aiops_user')
+
+        from rest_framework.test import APIClient
+        client = APIClient()
+        client.force_login(self.admin)
+        response = client.get('/api/aiops/knowledge-graph/', {'environment': '默认环境'})
+        self.assertEqual(response.status_code, 200)
+        nodes_by_label = {n.get('label'): n.get('id') for n in response.data['nodes']}
+        self.assertIn('TS_ORDER', nodes_by_label, '空环境 CI 应回退到选中环境节点并存活')
+
+    def test_component_kind_registered_in_legend_and_summary(self):
+        """component kind 应登记进关系图例与 KPI 计数。"""
+        from cmdb.models import CIType, ConfigItem
+        from aiops.models import AIOpsKnowledgeEnvironment
+
+        ts_type = CIType.objects.create(name='表空间', layer=3)
+        ConfigItem.objects.create(
+            name='TS_ORDER', ci_type=ts_type, status='active',
+            environment='prod', attributes={})
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='默认环境', is_enabled=True, event_environments=['prod'],
+            created_by='aiops_user', updated_by='aiops_user')
+
+        from rest_framework.test import APIClient
+        client = APIClient()
+        client.force_login(self.admin)
+        response = client.get('/api/aiops/knowledge-graph/', {'environment': '默认环境'})
+        self.assertEqual(response.status_code, 200)
+        legend_keys = {e.get('key') for e in response.data.get('relation_legend') or []}
+        self.assertIn('system_component', legend_keys, '新关系码应登记进图例')
+        self.assertIn('environment_component', legend_keys)
+        self.assertEqual(
+            response.data['summary'].get('component_count'), 1,
+            'summary 应统计 component 节点数',
+        )
+
     def test_exact_label_match_preferred_over_substring(self):
         """节点解析：精确 label 匹配优先于包含关键字的告警/指标类节点。"""
         from unittest import mock

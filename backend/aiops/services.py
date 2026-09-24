@@ -10250,17 +10250,23 @@ def query_knowledge_graph_closure(session, user_message, user, query='', node_id
 
             matches.sort(key=_match_rank)
         if not matches:
-            # 分词回退：问题串的每个 token 与节点 label 计分匹配
+            # 分词回退：先看是否有 token 精确命中节点 label（避免告警/指标节点靠词频
+            # 抢占同名资源节点），否则按 token 计数计分
             tokens = [t for t in re.split(r'[\s,，、]+', keyword) if t]
-            scored = []
-            for n in nodes:
-                text = _node_text(n)
-                score = sum(1 for t in tokens if t and t in text)
-                if score:
-                    scored.append((score, -len(text), n))
-            if scored:
-                scored.sort(reverse=True)
-                matches = [n for _, _, n in scored]
+            exact_hits = [n for n in nodes if _node_text(n).strip() in tokens]
+            if exact_hits:
+                matches = exact_hits
+            else:
+                scored = []
+                for n in nodes:
+                    text = _node_text(n)
+                    score = sum(1 for t in tokens if t and t in text)
+                    if score:
+                        scored.append((score, -len(text), n))
+                if scored:
+                    # 仅按数值排序（节点 dict 不参与比较，避免同分同长时 TypeError）
+                    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+                    matches = [n for _, _, n in scored]
         if len(matches) == 1:
             start_id = matches[0].get('id')
         elif len(matches) > 1:
