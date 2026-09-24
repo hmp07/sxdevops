@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import CIType, ConfigItem, CIRelation, CostRecord, iTopDataSource, ResourceRequest, ResourceNode
+from .models import CIType, ConfigItem, CIRelation, CostRecord, iTopDataSource, RelationType, ResourceRequest, ResourceNode
 from django.db.models import Sum
 from .sync import normalize_ci_attributes, normalize_ci_type_name, resolve_config_item_type_meta
 
@@ -58,6 +58,9 @@ class CIRelationSerializer(serializers.ModelSerializer):
     target_name = serializers.CharField(source='target.name', read_only=True)
     source_type = serializers.CharField(source='source.ci_type.name', read_only=True)
     target_type = serializers.CharField(source='target.ci_type.name', read_only=True)
+    relation_type = serializers.SlugRelatedField(
+        slug_field='code', queryset=RelationType.objects.all(), label='关系类型',
+    )
 
     class Meta:
         model = CIRelation
@@ -82,7 +85,27 @@ class CIRelationSerializer(serializers.ModelSerializer):
             if duplicate_qs.exists():
                 raise serializers.ValidationError('This CI relation already exists.')
 
+            # 关系类型注册表约束：allowed_* 非空时校验两端 CI 类型
+            allowed_source = relation_type.allowed_source_types or []
+            allowed_target = relation_type.allowed_target_types or []
+            if allowed_source or allowed_target:
+                source_type_name = normalize_ci_type_name(source.ci_type.name)
+                target_type_name = normalize_ci_type_name(target.ci_type.name)
+                if allowed_source and source_type_name not in allowed_source:
+                    raise serializers.ValidationError(
+                        f'关系类型 {relation_type.code} 不允许源类型 {source_type_name}'
+                    )
+                if allowed_target and target_type_name not in allowed_target:
+                    raise serializers.ValidationError(
+                        f'关系类型 {relation_type.code} 不允许目标类型 {target_type_name}'
+                    )
+
         return attrs
+
+class RelationTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RelationType
+        fields = '__all__'
 
 class CostRecordSerializer(serializers.ModelSerializer):
     ci_name = serializers.CharField(source='ci.name', read_only=True)

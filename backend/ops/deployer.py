@@ -258,7 +258,7 @@ def sync_deployment_to_cmdb(deployment, override_status=None):
         CIRelation.objects.get_or_create(
             source=ci,
             target=target_ci,
-            relation_type='runs_on',
+            relation_type_id='runs_on',
             defaults={'description': '搴旂敤鍙戝竷鑷姩鍏宠仈鍙戝竷鐩爣'},
         )
     return ci

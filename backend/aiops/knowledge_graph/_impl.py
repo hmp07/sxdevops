@@ -2766,10 +2766,10 @@ def build_knowledge_graph(params=None):
                 tgt_is_infra = _is_infra_ci(tgt_ci)
                 if src_is_infra and tgt_is_infra:
                     # 基础设施层：物理设备之间的拓扑
-                    add_edge(src_node_id, tgt_node_id, rel.relation_type, 'infrastructure_relation')
+                    add_edge(src_node_id, tgt_node_id, rel.relation_type_id, 'infrastructure_relation')
                 else:
                     # 业务层：系统/服务/组件之间的依赖
-                    add_edge(src_node_id, tgt_node_id, rel.relation_type, 'cmdb_relation')
+                    add_edge(src_node_id, tgt_node_id, rel.relation_type_id, 'cmdb_relation')
 
     # === 连接 Zabbix infrastructure → CMDB system 边 ===
     if _cmdb_enabled and _cmdb_system_nodes:

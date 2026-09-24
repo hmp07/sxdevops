@@ -29,7 +29,7 @@ def _months(limit=6):
     return months
 
 
-def ensure_ci_type(name, color, icon='Monitor', description=''):
+def ensure_ci_type(name, color, icon='Monitor', description='', layer=0, is_abstract=False, parent=None):
     ci_type, _ = CIType.objects.get_or_create(
         name=name,
         defaults={'icon': icon, 'color': color, 'description': description},
@@ -38,6 +38,10 @@ def ensure_ci_type(name, color, icon='Monitor', description=''):
     ci_type.color = color
     if description:
         ci_type.description = description
+    ci_type.layer = layer
+    ci_type.is_abstract = is_abstract
+    if parent is not None:
+        ci_type.parent = parent
     ci_type.save()
     return ci_type
 
@@ -58,7 +62,7 @@ def create_relation(source, target, relation_type, description):
     return CIRelation.objects.create(
         source=source,
         target=target,
-        relation_type=relation_type,
+        relation_type_id=relation_type,
         description=description,
     )
 

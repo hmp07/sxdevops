@@ -70,3 +70,6 @@ tmp_deploy/
 login-page.html
 topology-response.json
 zabbix-page-snapshot.yml
+
+# SDD 执行台账与工作区（superpowers）
+.superpowers/

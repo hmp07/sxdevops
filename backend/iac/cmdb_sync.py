@@ -145,6 +145,6 @@ def _ensure_relation(bound, source_key, target_key, relation_type, description):
     CIRelation.objects.get_or_create(
         source=source,
         target=target,
-        relation_type=relation_type,
+        relation_type_id=relation_type,
         defaults={'description': description},
     )

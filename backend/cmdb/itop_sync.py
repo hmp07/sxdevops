@@ -185,7 +185,7 @@ def sync_relations(ds):
                         _, created = CIRelation.objects.get_or_create(
                             source=src_ci,
                             target=tgt_ci,
-                            relation_type=_map_relation_type(rel_type),
+                            relation_type_id=_map_relation_type(rel_type),
                         )
                         if created:
                             stats['created'] += 1
@@ -204,7 +204,7 @@ def sync_relations(ds):
                             _, created = CIRelation.objects.get_or_create(
                                 source=src_ci,
                                 target=tgt_ci,
-                                relation_type=_map_relation_type(rel_type),
+                                relation_type_id=_map_relation_type(rel_type),
                             )
                             if created:
                                 stats['created'] += 1

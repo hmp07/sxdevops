@@ -172,13 +172,13 @@ class CmdbTopologyTests(AuthenticatedTestCase):
         CIRelation.objects.create(
             source=self.core_prod,
             target=self.core_db,
-            relation_type='depends_on',
+            relation_type_id='depends_on',
             description='Primary dependency',
         )
         CIRelation.objects.create(
             source=self.core_prod,
             target=self.shared_cache,
-            relation_type='connects_to',
+            relation_type_id='connects_to',
             description='Cross business dependency',
         )
 
@@ -700,3 +700,215 @@ class iTopDataSourceAsyncTests(AuthenticatedTestCase):
         ds.save()
         ds.refresh_from_db()
         self.assertIn('error:', ds.sync_status)
+
+
+class CITypeHierarchyTests(AuthenticatedTestCase):
+    """CIType 层级扩展（parent/layer/is_abstract）的模型、序列化与 API 行为。"""
+
+    def test_layer_defaults_to_zero_and_fields_serialized(self):
+        host_type = CIType.objects.create(name='Host')
+        self.assertEqual(host_type.layer, 0)
+        self.assertFalse(host_type.is_abstract)
+        self.assertIsNone(host_type.parent_id)
+
+        payload = self.client.get('/api/cmdb/ci-types/').json()
+        row = next(item for item in payload if item['name'] == 'Host')
+        self.assertIn('layer', row)
+        self.assertIn('is_abstract', row)
+        self.assertIn('parent', row)
+        self.assertEqual(row['layer'], 0)
+
+    def test_parent_child_saved(self):
+        infra = CIType.objects.create(name='InfraResource', is_abstract=True, layer=0)
+        host = CIType.objects.create(name='Host', parent=infra, layer=1)
+        host.refresh_from_db()
+        self.assertEqual(host.parent_id, infra.id)
+        self.assertEqual(host.layer, 1)
+        self.assertTrue(infra.is_abstract)
+
+    def test_tree_action_returns_hierarchy(self):
+        infra = CIType.objects.create(name='InfraResource', is_abstract=True)
+        CIType.objects.create(name='Host', parent=infra, layer=1)
+        response = self.client.get('/api/cmdb/ci-types/tree/')
+        self.assertEqual(response.status_code, 200)
+        tree = response.json()
+        infra_node = next(node for node in tree if node['name'] == 'InfraResource')
+        self.assertTrue(infra_node.get('children'), '抽象父类型应包含子类型节点')
+        child = infra_node['children'][0]
+        self.assertEqual(child['name'], 'Host')
+
+    def test_list_alias_merge_preserves_hierarchy(self):
+        parent = CIType.objects.create(name='InfraResource', is_abstract=True)
+        CIType.objects.create(name='云主机(ECS)', parent=parent, layer=1)
+        CIType.objects.create(name='云主机', parent=parent, layer=1)
+
+        payload = self.client.get('/api/cmdb/ci-types/').json()
+        row = next(item for item in payload if item['name'] == '云主机(ECS)')
+        self.assertEqual(row['layer'], 1)
+        self.assertEqual(row['parent'], parent.id)
+        self.assertFalse(row['is_abstract'])
+
+
+class RelationTypeRegistryTests(AuthenticatedTestCase):
+    """RelationType 关系类型注册表：迁移种入、模型约束与 API 行为。"""
+
+    def test_default_types_seeded_by_migration(self):
+        from .models import RelationType
+
+        codes = set(RelationType.objects.values_list('code', flat=True))
+        for code in ['depends_on', 'runs_on', 'connects_to', 'hosted_on', 'contains']:
+            self.assertIn(code, codes)
+
+        depends = RelationType.objects.get(code='depends_on')
+        self.assertTrue(depends.is_system)
+        self.assertEqual(depends.color, '#8b5cf6')
+        self.assertEqual(depends.line_style, 'solid')
+        self.assertEqual(depends.ontology_property, 'dependsOn')
+        self.assertEqual(depends.direction, 'forward')
+
+    def test_seed_is_idempotent(self):
+        from .models import RelationType
+        from cmdb.models import seed_default_relation_types
+
+        before = RelationType.objects.count()
+        seed_default_relation_types()
+        seed_default_relation_types()
+        self.assertEqual(RelationType.objects.count(), before)
+
+    def test_code_is_unique(self):
+        from .models import RelationType
+        from django.db import IntegrityError
+
+        RelationType.objects.create(code='dup_x', name='重复类型')
+        with self.assertRaises(IntegrityError):
+            RelationType.objects.create(code='dup_x', name='重复类型2')
+
+    def test_api_list_returns_registry_metadata(self):
+        response = self.client.get('/api/cmdb/ci-relation-types/')
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        codes = {item['code'] for item in payload}
+        self.assertIn('depends_on', codes)
+        self.assertIn('contains', codes)
+        row = next(item for item in payload if item['code'] == 'contains')
+        self.assertEqual(row['display_name'], '包含')
+        self.assertEqual(row['ontology_property'], 'contains')
+
+
+class CIRelationRelationTypeFkTests(AuthenticatedTestCase):
+    """CIRelation 关系类型 FK 化：code 字符串往返、类型约束、attributes、拓扑边元数据。"""
+
+    def setUp(self):
+        super().setUp()
+        from .models import RelationType
+
+        self.host_type = CIType.objects.create(name='Host')
+        self.db_type = CIType.objects.create(name='Database')
+        self.source_ci = ConfigItem.objects.create(name='app-01', ci_type=self.db_type)
+        self.target_ci = ConfigItem.objects.create(name='host-01', ci_type=self.host_type)
+        RelationType.objects.get_or_create(
+            code='custom_link', defaults={
+                'name': '自定义关联', 'display_name': '自定义关联',
+                'allowed_source_types': ['Database'], 'allowed_target_types': ['Host'],
+                'ontology_property': 'customLink',
+            },
+        )
+
+    def test_api_relation_type_code_roundtrip(self):
+        response = self.client.post('/api/cmdb/ci-relations/',
+                                    json.dumps({
+                                        'source': self.source_ci.id, 'target': self.target_ci.id,
+                                        'relation_type': 'depends_on', 'description': 'API 创建',
+                                    }), content_type='application/json')
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()['relation_type'], 'depends_on')
+
+        payload = self.client.get('/api/cmdb/ci-relations/').json()
+        self.assertEqual(payload['results'][0]['relation_type'], 'depends_on')
+
+    def test_attributes_field_saved(self):
+        response = self.client.post('/api/cmdb/ci-relations/',
+                                    json.dumps({
+                                        'source': self.source_ci.id, 'target': self.target_ci.id,
+                                        'relation_type': 'depends_on', 'attributes': {'itop_raw': 'x'},
+                                    }), content_type='application/json')
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()['attributes'], {'itop_raw': 'x'})
+
+    def test_type_constraint_matrix(self):
+        # custom_link 仅允许 Database→Host
+        ok = self.client.post('/api/cmdb/ci-relations/',
+                              json.dumps({
+                                  'source': self.source_ci.id, 'target': self.target_ci.id,
+                                  'relation_type': 'custom_link',
+                              }), content_type='application/json')
+        self.assertEqual(ok.status_code, 201, ok.content)
+
+        bad_source = ConfigItem.objects.create(name='host-02', ci_type=self.host_type)
+        bad = self.client.post('/api/cmdb/ci-relations/',
+                               json.dumps({
+                                   'source': bad_source.id, 'target': self.target_ci.id,
+                                   'relation_type': 'custom_link',
+                               }), content_type='application/json')
+        self.assertEqual(bad.status_code, 400, bad.content)
+
+    def test_self_loop_rejected(self):
+        response = self.client.post('/api/cmdb/ci-relations/',
+                                    json.dumps({
+                                        'source': self.source_ci.id, 'target': self.source_ci.id,
+                                        'relation_type': 'depends_on',
+                                    }), content_type='application/json')
+        self.assertEqual(response.status_code, 400)
+
+    def test_topology_edge_carries_relation_type_metadata(self):
+        from .models import RelationType
+
+        RelationType.objects.filter(code='depends_on').update(
+            color='#8b5cf6', line_style='solid', direction='forward', ontology_property='dependsOn',
+        )
+        CIRelation.objects.create(source=self.source_ci, target=self.target_ci, relation_type_id='depends_on')
+
+        response = self.client.get('/api/cmdb/topology/data/', {'scope': 'exact', 'environment': 'prod'})
+        self.assertEqual(response.status_code, 200)
+        edge = response.json()['edges'][0]
+        self.assertEqual(edge['type'], 'depends_on')
+        self.assertEqual(edge['relation_code'], 'depends_on')
+        self.assertEqual(edge['color'], '#8b5cf6')
+        self.assertEqual(edge['line_style'], 'solid')
+        self.assertEqual(edge['direction'], 'forward')
+        self.assertEqual(edge['ontology_property'], 'dependsOn')
+
+
+class OracleCITypeSeedTests(TestCase):
+    """Oracle 域自定义 CI 类型种子：幂等、分层约定、别名安全。"""
+
+    def test_seed_idempotent(self):
+        from cmdb.oracle_demo_seed import ORACLE_CI_TYPES, seed_oracle_ci_types
+
+        seed_oracle_ci_types()
+        count1 = CIType.objects.count()
+        seed_oracle_ci_types()
+        self.assertEqual(CIType.objects.count(), count1)
+
+        names = {entry['name'] for entry in ORACLE_CI_TYPES}
+        created = set(CIType.objects.filter(name__in=names).values_list('name', flat=True))
+        self.assertEqual(created, names)
+
+    def test_layer_conventions(self):
+        from cmdb.oracle_demo_seed import seed_oracle_ci_types
+
+        seed_oracle_ci_types()
+        self.assertEqual(CIType.objects.get(name='存储系统').layer, 0)
+        self.assertEqual(CIType.objects.get(name='Oracle实例').layer, 2)
+        self.assertEqual(CIType.objects.get(name='表空间').layer, 3)
+        self.assertEqual(CIType.objects.get(name='数据文件').layer, 4)
+        self.assertEqual(CIType.objects.get(name='归档日志').layer, 4)
+
+    def test_names_survive_alias_normalization(self):
+        from cmdb.oracle_demo_seed import seed_oracle_ci_types
+        from cmdb.sync import is_placeholder_ci_type_name, normalize_ci_type_name
+
+        seed_oracle_ci_types()
+        for name in ['存储系统', '存储卷', 'Oracle监听', 'Oracle实例', '表空间', '数据文件', '归档日志']:
+            self.assertEqual(normalize_ci_type_name(name), name)
+            self.assertFalse(is_placeholder_ci_type_name(name))

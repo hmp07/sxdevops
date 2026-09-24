@@ -11,10 +11,10 @@ from django.db import transaction
 from django.db.models import Count, F, Q, Value, IntegerField
 from django.db.models.functions import Coalesce
 from django.utils import timezone
-from .models import CIType, ConfigItem, CIRelation, CostRecord, ResourceRequest, ResourceNode
+from .models import CIType, ConfigItem, CIRelation, CostRecord, RelationType, ResourceRequest, ResourceNode
 from .serializers import (
     CITypeSerializer, ConfigItemSerializer, CIRelationSerializer,
-    CostRecordSerializer, ResourceRequestSerializer, ResourceNodeSerializer
+    CostRecordSerializer, RelationTypeSerializer, ResourceRequestSerializer, ResourceNodeSerializer
 )
 from ops.models import Host, DeviceMapping, Alert
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
@@ -570,7 +570,25 @@ class CITypeViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'update': ['cmdb.ci.manage'],
         'partial_update': ['cmdb.ci.manage'],
         'destroy': ['cmdb.ci.manage'],
+        'tree': ['cmdb.ci.view'],
     }
+
+    @action(detail=False, methods=['get'])
+    def tree(self, request):
+        nodes = list(CIType.objects.all().values(
+            'id', 'name', 'parent_id', 'layer', 'is_abstract', 'icon', 'color',
+        ))
+        return Response(self._build_type_tree(nodes, None))
+
+    def _build_type_tree(self, nodes, parent_id):
+        tree = []
+        for node in nodes:
+            if node['parent_id'] == parent_id:
+                children = self._build_type_tree(nodes, node['id'])
+                if children:
+                    node['children'] = children
+                tree.append(node)
+        return tree
 
     def list(self, request, *args, **kwargs):
         search = (request.query_params.get('search') or '').strip().lower()
@@ -588,6 +606,9 @@ class CITypeViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                     'color': ci_type.color,
                     'description': ci_type.description,
                     'created_at': ci_type.created_at,
+                    'parent': ci_type.parent_id,
+                    'layer': ci_type.layer,
+                    'is_abstract': ci_type.is_abstract,
                     'ci_count': 0,
                 }
                 grouped[canonical_name] = row
@@ -597,6 +618,9 @@ class CITypeViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 row['color'] = ci_type.color or row['color']
                 row['description'] = ci_type.description or row['description']
                 row['created_at'] = ci_type.created_at
+                row['parent'] = ci_type.parent_id
+                row['layer'] = ci_type.layer
+                row['is_abstract'] = ci_type.is_abstract
             row['ci_count'] += getattr(ci_type, 'ci_count', 0)
 
         rows = list(grouped.values())
@@ -708,9 +732,30 @@ class ResourceNodeViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
 class CIRelationViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     """CI 关系管理"""
-    queryset = CIRelation.objects.select_related('source', 'target').all()
+    queryset = CIRelation.objects.select_related('source', 'target', 'relation_type').all()
     serializer_class = CIRelationSerializer
-    filterset_fields = ['source', 'target', 'relation_type']
+    filterset_fields = ['source', 'target']
+    rbac_permissions = {
+        'list': ['cmdb.ci.view'],
+        'retrieve': ['cmdb.ci.view'],
+        'create': ['cmdb.ci.manage'],
+        'update': ['cmdb.ci.manage'],
+        'partial_update': ['cmdb.ci.manage'],
+        'destroy': ['cmdb.ci.manage'],
+    }
+
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        code = (self.request.query_params.get('relation_type') or '').strip()
+        if code:
+            queryset = queryset.filter(relation_type__code=code)
+        return queryset
+
+class RelationTypeViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+    """CI 关系类型注册表（本体属性落点）"""
+    queryset = RelationType.objects.all()
+    serializer_class = RelationTypeSerializer
+    pagination_class = None
     rbac_permissions = {
         'list': ['cmdb.ci.view'],
         'retrieve': ['cmdb.ci.view'],
@@ -1008,7 +1053,7 @@ def cmdb_topology(request):
         relations = CIRelation.objects.filter(
             source_id__in=list(node_ids),
             target_id__in=list(node_ids),
-        ).select_related('source', 'target')
+        ).select_related('source', 'target', 'relation_type')
     else:
         relations = CIRelation.objects.none()
 
@@ -1096,7 +1141,7 @@ def cmdb_topology(request):
             relations = CIRelation.objects.filter(
                 source_id__in=node_ids,
                 target_id__in=node_ids,
-            ).select_related('source', 'target')
+            ).select_related('source', 'target', 'relation_type')
         for relation in relations:
             if relation.source_id in node_ids and relation.target_id in node_ids:
                 filtered_edges.append({
@@ -1105,8 +1150,13 @@ def cmdb_topology(request):
                     'target': relation.target_id,
                     'source_name': relation.source.name,
                     'target_name': relation.target.name,
-                    'type': relation.relation_type,
-                    'label': relation.get_relation_type_display(),
+                    'type': relation.relation_type_id,
+                    'label': relation.relation_type.display_name or relation.relation_type.name,
+                    'relation_code': relation.relation_type_id,
+                    'color': relation.relation_type.color,
+                    'line_style': relation.relation_type.line_style,
+                    'direction': relation.relation_type.direction,
+                    'ontology_property': relation.relation_type.ontology_property,
                     'description': relation.description,
                     'is_match': relation.source_id in matched_ids and relation.target_id in matched_ids,
                 })

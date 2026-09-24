@@ -10217,7 +10217,7 @@ def query_cmdb_topology(session, user_message, user, business_line='', ci_name='
 
     edges_data = [{
         'source': e.source.name, 'target': e.target.name,
-        'relation': e.relation_type,
+        'relation': e.relation_type_id,
     } for e in edges_qs]
 
     items = [
