@@ -2642,7 +2642,11 @@ def build_knowledge_graph(params=None):
             if tr_node:
                 return tr_node
             return _node_key('cmdb_infra', ci.id)
-        return None
+        # 其他自定义 CI 类型（本体扩展：Oracle 实例/表空间/数据文件等）→ component 节点
+        tr_node = _cmdb_ci_to_taskresource_node.get(ci.id)
+        if tr_node:
+            return tr_node
+        return _node_key('cmdb_component', ci.id)
 
     _INFRA_CI_TYPES = {'云主机(ECS)', '虚拟机', '网络设备', '存储系统', '虚拟化平台'}
     def _is_infra_ci(ci):
@@ -2679,7 +2683,7 @@ def build_knowledge_graph(params=None):
                             {'label': '状态', 'value': ci.status},
                         ],
                     )
-                    env_name = _clean(ci.environment) or _default_env_name
+                    env_name = graph_environment(ci.environment) or _default_env_name
                     if env_name:
                         add_edge(_node_key('environment', env_name), node_id, '包含系统', 'environment_system')
                 _cmdb_system_nodes[ci.name] = node_id
@@ -2703,7 +2707,7 @@ def build_knowledge_graph(params=None):
                 if sys_node:
                     add_edge(sys_node, node_id, '包含流程', 'system_service')
                 elif bl:
-                    env_name = _clean(ci.environment) or _default_env_name
+                    env_name = graph_environment(ci.environment) or _default_env_name
                     if env_name:
                         add_edge(_node_key('environment', env_name), node_id, '业务流程', 'environment_service')
 
@@ -2751,9 +2755,36 @@ def build_knowledge_graph(params=None):
                 if sys_node:
                     add_edge(sys_node, node_id, '包含主机', 'system_infrastructure')
                 else:
-                    env_name = _clean(ci.environment) or _default_env_name
+                    env_name = graph_environment(ci.environment) or _default_env_name
                     if env_name:
                         add_edge(_node_key('environment', env_name), node_id, '孤立主机', 'environment_infrastructure')
+
+            # -- 其他自定义 CI 类型（本体扩展：Oracle 实例/表空间/数据文件等）→ component 节点 --
+            else:
+                if ci_id in _cmdb_ci_covered:
+                    continue  # 已有 Zabbix TaskResource 节点
+                node_id = _node_key('cmdb_component', ci.id)
+                add_node(
+                    node_id, ci.name, 'component', ci_type_name,
+                    system_name=bl, business_line=bl,
+                    environment=ci.environment,
+                    description=f'{ci_type_name} (iTop CMDB) | 状态: {ci.status}',
+                    route=f'/cmdb/config-items/{ci.id}',
+                    technology=ci_type_name,
+                    details=[
+                        {'label': 'CI 类型', 'value': ci_type_name},
+                        {'label': '业务线', 'value': bl or '-'},
+                        {'label': '来源', 'value': 'iTop CMDB'},
+                        {'label': '状态', 'value': ci.status},
+                    ],
+                )
+                sys_node = _cmdb_system_nodes.get(bl)
+                if sys_node:
+                    add_edge(sys_node, node_id, '包含组件', 'system_component')
+                else:
+                    env_name = graph_environment(ci.environment) or _default_env_name
+                    if env_name:
+                        add_edge(_node_key('environment', env_name), node_id, '孤立组件', 'environment_component')
 
         # -- 加载 CIRelation 作为图谱边（关系类型注册表驱动：display_name/颜色/线型） --
         ci_ids = set(_cmdb_ci_lookup.keys())

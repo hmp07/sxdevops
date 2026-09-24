@@ -9535,6 +9535,118 @@ class KnowledgeGraphClosureServiceTests(TestCase):
         self.assertIn('数据库B', content)
         self.assertIn('主机C', content)
 
+    def test_environment_falls_back_to_session_resolution(self):
+        """问题无环境词且未传 environment 时，回退到会话解析出的知识环境名，避免空图。"""
+        from unittest import mock
+        from aiops.services import query_knowledge_graph_closure
+
+        captured = {}
+
+        def _fake_build(params):
+            captured['params'] = params
+            return self._synthetic_graph()
+
+        resolution = {
+            'status': 'resolved',
+            'environment': {'name': '默认环境', 'alert_environments': ['prod']},
+        }
+        with mock.patch('aiops.services.build_knowledge_graph', side_effect=_fake_build):
+            with mock.patch('aiops.business.environment._resolve_chat_environment',
+                            return_value=resolution):
+                query_knowledge_graph_closure(self.session, None, self.admin, query='TS_ORDER')
+        self.assertEqual(captured['params'].get('environment'), '默认环境',
+                         '无环境参数时应回退到会话解析出的环境名')
+
+    def test_custom_ci_type_becomes_graph_node(self):
+        """自定义 CI 类型（本体扩展）应作为图节点入图，CIRelation 边随之渲染。"""
+        from cmdb.models import CIType, CIRelation, ConfigItem
+        from aiops.models import AIOpsKnowledgeEnvironment
+
+        ts_type = CIType.objects.create(name='表空间', layer=3)
+        dbf_type = CIType.objects.create(name='数据文件', layer=4)
+        ts_ci = ConfigItem.objects.create(
+            name='TS_ORDER', ci_type=ts_type, status='active',
+            environment='closure-env', attributes={})
+        dbf_ci = ConfigItem.objects.create(
+            name='ts_order_01.dbf', ci_type=dbf_type, status='active',
+            environment='closure-env', attributes={})
+        CIRelation.objects.create(
+            source=ts_ci, target=dbf_ci, relation_type_id='contains', description='包含')
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='closure-env', is_enabled=True, created_by='aiops_user', updated_by='aiops_user')
+
+        from rest_framework.test import APIClient
+        client = APIClient()
+        client.force_login(self.admin)
+        response = client.get('/api/aiops/knowledge-graph/', {'environment': 'closure-env'})
+        self.assertEqual(response.status_code, 200)
+        nodes_by_label = {n.get('label'): n.get('id') for n in response.data['nodes']}
+        self.assertIn('TS_ORDER', nodes_by_label, '自定义类型 CI 应成为图节点')
+        self.assertIn('ts_order_01.dbf', nodes_by_label)
+        edge_pairs = {(e.get('source'), e.get('target')) for e in response.data['edges']}
+        self.assertIn(
+            (nodes_by_label['TS_ORDER'], nodes_by_label['ts_order_01.dbf']), edge_pairs,
+            '自定义 CI 间的 CIRelation 边应渲染',
+        )
+
+    def test_ci_event_env_maps_to_knowledge_env_node(self):
+        """CI 的 event 环境（如 prod）应经 graph_environment 映射到知识环境节点，
+        否则环境边悬空、可达性剪枝会剪掉全部 CMDB 节点。"""
+        from cmdb.models import CIType, CIRelation, ConfigItem
+        from aiops.models import AIOpsKnowledgeEnvironment
+
+        host_type = CIType.objects.create(name='云主机(ECS)')
+        ts_type = CIType.objects.create(name='表空间', layer=3)
+        host_ci = ConfigItem.objects.create(
+            name='orcl-db-01', ci_type=host_type, status='active',
+            environment='prod', attributes={})
+        ts_ci = ConfigItem.objects.create(
+            name='TS_ORDER', ci_type=ts_type, status='active',
+            environment='prod', attributes={})
+        CIRelation.objects.create(
+            source=host_ci, target=ts_ci, relation_type_id='hosted_on', description='承载')
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='默认环境', is_enabled=True, event_environments=['prod'],
+            created_by='aiops_user', updated_by='aiops_user')
+
+        from rest_framework.test import APIClient
+        client = APIClient()
+        client.force_login(self.admin)
+        response = client.get('/api/aiops/knowledge-graph/', {'environment': '默认环境'})
+        self.assertEqual(response.status_code, 200)
+        nodes_by_label = {n.get('label'): n.get('id') for n in response.data['nodes']}
+        self.assertIn('orcl-db-01', nodes_by_label, 'prod 环境的主机 CI 应存活')
+        self.assertIn('TS_ORDER', nodes_by_label, 'prod 环境的自定义 CI 应存活')
+        edge_pairs = {(e.get('source'), e.get('target')) for e in response.data['edges']}
+        self.assertIn(
+            (nodes_by_label['orcl-db-01'], nodes_by_label['TS_ORDER']), edge_pairs,
+            'CI 间关系边应渲染且两端可达',
+        )
+
+    def test_exact_label_match_preferred_over_substring(self):
+        """节点解析：精确 label 匹配优先于包含关键字的告警/指标类节点。"""
+        from unittest import mock
+        from aiops.services import query_knowledge_graph_closure
+
+        graph = {
+            'nodes': [
+                {'id': 'alert1', 'label': '表空间使用率超过 99% TABLESPACE_FULL（TS_ORDER）'},
+                {'id': 'A', 'label': 'TS_ORDER'},
+                {'id': 'B', 'label': '数据文件'},
+            ],
+            'edges': [
+                {'id': 'e1', 'source': 'A', 'target': 'B', 'label': '包含',
+                 'relation': 'cmdb_relation:contains', 'weight': 1},
+            ],
+        }
+        with mock.patch('aiops.services.build_knowledge_graph', return_value=graph):
+            result = query_knowledge_graph_closure(self.session, None, self.admin, query='TS_ORDER')
+        self.assertEqual(result['summary']['path_count'], 1, '应选中精确节点 TS_ORDER 而非告警节点')
+        content = result['sections'][0]['content']
+        self.assertIn('TS_ORDER', content)
+        self.assertIn('数据文件', content)
+        self.assertNotIn('表空间使用率', content)
+
     def test_node_resolution_falls_back_to_tokens(self):
         from unittest import mock
         from aiops.services import query_knowledge_graph_closure

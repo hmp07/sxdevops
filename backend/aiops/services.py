@@ -10214,7 +10214,17 @@ def query_knowledge_graph_closure(session, user_message, user, query='', node_id
         _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
         return empty_result
 
-    params = _querydict_for_knowledge_graph(environment or _extract_environment(query), '', '')
+    env_name = environment or _extract_environment(query)
+    if not env_name:
+        # 问题无环境关键词时回退到会话解析出的知识环境名，避免建图参数为空导致空图
+        try:
+            from aiops.business.environment import _resolve_chat_environment
+            resolution = _resolve_chat_environment(session, query)
+            if resolution.get('status') == 'resolved':
+                env_name = (resolution.get('environment') or {}).get('name') or ''
+        except Exception:
+            env_name = ''
+    params = _querydict_for_knowledge_graph(env_name, '', '')
     graph = build_knowledge_graph(params)
     nodes = graph.get('nodes') or []
     node_map = {node.get('id'): node for node in nodes if isinstance(node, dict)}
@@ -10227,6 +10237,18 @@ def query_knowledge_graph_closure(session, user_message, user, query='', node_id
             return str(node.get('label') or node.get('name') or node.get('id') or '').lower()
 
         matches = [n for n in nodes if keyword and keyword in _node_text(n)]
+        if len(matches) > 1:
+            # 精确 label 匹配优先（其次前缀匹配），避免告警/指标类节点（label 含资源名）
+            # 抢先于同名 CI/资源节点
+            def _match_rank(node):
+                text = _node_text(node).strip()
+                if text == keyword:
+                    return (0, 0, len(text))
+                if text.startswith(keyword):
+                    return (1, 0, len(text))
+                return (2, 0, len(text))
+
+            matches.sort(key=_match_rank)
         if not matches:
             # 分词回退：问题串的每个 token 与节点 label 计分匹配
             tokens = [t for t in re.split(r'[\s,，、]+', keyword) if t]
