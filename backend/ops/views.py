@@ -1800,7 +1800,7 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
     queryset = Alert.objects.select_related('host', 'integration').prefetch_related('actions', 'claim_records', 'notification_logs__channel', 'notification_logs__rule').all()
     serializer_class = AlertSerializer
     search_fields = ['title', 'source', 'message', 'host__hostname', 'service', 'resource', 'business_line', 'cluster', 'namespace']
-    filterset_fields = ['level', 'status', 'source_type', 'source', 'is_acknowledged', 'is_suppressed', 'service', 'environment', 'cluster', 'namespace', 'region', 'business_line', 'claimed_by']
+    filterset_fields = ['level', 'status', 'source_type', 'source', 'is_acknowledged', 'is_suppressed', 'service', 'environment', 'cluster', 'namespace', 'region', 'business_line', 'claimed_by', 'alert_code', 'causal_level']
     event_module = 'ops'
     event_resource_type = 'alert'
     event_resource_label = '告警'
@@ -1839,6 +1839,8 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
             queryset = queryset.exclude(claim_records__isnull=True).distinct()
         if params.get('only_open') in {'1', 'true', 'True'}:
             queryset = queryset.exclude(status__in=[Alert.STATUS_RESOLVED, Alert.STATUS_CLOSED])
+        if params.get('fold_derived') in {'1', 'true', 'True'}:
+            queryset = queryset.exclude(causal_level='derived')
         resource = params.get('resource')
         if resource:
             queryset = queryset.filter(Q(resource__icontains=resource) | Q(host__hostname__icontains=resource))

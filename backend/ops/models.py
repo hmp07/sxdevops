@@ -811,6 +811,12 @@ class Alert(models.Model):
     source_type = models.CharField('来源类型', max_length=32, choices=SOURCE_TYPE_CHOICES, default=SOURCE_GENERIC)
     external_id = models.CharField('外部事件 ID', max_length=128, blank=True, default='')
     fingerprint = models.CharField('指纹', max_length=128, blank=True, default='', db_index=True)
+    alert_code = models.CharField('告警码', max_length=32, blank=True, default='', db_index=True)
+    causal_level = models.CharField('因果层级', max_length=8, choices=[
+        ('none', '无'), ('root', '根因'), ('derived', '派生'),
+    ], default='none', db_index=True)
+    derived_from = models.JSONField('派生来源', default=list, blank=True)
+    evidence_chain = models.JSONField('证据链', default=list, blank=True)
     group_key = models.CharField('聚合键', max_length=256, blank=True, default='', db_index=True)
     message = models.TextField('详情')
     is_acknowledged = models.BooleanField('已确认', default=False)
@@ -858,6 +864,7 @@ class Alert(models.Model):
             models.Index(fields=['service', 'environment']),
             models.Index(fields=['cluster', 'namespace']),
             models.Index(fields=['resource_type', 'resource']),
+            models.Index(fields=['alert_code', 'status']),
             models.Index(fields=['is_acknowledged', 'created_at']),
         ]
 
@@ -1170,6 +1177,40 @@ class AlertAction(models.Model):
 
     def __str__(self):
         return f'{self.alert_id} {self.action}'
+
+
+class AlertCausalRule(models.Model):
+    """L1 确定性因果收敛规则（V2.0 本体方案 §4.3 的运行期落点，SWRL 转写为数据规则）。"""
+
+    DIRECTION_UPSTREAM = 'upstream'
+    DIRECTION_DOWNSTREAM = 'downstream'
+    DIRECTION_CHOICES = [
+        (DIRECTION_UPSTREAM, '上溯（沿关系图向根因方向）'),
+        (DIRECTION_DOWNSTREAM, '下溯（沿关系图向影响方向）'),
+    ]
+
+    code = models.CharField("规则 ID", max_length=32, unique=True)
+    name = models.CharField("名称", max_length=128)
+    description = models.TextField("描述", blank=True)
+    source_alert_codes = models.JSONField("前件告警码", default=list, blank=True)
+    target_alert_codes = models.JSONField("派生告警码", default=list, blank=True)
+    relation_type_code = models.CharField("沿用的关系类型码", max_length=32, blank=True, default='')
+    direction = models.CharField("推理方向", max_length=16, choices=DIRECTION_CHOICES, default=DIRECTION_UPSTREAM)
+    max_hops = models.PositiveIntegerField("最大跳数", default=5)
+    window_minutes = models.PositiveIntegerField("时间窗(分钟)", default=5)
+    is_enabled = models.BooleanField("启用", default=True)
+    priority = models.IntegerField("优先级", default=0)
+    notes = models.TextField("备注（F 组安全联动预留语义）", blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['priority', 'code']
+        verbose_name = 'L1 因果规则'
+        verbose_name_plural = 'L1 因果规则'
+
+    def __str__(self):
+        return self.code
 
 
 class AlertInteractionToken(models.Model):

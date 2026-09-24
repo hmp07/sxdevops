@@ -5452,3 +5452,331 @@ class DemoMetricApiTests(TestCase):
                 {'query': 'node_cpu_usage_percent'}, format='json')
         self.assertEqual(response.status_code, 200, response.json())
         self.assertTrue(response.json().get('success'))
+
+
+class AlertCausalityFieldTests(TestCase):
+    """Alert 因果字段（alert_code/causal_level/derived_from/evidence_chain）+ 回填命令。"""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_superuser('causality-admin', 'c@example.com', 'Admin@123456')
+        self.client.force_login(self.user)
+
+    def _create_alert(self, title='测试告警', level='critical', status='active', **kwargs):
+        from ops.models import Alert
+        fields = dict(
+            title=title, level=level, status=status,
+            source='test', source_type='generic',
+            fingerprint=uuid.uuid4().hex[:32], **kwargs)
+        return Alert.objects.create(**fields)
+
+    def test_fields_default_values(self):
+        alert = self._create_alert()
+        self.assertEqual(alert.alert_code, '')
+        self.assertEqual(alert.causal_level, 'none')
+        self.assertEqual(alert.derived_from, [])
+        self.assertEqual(alert.evidence_chain, [])
+
+    def test_fields_exposed_by_list_api(self):
+        alert = self._create_alert(title='ORA-01653 表空间无法扩展')
+        alert.alert_code = 'ORA-01653'
+        alert.causal_level = 'derived'
+        alert.derived_from = [1]
+        alert.evidence_chain = [{'rule_code': 'D1'}]
+        alert.save(update_fields=['alert_code', 'causal_level', 'derived_from', 'evidence_chain'])
+
+        response = self.client.get('/api/alerts/', {'alert_code': 'ORA-01653'})
+        self.assertEqual(response.status_code, 200)
+        rows = response.json().get('results', response.json())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['alert_code'], 'ORA-01653')
+        self.assertEqual(rows[0]['causal_level'], 'derived')
+        self.assertEqual(rows[0]['derived_from'], [1])
+        self.assertEqual(rows[0]['evidence_chain'], [{'rule_code': 'D1'}])
+
+    def test_filter_by_causal_level_and_fold_derived(self):
+        self._create_alert(title='根因告警', level='critical')
+        derived = self._create_alert(title='派生告警', level='warning')
+        derived.causal_level = 'derived'
+        derived.save(update_fields=['causal_level'])
+
+        response = self.client.get('/api/alerts/', {'causal_level': 'derived'})
+        rows = response.json().get('results', response.json())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['title'], '派生告警')
+
+        folded = self.client.get('/api/alerts/', {'fold_derived': '1'})
+        folded_rows = folded.json().get('results', folded.json())
+        self.assertTrue(all(row['title'] != '派生告警' for row in folded_rows))
+
+    def test_backfill_command_dry_run(self):
+        from django.core.management import call_command
+        from io import StringIO
+
+        self._create_alert(title='ORA-01653: unable to extend table', level='critical')
+        self._create_alert(title='ORA-12541 TNS no listener', level='critical')
+        self._create_alert(title='普通 CPU 告警', level='warning')
+
+        out = StringIO()
+        call_command('backfill_alert_codes', '--dry-run', stdout=out)
+        output = out.getvalue()
+        self.assertIn('ORA-01653', output)
+        self.assertIn('ORA-12541', output)
+        # 未执行的 dry-run 不应落库
+        from ops.models import Alert
+        self.assertEqual(Alert.objects.filter(alert_code__in=['ORA-01653', 'ORA-12541']).count(), 0)
+
+
+class AlertCausalRuleSeedTests(TestCase):
+    """L1 规则模型与告警码字典：字典完整性、规则 seed 幂等、L1 派生码覆盖。"""
+
+    def test_dictionary_covers_codes_with_chinese(self):
+        from ops.alert_causality import ALERT_CODE_DICTIONARY
+
+        # 附录 A 31 条 + D1 前件所需 TABLESPACE_FULL（附录未列，V2.0 §4.3 D1 引用）
+        self.assertEqual(len(ALERT_CODE_DICTIONARY), 32)
+        for code, entry in ALERT_CODE_DICTIONARY.items():
+            self.assertTrue(entry.get('name'), f'{code} 缺中文名')
+            self.assertIn(entry.get('level'), ('root', 'derived', 'candidate'), f'{code} 级别非法')
+
+    def test_default_rules_cover_l1_derived_codes(self):
+        from ops.alert_causality import DEFAULT_CAUSAL_RULES
+
+        targets = set()
+        for rule in DEFAULT_CAUSAL_RULES:
+            targets.update(rule['target_alert_codes'])
+        for code in ['ORA-12541', 'ORA-01653', 'DB_HANG', 'DB_IO_DEGRADED',
+                     'DB_WRITE_BLOCKED', 'INSTANCE_UNREACHABLE', 'NETWORK_ABNORMAL']:
+            self.assertIn(code, targets, f'L1 派生码 {code} 未被默认规则覆盖')
+
+    def test_rule_ids_align_with_v2(self):
+        from ops.alert_causality import DEFAULT_CAUSAL_RULES
+
+        codes = {rule['code'] for rule in DEFAULT_CAUSAL_RULES}
+        self.assertEqual(codes, {'B3', 'D1', 'D2', 'D2b', 'D3', 'B1', 'B2'})
+
+    def test_seed_command_idempotent(self):
+        from django.core.management import call_command
+        from ops.models import AlertCausalRule
+
+        call_command('seed_alert_causality_rules', stdout=__import__('io').StringIO())
+        count1 = AlertCausalRule.objects.count()
+        call_command('seed_alert_causality_rules', stdout=__import__('io').StringIO())
+        self.assertEqual(AlertCausalRule.objects.count(), count1)
+        self.assertGreaterEqual(count1, 7)
+
+    def test_knowledge_env_causal_rule_set_default(self):
+        from aiops.models import AIOpsKnowledgeEnvironment
+
+        env = AIOpsKnowledgeEnvironment.objects.create(
+            name='causal-env', is_enabled=True, created_by='x', updated_by='x')
+        self.assertEqual(env.causal_rule_set, {})
+
+
+class AlertCausalityEngineTests(TestCase):
+    """L1 因果执行器 evaluate_alert_causality：收敛、时间窗、环、熔断、开关、保守标记。"""
+
+    def setUp(self):
+        from django.core.management import call_command
+        from cmdb.models import CIType, CIRelation, ConfigItem
+        from ops.models import Alert
+
+        call_command('seed_alert_causality_rules', stdout=__import__('io').StringIO())
+
+        self.lun_type = CIType.objects.create(name='存储卷')
+        self.df_type = CIType.objects.create(name='数据文件')
+        self.ts_type = CIType.objects.create(name='表空间')
+        self.inst_type = CIType.objects.create(name='Oracle实例')
+
+        self.lun = ConfigItem.objects.create(name='lun-orders-01', ci_type=self.lun_type)
+        self.df = ConfigItem.objects.create(name='ts_order_01.dbf', ci_type=self.df_type)
+        self.ts = ConfigItem.objects.create(name='TS_ORDER', ci_type=self.ts_type)
+        self.orcl = ConfigItem.objects.create(name='ORCL01', ci_type=self.inst_type)
+
+        # 存储链路：LUN ← 数据文件 ← 表空间 ← 实例（contains 关系 + depends_on 到存储）
+        CIRelation.objects.create(source=self.orcl, target=self.ts, relation_type_id='contains')
+        CIRelation.objects.create(source=self.ts, target=self.df, relation_type_id='contains')
+        CIRelation.objects.create(source=self.df, target=self.lun, relation_type_id='depends_on')
+
+        self.Alert = Alert
+
+    def _alert(self, code, resource, minutes_ago=2, level='critical'):
+        return self.Alert.objects.create(
+            title=f'{code} 测试告警', level=level, status='active',
+            source='test', source_type='generic', fingerprint=uuid.uuid4().hex[:32],
+            alert_code=code, resource=resource,
+            starts_at=timezone.now() - timedelta(minutes=minutes_ago),
+        )
+
+    def test_tablespace_full_derives_ora_01653(self):
+        from ops.alert_causality import evaluate_alert_causality
+
+        root = self._alert('TABLESPACE_FULL', 'TS_ORDER')
+        derived = self._alert('ORA-01653', 'ORCL01')
+        result = evaluate_alert_causality(derived)
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result['converged'])
+        self.assertEqual(result['rule'], 'D1')
+        self.assertEqual(result['root_alert_id'], root.id)
+        derived.refresh_from_db()
+        self.assertEqual(derived.causal_level, 'derived')
+        self.assertIn(root.id, derived.derived_from)
+        self.assertTrue(derived.evidence_chain)
+        chain = derived.evidence_chain[0]
+        self.assertEqual(chain['rule_code'], 'D1')
+        self.assertIn('TS_ORDER', chain['path'])
+        root.refresh_from_db()
+        self.assertEqual(root.causal_level, 'root')
+
+    def test_window_exceeded_skips(self):
+        from ops.alert_causality import evaluate_alert_causality
+
+        self._alert('TABLESPACE_FULL', 'TS_ORDER', minutes_ago=10)
+        derived = self._alert('ORA-01653', 'ORCL01')
+        result = evaluate_alert_causality(derived)
+        self.assertIsNone(result)
+        derived.refresh_from_db()
+        self.assertEqual(derived.causal_level, 'none')
+
+    def test_cycle_safe(self):
+        from ops.alert_causality import evaluate_alert_causality
+        from cmdb.models import CIRelation
+
+        # 构造环：TS → LUN → ORCL → TS
+        CIRelation.objects.create(source=self.lun, target=self.orcl, relation_type_id='depends_on')
+        CIRelation.objects.create(source=self.orcl, target=self.ts, relation_type_id='depends_on')
+        self._alert('TABLESPACE_FULL', 'TS_ORDER')
+        derived = self._alert('ORA-01653', 'ORCL01')
+        result = evaluate_alert_causality(derived)  # 不超时不崩溃
+        self.assertTrue(result is None or result.get('converged') in (True, False))
+
+    def test_storm_cutoff_truncated(self):
+        from ops.alert_causality import evaluate_alert_causality
+        from cmdb.models import ConfigItem, CIType, CIRelation
+
+        node_type = CIType.objects.create(name='存储系统')
+        for i in range(25):
+            node = ConfigItem.objects.create(name=f'node-{i}', ci_type=node_type)
+            CIRelation.objects.create(source=self.ts, target=node, relation_type_id='contains')
+        self._alert('TABLESPACE_FULL', 'TS_ORDER')
+        derived = self._alert('ORA-01653', 'ORCL01')
+        result = evaluate_alert_causality(derived)
+        self.assertIsNotNone(result)
+        self.assertTrue(result['truncated'])
+
+    def test_disabled_switch_skips(self):
+        from unittest import mock
+        from ops.alert_causality import evaluate_alert_causality
+
+        self._alert('TABLESPACE_FULL', 'TS_ORDER')
+        derived = self._alert('ORA-01653', 'ORCL01')
+        with mock.patch('ops.alert_causality._causality_enabled', return_value=False):
+            result = evaluate_alert_causality(derived)
+        self.assertIsNone(result)
+        derived.refresh_from_db()
+        self.assertEqual(derived.causal_level, 'none')
+
+    def test_suppressed_skips(self):
+        from ops.alert_causality import evaluate_alert_causality
+
+        self._alert('TABLESPACE_FULL', 'TS_ORDER')
+        derived = self._alert('ORA-01653', 'ORCL01')
+        derived.is_suppressed = True
+        derived.save(update_fields=['is_suppressed'])
+        self.assertIsNone(evaluate_alert_causality(derived))
+
+    def test_idempotent(self):
+        from ops.alert_causality import evaluate_alert_causality
+
+        self._alert('TABLESPACE_FULL', 'TS_ORDER')
+        derived = self._alert('ORA-01653', 'ORCL01')
+        evaluate_alert_causality(derived)
+        chain_len = len(derived.evidence_chain)
+        evaluate_alert_causality(derived)
+        derived.refresh_from_db()
+        self.assertEqual(len(derived.evidence_chain), chain_len, '重复执行不应重复写证据链')
+
+    def test_mark_only_no_mutation(self):
+        from ops.alert_causality import evaluate_alert_causality
+
+        self._alert('TABLESPACE_FULL', 'TS_ORDER')
+        derived = self._alert('ORA-01653', 'ORCL01')
+        evaluate_alert_causality(derived)
+        derived.refresh_from_db()
+        self.assertEqual(derived.status, 'active', '不得修改状态')
+        self.assertFalse(derived.is_suppressed, '不得写抑制标记')
+        self.assertFalse(derived.muted_by, '不得写静默字段')
+
+
+class AlertCausalityMountTests(TestCase):
+    """L1 挂载：webhook 与 Zabbix 轮询双路径触发；异常不阻断；折叠计数键。"""
+
+    def setUp(self):
+        from ops.models import AlertIntegration
+        self.client = APIClient()
+        self.integration = AlertIntegration.objects.create(name='Prometheus', provider='prometheus')
+
+    def _webhook_payload(self, fingerprint='fp-causal-01'):
+        return {
+            'status': 'firing',
+            'alerts': [{
+                'status': 'firing',
+                'fingerprint': fingerprint,
+                'labels': {'alertname': 'CausalProbe', 'severity': 'warning'},
+                'annotations': {'summary': 'causal probe alert'},
+                'startsAt': '2026-05-04T10:00:00+08:00',
+            }],
+        }
+
+    def test_webhook_ingest_triggers_causality(self):
+        with patch('ops.alerting._maybe_evaluate_causality') as spy:
+            response = self.client.post(
+                f'/api/alerts/webhooks/prometheus/{self.integration.token}/',
+                self._webhook_payload(), format='json')
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(spy.call_count, 1)
+
+    def test_zabbix_bridge_triggers_causality(self):
+        from ops.zabbix_alert_bridge import upsert_alert_from_zabbix_problem
+
+        problem = {
+            'eventid': 'evt-causal-01',
+            'name': 'causal probe problem',
+            'severity': '3',
+            'clock': str(int(timezone.now().timestamp())),
+        }
+        with patch('ops.zabbix_alert_bridge._maybe_evaluate_causality') as spy:
+            alert, created = upsert_alert_from_zabbix_problem(
+                problem, host_name='causal-host-01', host_id='10001')
+        self.assertIsNotNone(alert)
+        self.assertTrue(created)
+        self.assertEqual(spy.call_count, 1)
+
+    def test_executor_exception_does_not_block_ingest(self):
+        with patch('ops.alerting._maybe_evaluate_causality', side_effect=RuntimeError('boom')):
+            response = self.client.post(
+                f'/api/alerts/webhooks/prometheus/{self.integration.token}/',
+                self._webhook_payload('fp-causal-02'), format='json')
+        self.assertEqual(response.status_code, 202)
+        from ops.models import Alert
+        self.assertTrue(Alert.objects.filter(message__icontains='causal probe').exists())
+
+    def test_summaries_include_causality_counts(self):
+        from ops.alerting import alert_group_summary, alert_summary
+        from ops.models import Alert
+
+        root = Alert.objects.create(
+            title='root', level='critical', status='active', source='t', source_type='generic',
+            fingerprint='fp-root-01', alert_code='STORAGE_FULL', causal_level='root')
+        Alert.objects.create(
+            title='derived', level='warning', status='active', source='t', source_type='generic',
+            fingerprint='fp-derived-01', alert_code='DB_WRITE_BLOCKED', causal_level='derived',
+            derived_from=[root.id])
+
+        summary = alert_summary(Alert.objects.all())
+        self.assertEqual(summary['root'], 1)
+        self.assertEqual(summary['derived'], 1)
+
+        groups = alert_group_summary(Alert.objects.all())
+        self.assertEqual(groups[0]['root'], 1)
+        self.assertEqual(groups[0]['derived'], 1)

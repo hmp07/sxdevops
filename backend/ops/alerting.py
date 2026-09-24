@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import json
 import re
 from collections import Counter, defaultdict
@@ -11,6 +12,8 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+
+logger = logging.getLogger(__name__)
 
 from .models import (
     Alert,
@@ -1090,6 +1093,9 @@ def apply_escalation_policy(alert, request=None):
     return True
 
 
+from ops.alert_causality import _maybe_evaluate_causality
+
+
 def ingest_webhook(provider, payload, integration=None, request=None):
     provider = normalize_provider(provider)
     normalized_alerts = normalize_alert_payload(provider, payload, integration=integration)
@@ -1104,6 +1110,10 @@ def ingest_webhook(provider, payload, integration=None, request=None):
             integration.save(update_fields=['last_received_at', 'updated_at'])
         for item in normalized_alerts:
             alert, created = upsert_alert(item, integration=integration, actor=provider)
+            try:
+                _maybe_evaluate_causality(alert)
+            except Exception:
+                logger.warning('causality hook failed for alert %s', alert.id, exc_info=True)
             apply_alert_suppression(alert)
             apply_escalation_policy(alert, request=request)
             action = 'resolved' if alert.status == Alert.STATUS_RESOLVED else 'fire'
@@ -1211,6 +1221,8 @@ def alert_group_summary(queryset, group_by=None, limit=5000):
                 'unacknowledged': 0,
                 'suppressed': 0,
                 'latest_at': None,
+                'root': 0,
+                'derived': 0,
                 'sample_alert_id': None,
                 'sample_title': '',
             }
@@ -1221,6 +1233,10 @@ def alert_group_summary(queryset, group_by=None, limit=5000):
             item['unacknowledged'] += 1
         if alert.is_suppressed or alert.status == Alert.STATUS_MUTED:
             item['suppressed'] += 1
+        if alert.causal_level == 'root':
+            item['root'] += 1
+        elif alert.causal_level == 'derived':
+            item['derived'] += 1
         if not item['latest_at'] or alert.created_at > item['latest_at']:
             item['latest_at'] = alert.created_at
             item['sample_alert_id'] = alert.id
@@ -1248,6 +1264,8 @@ def alert_summary(queryset):
         'unacknowledged': sum(1 for alert in alerts if not _has_claimants(alert)),
         'claimed': sum(1 for alert in alerts if _has_claimants(alert)),
         'suppressed': sum(1 for alert in alerts if alert.is_suppressed or alert.status == Alert.STATUS_MUTED),
+        'root': sum(1 for alert in alerts if alert.causal_level == 'root'),
+        'derived': sum(1 for alert in alerts if alert.causal_level == 'derived'),
     }
 
 

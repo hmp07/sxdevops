@@ -3,6 +3,8 @@
 将 Zabbix API 返回的问题数据通过统一告警流水线导入 Alert 模型。
 支持定时轮询和 Webhook 两种触发方式。
 """
+import logging
+
 from django.utils.timezone import now
 
 SEVERITY_MAP = {0: 'info', 1: 'info', 2: 'warning', 3: 'warning', 4: 'critical', 5: 'critical'}
@@ -109,6 +111,9 @@ def _build_normalized(problem, host_name='', host_id='', visible_name='', env_na
     }
 
 
+from ops.alert_causality import _maybe_evaluate_causality
+
+
 def upsert_alert_from_zabbix_problem(problem, host_name='', host_id='', visible_name='', env_name=''):
     """将 Zabbix problem 通过统一流水线转换为 Alert 并返回 (alert, created)"""
     from ops import alerting
@@ -126,6 +131,10 @@ def upsert_alert_from_zabbix_problem(problem, host_name='', host_id='', visible_
         if not alert.business_line and alert.host_id and alert.host.business_line:
             alert.business_line = alert.host.business_line
             alert.save(update_fields=['business_line'])
+        try:
+            _maybe_evaluate_causality(alert)
+        except Exception:
+            logging.getLogger(__name__).warning('causality hook failed for alert %s', alert.id, exc_info=True)
         alerting.apply_alert_suppression(alert)
         action = 'resolved' if alert.status == 'resolved' else 'fire'
         alerting.dispatch_alert_notifications(alert, action=action)

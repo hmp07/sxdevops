@@ -212,6 +212,7 @@ class AIOpsKnowledgeEnvironment(models.Model):
     docker_host_ids = models.JSONField('Docker 环境', default=list, blank=True)
     task_resource_environment_ids = models.JSONField('任务资源底座环境', default=list, blank=True)
     association_snapshot = models.JSONField('关联快照', default=dict, blank=True)
+    causal_rule_set = models.JSONField('L1因果规则集', default=dict, blank=True)
     child_node_snapshot = models.JSONField('子节点快照', default=dict, blank=True)
     snapshot_generated_at = models.DateTimeField('快照生成时间', null=True, blank=True)
     is_default = models.BooleanField('默认图谱', default=False)
