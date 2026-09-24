@@ -2,7 +2,7 @@
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
 from rbac.models import PermissionDefinition, Role
@@ -995,7 +995,22 @@ class iTopRelationSyncTests(TestCase):
         self.sync_relations(self.ds)
         self.assertFalse(CIRelation.objects.filter(source=self.server1).exists())
         self.server1.refresh_from_db()
-        self.assertIn('Group::1', self.server1.attributes.get('owner_group', []))
+        # 写入目标 CI 名称（可用的本地引用），而非 iTop 原始 key
+        self.assertIn('grp-1', self.server1.attributes.get('owner_group', []))
+
+    def test_unknown_relation_code_skipped_without_crash(self):
+        self._mock_itop({('impacts', 'down'): {}})
+        self.ds.config['ci_classes'] = ['Server']
+        self.ds.config['relation_types'] = {
+            'impacts': {'code': 'depends_on', 'direction': 'down', 'mode': 'relation'},
+            'bogus_rel': {'code': 'no_such_code', 'direction': 'down', 'mode': 'relation'},
+        }
+        self.ds.save()
+
+        stats = self.sync_relations(self.ds)  # 未知注册码不得中断整轮同步
+        self.assertFalse(CIRelation.objects.filter(relation_type_id='no_such_code').exists())
+        self.assertGreaterEqual(stats.get('ignored_specs', 0), 1)
+
 
     def test_cleanup_disabled_by_default_and_enabled_removes_stale(self):
         stale = CIRelation.objects.create(
@@ -1022,3 +1037,35 @@ class iTopRelationSyncTests(TestCase):
         self.assertEqual(len(ITOP_LNK_CLASSES), 13)
         missing = set(ITOP_LNK_CLASSES) - set(ITOP_RELATION_MAP.keys())
         self.assertFalse(missing, f'映射表缺少: {missing}')
+
+    def test_cleanup_skipped_when_any_relation_call_fails(self):
+        """任一 get_related 失败时禁止清理（防瞬态 iTop 故障全量误删）。"""
+        import json
+
+        stale = CIRelation.objects.create(
+            source=self.server1, target=self.server2, relation_type_id='depends_on')
+
+        def side_effect(ds, payload):
+            data = json.loads(payload)
+            op = data.get('operation')
+            if op == 'core/get_related':
+                if data.get('relation') == 'impacts':
+                    return {'code': 1, 'message': 'itop transient down'}
+                return {'code': 0, 'relations': {}}
+            if op == 'core/get':
+                return {'code': 0, 'objects': {'Server::1': {'key': '1'}}}
+            return {'code': 1, 'message': 'unexpected op'}
+
+        patch = self.mock.patch('cmdb.itop_sync._call_itop_api', side_effect=side_effect)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+        self.ds.config['ci_classes'] = ['Server']
+        self.ds.config['relation_types'] = {'impacts': {'code': 'depends_on', 'direction': 'down', 'mode': 'relation'},
+                                            'lnkGroupToCI': {'code': 'depends_on', 'direction': 'down', 'mode': 'attributes', 'attribute': 'owner_group'}}
+        self.ds.config['relation_cleanup'] = True
+        self.ds.save()
+
+        stats = self.sync_relations(self.ds)
+        self.assertTrue(CIRelation.objects.filter(id=stale.id).exists(), '失败轮不得清理关系')
+        self.assertEqual(stats.get('removed'), 0)

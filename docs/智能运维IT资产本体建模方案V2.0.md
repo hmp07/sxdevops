@@ -989,3 +989,4 @@ iTop 同步：`cmdb/itop_sync.py` ITOP_RELATION_MAP（13 个 lnk 类全量映射
 - F 组安全联动：仅落数据+文档（AlertCausalRule 预留 notes/priority 字段），不接自动执行拦截
 - iTop 侧不改动；LinkedSet 拉取路径后续版本接入；真实生产数据治理不在本期
 - 演示：Oracle 域故事线（seed_oracle_domain + Zabbix 演示问题 5 条，对应用例 04/05）
+- 迁移回滚说明：cmdb 0011 反向迁移不会回填旧 relation_type 列（历史空串行自动回填为 connects_to，未知码保留原值并生成注册表行）；需回滚时请先备份关系数据或接受关系类型码丢失

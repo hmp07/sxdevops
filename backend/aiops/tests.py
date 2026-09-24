@@ -9535,6 +9535,16 @@ class KnowledgeGraphClosureServiceTests(TestCase):
         self.assertIn('数据库B', content)
         self.assertIn('主机C', content)
 
+    def test_node_resolution_falls_back_to_tokens(self):
+        from unittest import mock
+        from aiops.services import query_knowledge_graph_closure
+
+        graph = self._synthetic_graph()
+        with mock.patch('aiops.services.build_knowledge_graph', return_value=graph):
+            result = query_knowledge_graph_closure(
+                self.session, None, self.admin, node_name='应用A 影响哪些下游')
+        self.assertEqual(result['summary']['path_count'], 1, '分词回退应解析出起点节点')
+
     def test_cmdb_edges_typed_by_relation_registry(self):
         from cmdb.models import CIType, CIRelation, ConfigItem, RelationType
         from aiops.models import AIOpsKnowledgeEnvironment
@@ -9613,6 +9623,32 @@ class AlertRootCauseCausalInjectionTests(TestCase):
         self.assertTrue(analysis['hypotheses'], '根因告警应汇总已知派生告警')
         titles = [s.get('title', '') for s in result.get('sections') or []]
         self.assertTrue(any('受影响范围' in t for t in titles))
+
+    def test_causal_chain_rendering_truncated_and_sanitized(self):
+        """因果链渲染须截断长度并剥离控制字符（防注入面放大）。"""
+        from aiops.services import _infer_alert_root_cause
+
+        root = self._alert('TABLESPACE_FULL')
+        big_path = ['node-%d' % i for i in range(50)]
+        alert = self._alert('ORA-01653', level='warning',
+                            causal_level='derived', derived_from=[root.id],
+                            evidence_chain=[{
+                                'rule_code': 'D1', 'relation_code': 'contains',
+                                'path': big_path + ['badtext'], 'root_code': 'TABLESPACE_FULL',
+                            }])
+        analysis = _infer_alert_root_cause(alert)
+        chain_text = ' '.join(analysis['causal_chain'])
+        self.assertNotIn('bad', chain_text, '控制字符应被剥离')
+        self.assertLessEqual(chain_text.count('-->'), 4, '路径渲染应截断到 5 个节点内')
+
+    def test_root_alert_with_dirty_derived_from_does_not_crash(self):
+        """derived_from 含非整数脏值时不得打穿工具调用。"""
+        from aiops.services import _infer_alert_root_cause
+
+        root = self._alert('TABLESPACE_FULL', causal_level='root', derived_from=['not-an-int'])
+        analysis = _infer_alert_root_cause(root)
+        self.assertIn('hypotheses', analysis)
+        self.assertIn('causal_chain', analysis)
 
     def test_unmarked_alert_keeps_existing_semantics(self):
         from aiops.services import query_alert_root_cause

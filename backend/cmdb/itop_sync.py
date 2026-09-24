@@ -3,7 +3,7 @@ import json
 import logging
 import requests
 from django.utils.timezone import now
-from cmdb.models import CIType, ConfigItem, CIRelation, iTopDataSource
+from cmdb.models import CIType, ConfigItem, CIRelation, iTopDataSource, RelationType
 from ops.models import TransactionTicket
 
 
@@ -208,7 +208,8 @@ def sync_relations(ds):
     class_map = ds.config.get('ci_class_map', DEFAULT_CI_CLASS_MAP) if ds.config else DEFAULT_CI_CLASS_MAP
     ci_classes = ds.config.get('ci_classes', list(class_map.keys())) if ds.config else list(class_map.keys())
     raw_relation_types = ds.config.get('relation_types', list(ITOP_RELATION_MAP.keys())) if ds.config else list(ITOP_RELATION_MAP.keys())
-    stats = {'created': 0, 'skipped': 0, 'removed': 0}
+    stats = {'created': 0, 'skipped': 0, 'removed': 0, 'ignored_specs': 0}
+    failed_calls = 0
     seen_relation_ids = []
 
     # 归一化：str 列表 → 按映射表展开为 spec dict
@@ -218,6 +219,17 @@ def sync_relations(ds):
     else:
         for rel_name in raw_relation_types:
             relation_specs[rel_name] = dict(ITOP_RELATION_MAP.get(rel_name, {}))
+
+    # 注册表校验：relation 模式下 code 必须存在于 RelationType，否则跳过（防 FK IntegrityError 中断整轮）
+    valid_codes = set(RelationType.objects.values_list('code', flat=True))
+    for rel_name, spec in list(relation_specs.items()):
+        if spec.get('mode', 'relation') == 'relation':
+            code = spec.get('code') or _map_relation_type(rel_name)
+            if code not in valid_codes:
+                logger_warning = logging.getLogger(__name__)
+                logger_warning.warning('itop_sync: 忽略未注册的关系码 %s（%s）', code, rel_name)
+                relation_specs.pop(rel_name, None)
+                stats['ignored_specs'] += 1
 
     for itop_class in ci_classes:
         result = _call_itop_api(ds, '{"operation":"core/get","class":"%s","key":"SELECT %s","output_fields":"id"}' % (
@@ -240,6 +252,7 @@ def sync_relations(ds):
                         itop_class, obj_id, rel_name, direction
                     ))
                 if rel_result.get('code') != 0:
+                    failed_calls += 1
                     continue
                 relations = rel_result.get('relations') or {}
                 if isinstance(relations, list):
@@ -255,11 +268,12 @@ def sync_relations(ds):
                         if not tgt_ci:
                             continue
                         if mode == 'attributes':
-                            # 数据属性模式：负责人/联系人/接口清单等，写入 ConfigItem.attributes
+                            # 数据属性模式：负责人/联系人/接口清单等，写入 ConfigItem.attributes（CI 名称，本地可用引用）
                             attribute = spec.get('attribute', 'related_refs')
+                            ref_value = tgt_ci.name or tgt_key
                             refs = list(src_ci.attributes.get(attribute) or [])
-                            if tgt_key not in refs:
-                                refs.append(tgt_key)
+                            if ref_value not in refs:
+                                refs.append(ref_value)
                                 src_ci.attributes[attribute] = refs
                                 src_ci.save(update_fields=['attributes'])
                                 stats['created'] += 1
@@ -284,7 +298,8 @@ def sync_relations(ds):
                             stats['skipped'] += 1
 
     # 清理 iTop 已消失的关系（默认关；仅影响两端均属本数据源的 CIRelation）
-    if ds.config.get('relation_cleanup'):
+    # 失败门控：本轮任一 get_related 失败时跳过清理，防瞬态 iTop 故障导致全量误删
+    if ds.config.get('relation_cleanup') and failed_calls == 0:
         stale_qs = CIRelation.objects.filter(
             source__itop_datasource=ds,
             target__itop_datasource=ds,

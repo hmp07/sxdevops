@@ -176,11 +176,19 @@ def _env_rule_whitelist(alert):
 
 
 def _find_ci_anchor(alert):
-    """告警 → CMDB 配置项锚点：resource/host 名称精确匹配 → IP 属性匹配。"""
+    """告警 → CMDB 配置项锚点：resource/host 名称精确匹配 → IP 属性匹配。
+
+    多环境同名 CI 时，优先取与告警 environment 相同的 CI。
+    """
     from cmdb.models import ConfigItem
     key = _alert_ci_key(alert)
     if key:
-        ci = ConfigItem.objects.filter(name=key).first()
+        ci_qs = ConfigItem.objects.filter(name=key)
+        if alert.environment:
+            ci = ci_qs.filter(environment=alert.environment).first()
+            if ci:
+                return ci
+        ci = ci_qs.first()
         if ci:
             return ci
         try:
@@ -193,10 +201,15 @@ def _find_ci_anchor(alert):
 
 
 def _walk_adjacent(start_ci, relation_code, max_hops):
-    """BFS 邻接遍历（≤max_hops；max_hops=0 仅起点）。返回 (visited_ids, truncated)。"""
+    """BFS 邻接遍历（≤max_hops；max_hops=0 仅起点）。
+
+    返回 (visited_ids, truncated, parents)：parents 记录每个节点的 BFS 父指针
+    （child_id → 发现它的节点 id），用于重建锚点到根因的真实最短路径。
+    """
     from cmdb.models import CIRelation
 
     visited = {start_ci.id}
+    parents = {}
     frontier = {start_ci.id}
     for _ in range(max_hops):
         qs = CIRelation.objects.filter(Q(source_id__in=frontier) | Q(target_id__in=frontier))
@@ -205,19 +218,23 @@ def _walk_adjacent(start_ci, relation_code, max_hops):
         next_ids = set()
         for rel in qs.values('source_id', 'target_id'):
             for ci_id in (rel['source_id'], rel['target_id']):
-                if ci_id not in visited:
-                    next_ids.add(ci_id)
+                if ci_id in visited or ci_id in next_ids:
+                    continue
+                # 发现方为 frontier 中与该边相邻的节点
+                parent_id = rel['source_id'] if rel['source_id'] in frontier else rel['target_id']
+                parents[ci_id] = parent_id
+                next_ids.add(ci_id)
         if not next_ids:
             break
         visited.update(next_ids)
         if len(visited) > MAX_BFS_NODES:
-            return visited, True
+            return visited, True, parents
         frontier = next_ids
-    return visited, False
+    return visited, False, parents
 
 
-def _match_root_alert(alert, rule, ci_names):
-    """时间窗 ±window_minutes 内、落在 visited CI 上的前件告警 → 根因告警。"""
+def _match_root_alert(alert, rule, ci_names, ci_map=None):
+    """时间窗 ±window_minutes 内、落在 visited CI 上的前件告警 → (根因告警, 根因 CI id)。"""
     window = timedelta(minutes=max(1, rule.window_minutes or 5))
     anchor_time = alert.starts_at or alert.created_at
     candidates = Alert.objects.filter(
@@ -227,11 +244,33 @@ def _match_root_alert(alert, rule, ci_names):
         starts_at__gte=anchor_time - window,
         starts_at__lte=anchor_time + window,
     )
+    if alert.environment:
+        candidates = candidates.filter(environment=alert.environment)
     for cand in candidates:
         key = _alert_ci_key(cand)
         if key and key in ci_names:
-            return cand
-    return None
+            root_ci_id = None
+            if ci_map:
+                root_ci_id = next((cid for cid, name in ci_map.items() if name == key), None)
+            return cand, root_ci_id
+    return None, None
+
+
+def _build_path_names(anchor_id, root_ci_id, parents, ci_map):
+    """按 BFS 父指针重建 锚点 → 根因 的最短路径（节点名序列）。"""
+    if root_ci_id is None or root_ci_id not in parents and root_ci_id != anchor_id:
+        return [ci_map.get(anchor_id, '')]
+    path_ids = [root_ci_id]
+    current = root_ci_id
+    seen = {root_ci_id}
+    while current != anchor_id and current in parents:
+        current = parents[current]
+        if current in seen:  # 防御：父指针异常成环时终止
+            break
+        seen.add(current)
+        path_ids.append(current)
+    path_ids.reverse()
+    return [ci_map.get(cid, str(cid)) for cid in path_ids]
 
 
 def _mark(alert, root_alert, rule, path_names):
@@ -266,8 +305,8 @@ def _evaluate(alert):
         return None
     if alert.is_suppressed or alert.status != Alert.STATUS_ACTIVE:
         return None
-    if (alert.occurrence_count or 0) >= 5:
-        return None
+    # 幂等由 causal_level 状态保证；不以 occurrence_count 设门槛——
+    # 否则高频轮询下未收敛告警会被永久跳过，根因晚到时无法收敛（评审 I2）
 
     anchor = _find_ci_anchor(alert)
     if not anchor:
@@ -283,25 +322,59 @@ def _evaluate(alert):
     for rule in rules:
         if alert.alert_code not in (rule.target_alert_codes or []):
             continue
-        visited, truncated = _walk_adjacent(anchor, rule.relation_type_code, rule.max_hops or 0)
+        visited, truncated, parents = _walk_adjacent(anchor, rule.relation_type_code, rule.max_hops or 0)
         if truncated:
             return {'rule': rule.code, 'root_alert_id': None, 'path': [],
                     'converged': False, 'truncated': True}
-        ci_names = [ci.name for ci in ConfigItem.objects.filter(id__in=visited).only('name')]
-        root_alert = _match_root_alert(alert, rule, set(ci_names))
+        ci_map = {ci.id: ci.name for ci in ConfigItem.objects.filter(id__in=visited).only('id', 'name')}
+        root_alert, root_ci_id = _match_root_alert(alert, rule, set(ci_map.values()), ci_map)
         if root_alert:
-            _mark(alert, root_alert, rule, ci_names)
-            return {'rule': rule.code, 'root_alert_id': root_alert.id, 'path': ci_names,
+            path_names = _build_path_names(anchor.id, root_ci_id, parents, ci_map)
+            _mark(alert, root_alert, rule, path_names)
+            return {'rule': rule.code, 'root_alert_id': root_alert.id, 'path': path_names,
                     'converged': True, 'truncated': False}
     return None
 
 
 def _maybe_evaluate_causality(alert):
-    """ingest 挂载点：开关短路 + 异常兜底，绝不阻断告警主链路。"""
+    """ingest 挂载点：开关短路 + 异常兜底，绝不阻断告警主链路。
+
+    除评估本条告警外，若本条是根因告警（命中某规则前件），
+    对称评估时间窗内未收敛的派生告警（乱序 ingest 兜底）。
+    """
     if not _causality_enabled():
         return None
     try:
-        return evaluate_alert_causality(alert)
+        result = evaluate_alert_causality(alert)
+        _evaluate_late_root_symmetry(alert)
+        return result
     except Exception:
         logger.warning('_maybe_evaluate_causality failed for alert %s', getattr(alert, 'id', None), exc_info=True)
         return None
+
+
+def _evaluate_late_root_symmetry(root_alert):
+    """根因告警到达后，对时间窗内未收敛的目标码告警做对称评估。"""
+    if not (root_alert.alert_code and root_alert.causal_level in ('none', 'root')):
+        return
+    window_by_rule = []
+    for rule in AlertCausalRule.objects.filter(is_enabled=True):
+        if root_alert.alert_code in (rule.source_alert_codes or []):
+            window_by_rule.append((rule, timedelta(minutes=max(1, rule.window_minutes or 5))))
+    if not window_by_rule:
+        return
+    anchor_time = root_alert.starts_at or root_alert.created_at
+    for rule, window in window_by_rule:
+        candidates = Alert.objects.filter(
+            alert_code__in=(rule.target_alert_codes or []),
+            causal_level='none',
+            status=Alert.STATUS_ACTIVE,
+        ).exclude(id=root_alert.id)
+        if root_alert.environment:
+            candidates = candidates.filter(environment=root_alert.environment)
+        candidates = candidates.filter(
+            starts_at__gte=anchor_time - window,
+            starts_at__lte=anchor_time + window,
+        )
+        for cand in candidates[:20]:
+            evaluate_alert_causality(cand)

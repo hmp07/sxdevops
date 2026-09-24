@@ -5599,11 +5599,11 @@ class AlertCausalityEngineTests(TestCase):
 
         self.Alert = Alert
 
-    def _alert(self, code, resource, minutes_ago=2, level='critical'):
+    def _alert(self, code, resource, minutes_ago=2, level='critical', environment=''):
         return self.Alert.objects.create(
             title=f'{code} 测试告警', level=level, status='active',
             source='test', source_type='generic', fingerprint=uuid.uuid4().hex[:32],
-            alert_code=code, resource=resource,
+            alert_code=code, resource=resource, environment=environment,
             starts_at=timezone.now() - timedelta(minutes=minutes_ago),
         )
 
@@ -5707,6 +5707,61 @@ class AlertCausalityEngineTests(TestCase):
         self.assertFalse(derived.is_suppressed, '不得写抑制标记')
         self.assertFalse(derived.muted_by, '不得写静默字段')
 
+    def test_cross_environment_no_false_convergence(self):
+        """跨环境同名资源不得产生虚假收敛。"""
+        from ops.alert_causality import evaluate_alert_causality
+        from cmdb.models import CIRelation, ConfigItem
+
+        dev_ts = ConfigItem.objects.create(name='TS_ORDER', ci_type=self.ts_type, environment='dev')
+        CIRelation.objects.create(source=self.orcl, target=dev_ts, relation_type_id='contains')
+        self._alert('TABLESPACE_FULL', 'TS_ORDER', environment='dev')
+        derived = self._alert('ORA-01653', 'ORCL01', environment='prod')
+        result = evaluate_alert_causality(derived)
+        self.assertIsNone(result, '跨环境不得产生虚假收敛')
+        derived.refresh_from_db()
+        self.assertEqual(derived.causal_level, 'none')
+
+    def test_anchor_prefers_same_environment_ci(self):
+        """同名 CI 多环境存在时，锚点应优先取与告警同环境的 CI（即使同环境 CI 更旧）。"""
+        from ops.alert_causality import _find_ci_anchor
+        from cmdb.models import ConfigItem
+
+        prod_ci = ConfigItem.objects.create(name='TS_ORDER', ci_type=self.ts_type, environment='prod')
+        # 后创建的 dev CI 更新，无偏好实现下 first() 会误取它
+        ConfigItem.objects.create(name='TS_ORDER', ci_type=self.ts_type, environment='dev')
+        alert = self._alert('TABLESPACE_FULL', 'TS_ORDER', environment='prod')
+        anchor = _find_ci_anchor(alert)
+        self.assertEqual(anchor.id, prod_ci.id, '锚点应取同环境 CI')
+
+    def test_late_root_converges_derived_out_of_order(self):
+        """根因告警晚于派生告警到达（乱序 ingest）时，对称评估仍应收敛。"""
+        from ops.alert_causality import _maybe_evaluate_causality
+
+        derived = self._alert('ORA-01653', 'ORCL01')
+        derived.occurrence_count = 10  # 历史实现会因次数门槛被永久跳过
+        derived.save(update_fields=['occurrence_count'])
+        root = self._alert('TABLESPACE_FULL', 'TS_ORDER')
+
+        _maybe_evaluate_causality(root)
+        derived.refresh_from_db()
+        self.assertEqual(derived.causal_level, 'derived', '根因到达后派生告警应收敛')
+        self.assertIn(root.id, derived.derived_from)
+
+    def test_evidence_path_is_real_shortest_path_not_closure(self):
+        """多分支图上，证据链 path 必须是锚点到根因的真实路径，而非整个可达闭包。"""
+        from ops.alert_causality import evaluate_alert_causality
+        from cmdb.models import ConfigItem, CIRelation
+
+        sibling = ConfigItem.objects.create(name='TS_ARCHIVE', ci_type=self.ts_type)
+        CIRelation.objects.create(source=self.orcl, target=sibling, relation_type_id='contains')
+
+        self._alert('TABLESPACE_FULL', 'TS_ORDER')
+        derived = self._alert('ORA-01653', 'ORCL01')
+        evaluate_alert_causality(derived)
+        derived.refresh_from_db()
+        path = derived.evidence_chain[0]['path']
+        self.assertEqual(path, ['ORCL01', 'TS_ORDER'], f'path 应为真实路径，实际: {path}')
+
 
 class AlertCausalityMountTests(TestCase):
     """L1 挂载：webhook 与 Zabbix 轮询双路径触发；异常不阻断；折叠计数键。"""
@@ -5801,6 +5856,23 @@ class OracleDemoStorylineTests(TestCase):
         self.assertTrue(any('LISTENER_DOWN' in n for n in names), names)
         self.assertTrue(any('ORA-12541' in n for n in names), names)
         self.assertTrue(any('STORAGE_FULL' in n for n in names), names)
+
+    def test_trigger_resolution_maps_oracle_problems_to_hosts(self):
+        from ops.zabbix_alert_bridge import resolve_problem_host
+        from ops.zabbix_demo_data import dispatch_demo_call
+
+        class DemoClient:
+            def get_triggers(self, trigger_ids=None):
+                return dispatch_demo_call('trigger.get', {'triggerids': trigger_ids})
+
+        host, _, _ = resolve_problem_host(DemoClient(), {'objectid': '30003'})
+        self.assertEqual(host, 'ORCL01')
+        host, _, _ = resolve_problem_host(DemoClient(), {'objectid': '30002'})
+        self.assertEqual(host, 'TS_ORDER')
+        host, _, _ = resolve_problem_host(DemoClient(), {'objectid': '30005'})
+        self.assertEqual(host, 'listener-01')
+        host, _, _ = resolve_problem_host(DemoClient(), {'objectid': '30001'})
+        self.assertEqual(host, 'lun-orders-01')
 
     def test_demo_problem_clock_deltas_within_window(self):
         from ops.zabbix_demo_data import DEMO_PROBLEMS

@@ -54,10 +54,35 @@ DEMO_HOSTS = [
         'interfaces': [{'ip': '10.0.5.51', 'dns': '', 'type': '1', 'main': '1', 'available': '1'}],
         'groups': [{'groupid': '5', 'name': '基础架构/网关'}],
     },
+    {
+        'hostid': '10007', 'host': 'lun-orders-01', 'name': '订单库存储卷',
+        'status': '0', 'available': '1', 'description': 'Oracle 订单库存储 LUN（演示）',
+        'interfaces': [{'ip': '10.40.1.21', 'dns': '', 'type': '1', 'main': '1', 'available': '1'}],
+        'groups': [{'groupid': '6', 'name': '交易平台/Oracle'}],
+    },
+    {
+        'hostid': '10008', 'host': 'TS_ORDER', 'name': '订单表空间',
+        'status': '0', 'available': '1', 'description': 'Oracle 表空间 TS_ORDER（演示）',
+        'interfaces': [{'ip': '10.40.1.22', 'dns': '', 'type': '1', 'main': '1', 'available': '1'}],
+        'groups': [{'groupid': '6', 'name': '交易平台/Oracle'}],
+    },
+    {
+        'hostid': '10009', 'host': 'ORCL01', 'name': 'Oracle 实例 ORCL',
+        'status': '0', 'available': '1', 'description': 'Oracle 实例 ORCL01（演示）',
+        'interfaces': [{'ip': '10.40.1.10', 'dns': '', 'type': '1', 'main': '1', 'available': '1'}],
+        'groups': [{'groupid': '6', 'name': '交易平台/Oracle'}],
+    },
+    {
+        'hostid': '10010', 'host': 'listener-01', 'name': 'Oracle 监听',
+        'status': '0', 'available': '1', 'description': 'Oracle 监听进程（演示）',
+        'interfaces': [{'ip': '10.40.1.10', 'dns': '', 'type': '1', 'main': '1', 'available': '1'}],
+        'groups': [{'groupid': '6', 'name': '交易平台/Oracle'}],
+    },
 ]
 
 DEMO_HOST_GROUPS = [
     {'groupid': '1', 'name': '电商平台/订单服务'},
+    {'groupid': '6', 'name': '交易平台/Oracle'},
     {'groupid': '2', 'name': '基础架构/K8s'},
     {'groupid': '3', 'name': '电商平台/会员中心'},
     {'groupid': '4', 'name': '电商平台/支付网关'},
@@ -136,6 +161,51 @@ DEMO_TRIGGERS = [
         'lastchange': str(int(time.time()) - 86400),
         'hosts': [{'hostid': '10004', 'host': 'member-api', 'name': '会员服务主机'}],
         'groups': [{'groupid': '3', 'name': '电商平台/会员中心'}],
+    },
+    {
+        'triggerid': '30001',
+        'description': '存储卷写满 STORAGE_FULL（lun-orders-01）',
+        'priority': '4',
+        'value': '1',
+        'lastchange': str(int(time.time()) - 600),
+        'hosts': [{'hostid': '10007', 'host': 'lun-orders-01', 'name': '订单库存储卷'}],
+        'groups': [{'groupid': '6', 'name': '交易平台/Oracle'}],
+    },
+    {
+        'triggerid': '30002',
+        'description': '表空间使用率超过 99% TABLESPACE_FULL（TS_ORDER）',
+        'priority': '4',
+        'value': '1',
+        'lastchange': str(int(time.time()) - 540),
+        'hosts': [{'hostid': '10008', 'host': 'TS_ORDER', 'name': '订单表空间'}],
+        'groups': [{'groupid': '6', 'name': '交易平台/Oracle'}],
+    },
+    {
+        'triggerid': '30003',
+        'description': 'ORA-01653 表空间无法扩展（ORCL01）',
+        'priority': '3',
+        'value': '1',
+        'lastchange': str(int(time.time()) - 480),
+        'hosts': [{'hostid': '10009', 'host': 'ORCL01', 'name': 'Oracle 实例 ORCL'}],
+        'groups': [{'groupid': '6', 'name': '交易平台/Oracle'}],
+    },
+    {
+        'triggerid': '30004',
+        'description': '监听进程宕机 LISTENER_DOWN（listener-01）',
+        'priority': '4',
+        'value': '1',
+        'lastchange': str(int(time.time()) - 420),
+        'hosts': [{'hostid': '10010', 'host': 'listener-01', 'name': 'Oracle 监听'}],
+        'groups': [{'groupid': '6', 'name': '交易平台/Oracle'}],
+    },
+    {
+        'triggerid': '30005',
+        'description': 'ORA-12541 TNS no listener（listener-01）',
+        'priority': '2',
+        'value': '1',
+        'lastchange': str(int(time.time()) - 360),
+        'hosts': [{'hostid': '10010', 'host': 'listener-01', 'name': 'Oracle 监听'}],
+        'groups': [{'groupid': '6', 'name': '交易平台/Oracle'}],
     },
 ]
 
@@ -344,6 +414,10 @@ def _filter_history(params: dict) -> list:
 
 def _filter_triggers(params: dict) -> list:
     triggers = [dict(t) for t in DEMO_TRIGGERS]
+    trigger_ids = params.get('triggerids') or []
+    if trigger_ids:
+        trigger_ids = {str(t) for t in trigger_ids}
+        triggers = [t for t in triggers if t['triggerid'] in trigger_ids]
     min_sev = params.get('min_severity')
     if min_sev:
         triggers = [t for t in triggers if int(t['priority']) >= int(min_sev)]

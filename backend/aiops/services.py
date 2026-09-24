@@ -5883,24 +5883,30 @@ def _infer_alert_root_cause(
         )
     if not causes:
         causes.append('证据不足，不能仅凭告警标题或描述推断根因；需要继续补齐运行态、事件、日志、链路或指标证据。')
+    def _clean_token(value):
+        # 渲染侧清洗：剥离控制字符并截断，防 evidence_chain 内容放大提示词注入面
+        import re as _re
+        text = _re.sub(r'[\x00-\x1f\x7f]', '', str(value or ''))
+        return text[:80]
+
     causal_chain = []
     hypotheses = []
     if alert.causal_level == 'derived':
-        relation_label = ''
         for entry in (alert.evidence_chain or [])[:8]:
             path = entry.get('path') or []
-            relation = entry.get('relation_code') or '依赖'
-            rule_code = entry.get('rule_code') or ''
+            relation = _clean_token(entry.get('relation_code') or '依赖')
+            rule_code = _clean_token(entry.get('rule_code') or '')
             if not path:
                 continue
-            parts = [str(path[0])]
-            for name in path[1:]:
-                parts.append(f' --{relation}--> {name}')
+            parts = [_clean_token(path[0])]
+            for name in path[1:5]:
+                parts.append(f' --{relation}--> {_clean_token(name)}')
             causal_chain.append(f"{' -> '.join(parts)}（规则 {rule_code}）")
         if alert.derived_from:
             from ops.models import Alert as _Alert
-            for root in _Alert.objects.filter(id__in=list(alert.derived_from))[:3]:
-                causal_chain.append(f"根因告警：[{root.alert_code}] {root.title}（ID {root.id}）")
+            root_ids = [x for x in (alert.derived_from or []) if isinstance(x, int)]
+            for root in _Alert.objects.filter(id__in=root_ids)[:3]:
+                causal_chain.append(f"根因告警：[{_clean_token(root.alert_code)}] {_clean_token(root.title)}（ID {root.id}）")
     elif alert.causal_level == 'root':
         from ops.models import Alert as _Alert
         recent_qs = _Alert.objects.filter(
@@ -10213,14 +10219,26 @@ def query_knowledge_graph_closure(session, user_message, user, query='', node_id
     nodes = graph.get('nodes') or []
     node_map = {node.get('id'): node for node in nodes if isinstance(node, dict)}
 
-    # 解析起点：优先 node_id，其次 node_name/query 模糊匹配节点 label
+    # 解析起点：优先 node_id，其次 node_name/query 模糊匹配节点 label；整串不命中时按分词回退
     start_id = node_id
     keyword = (node_name or query).lower()
     if not start_id and keyword:
-        matches = [
-            n for n in nodes
-            if keyword and keyword in str(n.get('label') or n.get('name') or n.get('id') or '').lower()
-        ]
+        def _node_text(node):
+            return str(node.get('label') or node.get('name') or node.get('id') or '').lower()
+
+        matches = [n for n in nodes if keyword and keyword in _node_text(n)]
+        if not matches:
+            # 分词回退：问题串的每个 token 与节点 label 计分匹配
+            tokens = [t for t in re.split(r'[\s,，、]+', keyword) if t]
+            scored = []
+            for n in nodes:
+                text = _node_text(n)
+                score = sum(1 for t in tokens if t and t in text)
+                if score:
+                    scored.append((score, -len(text), n))
+            if scored:
+                scored.sort(reverse=True)
+                matches = [n for _, _, n in scored]
         if len(matches) == 1:
             start_id = matches[0].get('id')
         elif len(matches) > 1:

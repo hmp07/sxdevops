@@ -24,7 +24,10 @@ def backfill_relation_fk(apps, schema_editor):
     for rel in CIRelation.objects.all().iterator():
         if rel.relation_type:
             rel.relation_fk_id = rel.relation_type
-            rel.save(update_fields=['relation_fk'])
+        else:
+            # 历史空串行兜底：回填为系统默认码，避免后续 NOT NULL FK 迁移失败
+            rel.relation_fk_id = 'connects_to'
+        rel.save(update_fields=['relation_fk'])
 
 
 class Migration(migrations.Migration):

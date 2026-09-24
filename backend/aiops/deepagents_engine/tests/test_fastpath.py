@@ -64,3 +64,12 @@ class FastpathPatternTest(TestCase):
         # "告警趋势"不含资源词（磁盘/内存/cpu/使用率/容量），不应命中预测模式
         tool, _ = fastpath_router('告警趋势怎么样')
         self.assertIsNone(tool)
+
+
+def test_closure_query_strips_trigger_phrases():
+    """闭包触发短语应从 query 中剥离，保证服务端节点名解析可用。"""
+    from aiops.deepagents_engine.fastpath import fastpath_router
+
+    tool, params = fastpath_router('TS_ORDER 影响哪些下游')
+    assert tool == 'query_knowledge_graph_closure_tool'
+    assert '影响哪些下游' not in (params.get('query') or '')
